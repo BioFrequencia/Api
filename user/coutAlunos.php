@@ -1,6 +1,31 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
+require_once __DIR__ . '/../helpers/resposta.php';
+
+/**
+ * ATENÇÃO — ENDPOINT PROVAVELMENTE QUEBRADO / SCHEMA NÃO CONFIRMADO
+ * -----------------------------------------------------------------
+ * Este arquivo assume uma tabela "tb_alunos" (plural) com colunas
+ * (id_aluno, nome_aluno, email_aluno, turma_aluno, horario_entrada).
+ * Em todo o resto da API (addaluno.php, filtroAluno.php, marcarFalta.php)
+ * a tabela real usada é "tb_aluno" (singular), sem essas colunas de
+ * email/horário de entrada. É bem provável que "tb_alunos" não exista
+ * no banco e que esta query falhe com "relation does not exist".
+ *
+ * Não tenho acesso ao banco real neste momento para confirmar o schema,
+ * então não posso corrigir isso com segurança sem adivinhar nomes de
+ * coluna (o que o autor original também sinalizou como suposição no
+ * comentário abaixo). Mantive o arquivo para não apagar histórico, mas:
+ *
+ *   -> filtroAluno.php já cobre listagem de alunos com faltas/atrasos/
+ *      frequência/status usando o schema confirmado (tb_aluno).
+ *   -> Se este relatório específico (atraso por horário de entrada) for
+ *      necessário, me diga a estrutura real da tabela que eu implemento
+ *      corretamente em cima de tb_aluno.
+ *
+ * Até lá, considere este endpoint como NÃO TESTADO / NÃO CONFIÁVEL.
+ */
 
 /**
  * Relatório de Alunos + Situação de Atraso
@@ -65,18 +90,12 @@ try {
 
     $total_atrasados = count(array_filter($relatorio, fn($a) => $a['atrasado']));
 
-    echo json_encode([
-        "sucesso"          => true,
-        "mensagem"         => "Relatório gerado com sucesso",
-        "total_alunos"     => count($relatorio),
-        "total_atrasados"  => $total_atrasados,
-        "dados"            => $relatorio
+    enviarSucesso("Relatório gerado com sucesso.", [
+        "alunos"          => $relatorio,
+        "total_alunos"    => count($relatorio),
+        "total_atrasados" => $total_atrasados,
     ]);
 
 } catch (PDOException $erro) {
-    echo json_encode([
-        "sucesso"  => false,
-        "mensagem" => "Erro no servidor: " . $erro->getMessage(),
-        "dados"    => null
-    ]);
+    enviarErro("Erro no servidor ao gerar o relatório de alunos.", 500, $erro);
 }

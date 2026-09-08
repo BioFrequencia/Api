@@ -1,28 +1,27 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
+require_once __DIR__ . '/../helpers/validacao.php';
+require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../Authentication/Authentication.php';
 
-/*
- * OBS: id_coordenacao está vindo direto do corpo da requisição porque o
- * projeto ainda não tem sessão/token de login implementado (selectCoord.php
- * só valida e devolve os dados). Quando a autenticação estiver pronta, troque
- * isso por um valor extraído da sessão/token — hoje qualquer requisição pode
- * "assinar" a falta em nome de outra coordenação.
- */
+// O id da coordenação agora vem do token validado, não mais do corpo da
+// requisição — antes disso, qualquer requisição podia "assinar" a falta
+// em nome de outra coordenação (isso estava documentado como pendência
+// neste mesmo arquivo).
+$idCoordenacao = autenticar();
 
-$dados = json_decode(file_get_contents("php://input"), true);
+$dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
-if (!isset($dados["id_aluno"], $dados["id_coordenacao"])) {
-    echo json_encode(["sucesso" => false, "mensagem" => "id_aluno e id_coordenacao são obrigatórios", "dados" => null]);
-    exit;
+if (!isset($dados["id_aluno"]) || !inteiroValido($dados["id_aluno"])) {
+    enviarErro("Informe um aluno válido.", 422);
 }
 
-$idAluno       = $dados["id_aluno"];
-$idCoordenacao = $dados["id_coordenacao"];
-$dtaFalta      = $dados["dta_falta"] ?? null; // se não vier, o banco assume o momento atual
-$motivoFalta   = $dados["motivo_falta"] ?? null;
-$observacao    = $dados["observacao_falta"] ?? null;
-$justificado   = (isset($dados["justificado_falta"]) && $dados["justificado_falta"]) ? 'true' : 'false';
+$idAluno     = $dados["id_aluno"];
+$dtaFalta    = $dados["dta_falta"] ?? null; // se não vier, o banco assume o momento atual
+$motivoFalta = $dados["motivo_falta"] ?? null;
+$observacao  = $dados["observacao_falta"] ?? null;
+$justificado = (isset($dados["justificado_falta"]) && $dados["justificado_falta"]) ? 'true' : 'false';
 // bindado como string 'true'/'false': PDO::PARAM_BOOL tem um bug conhecido
 // no driver pgsql que costuma virar '' e quebra o insert numa coluna boolean
 
@@ -33,8 +32,7 @@ try {
     $verificaAluno->execute();
 
     if ($verificaAluno->rowCount() === 0) {
-        echo json_encode(["sucesso" => false, "mensagem" => "Aluno não encontrado", "dados" => null]);
-        exit;
+        enviarErro("Aluno não encontrado.", 404);
     }
 
     $insert = $conexao->prepare("
@@ -52,16 +50,10 @@ try {
 
     $novaFalta = $insert->fetch(PDO::FETCH_ASSOC);
 
-    echo json_encode([
-        "sucesso" => true,
-        "mensagem" => "Falta registrada com sucesso",
-        "dados" => [
-            "id_falta" => $novaFalta["id_falta"],
-            "dta_falta" => $novaFalta["dta_falta"]
-        ]
+    enviarSucesso("Falta registrada com sucesso.", [
+        "id_falta"  => $novaFalta["id_falta"],
+        "dta_falta" => $novaFalta["dta_falta"],
     ]);
-
 } catch (PDOException $erro) {
-    echo json_encode(["sucesso" => false, "mensagem" => "Erro ao registrar falta: " . $erro->getMessage(), "dados" => null]);
+    enviarErro("Erro no servidor ao registrar a falta.", 500, $erro);
 }
-?>

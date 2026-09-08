@@ -1,8 +1,9 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
+require_once __DIR__ . '/../helpers/resposta.php';
 
-define('DIAS_LETIVOS_MES', 20); // mesma constante usada em coutAlunos.php
+define('DIAS_LETIVOS_MES', 20); // mesma constante usada anteriormente em coutAlunos.php
 
 function calcularStatus($frequencia) {
     if ($frequencia < 85) return "Em risco";
@@ -22,15 +23,32 @@ $porPagina  = max(1, (int)($dados["por_pagina"] ?? 10));
 try {
     $primeiroDiaMes = date('Y-m-01');
 
+    // Faltas e atrasos são contados em subconsultas separadas e só depois
+    // unidas ao aluno. Antes disso, um único LEFT JOIN em tb_atraso alimentava
+    // as duas colunas (faltas E atrasos recebiam o mesmo número); juntar
+    // tb_falta e tb_atraso num JOIN só, sem agregar antes, também geraria
+    // contagem errada (produto cartesiano entre as duas tabelas).
     $sql = "
         SELECT al.id_aluno, al.nome_aluno, s.nome_sala,
-               COUNT(a.id_atraso) AS qtd_atrasos
+               COALESCE(f.qtd_faltas, 0)  AS qtd_faltas,
+               COALESCE(a.qtd_atrasos, 0) AS qtd_atrasos
         FROM tb_aluno al
         LEFT JOIN tb_sala s ON s.id_sala = al.id_sala
-        LEFT JOIN tb_atraso a ON a.id_aluno = al.id_aluno AND a.dta_atraso >= ?
+        LEFT JOIN (
+            SELECT id_aluno, COUNT(*) AS qtd_faltas
+            FROM tb_falta
+            WHERE dta_falta >= ?
+            GROUP BY id_aluno
+        ) f ON f.id_aluno = al.id_aluno
+        LEFT JOIN (
+            SELECT id_aluno, COUNT(*) AS qtd_atrasos
+            FROM tb_atraso
+            WHERE dta_atraso >= ?
+            GROUP BY id_aluno
+        ) a ON a.id_aluno = al.id_aluno
         WHERE 1 = 1
     ";
-    $params = [$primeiroDiaMes];
+    $params = [$primeiroDiaMes, $primeiroDiaMes];
 
     if (!empty($busca)) {
         $sql .= " AND (al.nome_aluno ILIKE ? OR al.id_aluno::text = ?)";
@@ -43,17 +61,21 @@ try {
         $params[] = $idSala;
     }
 
-    $sql .= " GROUP BY al.id_aluno, al.nome_aluno, s.nome_sala ORDER BY al.nome_aluno";
+    $sql .= " ORDER BY al.nome_aluno";
 
     $stmt = $conexao->prepare($sql);
     $stmt->execute($params);
     $alunos = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Calcula faltas/atrasos/frequência/status em PHP (mesma lógica do dashboard)
+    // Calcula frequência/status em PHP (mesma lógica de antes).
+    // Observação/suposição: a frequência é calculada a partir das FALTAS
+    // (ausências), não dos atrasos — são tratados como métricas distintas,
+    // como no protótipo de tela. Se a intenção for outra fórmula, me avise.
     $listaCompleta = [];
     foreach ($alunos as $aluno) {
+        $qtdFaltas  = (int)$aluno["qtd_faltas"];
         $qtdAtrasos = (int)$aluno["qtd_atrasos"];
-        $frequencia = max(0, round(100 - (($qtdAtrasos / DIAS_LETIVOS_MES) * 100)));
+        $frequencia = max(0, round(100 - (($qtdFaltas / DIAS_LETIVOS_MES) * 100)));
         $statusAluno = calcularStatus($frequencia);
 
         if ($status !== null && $statusAluno !== $status) {
@@ -61,13 +83,13 @@ try {
         }
 
         $listaCompleta[] = [
-            "id_aluno" => $aluno["id_aluno"],
-            "nome_aluno" => $aluno["nome_aluno"],
-            "turma" => $aluno["nome_sala"],
-            "faltas" => $qtdAtrasos,
-            "atrasos" => $qtdAtrasos,
-            "frequencia" => $frequencia . "%",
-            "status" => $statusAluno
+            "id_aluno"    => $aluno["id_aluno"],
+            "nome_aluno"  => $aluno["nome_aluno"],
+            "turma"       => $aluno["nome_sala"],
+            "faltas"      => $qtdFaltas,
+            "atrasos"     => $qtdAtrasos,
+            "frequencia"  => $frequencia . "%",
+            "status"      => $statusAluno
         ];
     }
 
@@ -77,18 +99,13 @@ try {
     $offset = ($pagina - 1) * $porPagina;
     $paginaAtual = array_slice($listaCompleta, $offset, $porPagina);
 
-    echo json_encode([
-        "sucesso" => true,
-        "mensagem" => "Alunos carregados com sucesso",
-        "dados" => [
-            "alunos" => $paginaAtual,
-            "pagina_atual" => $pagina,
-            "total_paginas" => $totalPaginas,
-            "total_registros" => $totalRegistros
-        ]
+    enviarSucesso("Alunos carregados com sucesso.", [
+        "alunos" => $paginaAtual,
+        "pagina_atual" => $pagina,
+        "total_paginas" => $totalPaginas,
+        "total_registros" => $totalRegistros
     ]);
 
 } catch (PDOException $erro) {
-    echo json_encode(["sucesso" => false, "mensagem" => "Erro ao buscar alunos: " . $erro->getMessage(), "dados" => null]);
+    enviarErro("Erro no servidor ao buscar alunos.", 500, $erro);
 }
-?>
