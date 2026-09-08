@@ -1,0 +1,18 @@
+{
+    "name": "biofrequencia/api",
+    "description": "API do sistema BioFrequencia (TCC) - autenticacao, coordenacao, alunos e faltas/atrasos.",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "ext-pdo": "*",
+        "ext-pdo_pgsql": "*",
+        "firebase/php-jwt": "^6.10"
+    },
+    "autoload": {
+        "files": [
+            "helpers/validacao.php",
+            "helpers/resposta.php",
+            "helpers/senha.php"
+        ]
+    }
+}
