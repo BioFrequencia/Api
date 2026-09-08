@@ -1,26 +1,63 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
+require_once __DIR__ . '/../helpers/validacao.php';
+require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../Authentication/Authentication.php';
 
-$dados = json_decode(file_get_contents("php://input"), true);
+// Só coordenadores autenticados podem cadastrar alunos.
+autenticar();
 
-$aluno  = $dados["aluno"];
-$id_sala = $dados["id_sala"];
-$dta_nasc_aluno = $dados["dta_nasc_aluno"];
-$genero_aluno = $dados["genero_aluno"];
+$dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
+// nome_aluno (não "aluno") para ficar consistente com a coluna no banco,
+// com o Model.Student do desktop e com o padrão usado no resto da API.
+$nomeAluno    = $dados["nome_aluno"] ?? null;
+$idSala       = $dados["id_sala"] ?? null;
+$dtaNascAluno = $dados["dta_nasc_aluno"] ?? null;
+$generoAluno  = $dados["genero_aluno"] ?? null;
+
+$generosAceitos = ["Feminino", "Masculino"];
+
+if (!campoPreenchido($nomeAluno)) {
+    enviarErro("Informe o nome do aluno.", 422);
+}
+if (!inteiroValido($idSala)) {
+    enviarErro("Selecione uma sala/turma válida.", 422);
+}
+if (!dataNascimentoValida($dtaNascAluno)) {
+    enviarErro("Informe uma data de nascimento válida (não pode ser futura nem implausível).", 422);
+}
+if (!campoPreenchido($generoAluno) || !in_array($generoAluno, $generosAceitos, true)) {
+    enviarErro("Informe um gênero válido.", 422);
+}
+
+$nomeAluno = trim($nomeAluno);
 
 try {
+    // Confere se a sala informada realmente existe antes de tentar gravar.
+    $verificaSala = $conexao->prepare("SELECT id_sala FROM tb_sala WHERE id_sala = ?");
+    $verificaSala->bindParam(1, $idSala);
+    $verificaSala->execute();
 
-    $insert = $conexao->prepare("INSERT INTO tb_aluno(nome_aluno,id_sala,dta_nasc_aluno,genero_aluno) VALUES(?,?,?,?)");
-    $insert->bindParam(1, $aluno);
-    $insert->bindParam(2, $id_sala);
-    $insert->bindParam(3, $dta_nasc_aluno);
-    $insert->bindParam(4, $genero_aluno);
+    if ($verificaSala->rowCount() === 0) {
+        enviarErro("A sala/turma informada não existe.", 422);
+    }
+
+    $insert = $conexao->prepare(
+        "INSERT INTO tb_aluno(nome_aluno,id_sala,dta_nasc_aluno,genero_aluno)
+         VALUES(?,?,?,?)
+         RETURNING id_aluno"
+    );
+    $insert->bindParam(1, $nomeAluno);
+    $insert->bindParam(2, $idSala);
+    $insert->bindParam(3, $dtaNascAluno);
+    $insert->bindParam(4, $generoAluno);
     $insert->execute();
-    
-    echo json_encode(["sucesso" => true, "mensagem" => "Aluno cadastrado com sucesso", "dados" => null]);
+
+    $novoAluno = $insert->fetch(PDO::FETCH_ASSOC);
+
+    enviarSucesso("Aluno cadastrado com sucesso.", ["id_aluno" => $novoAluno["id_aluno"]]);
 } catch (PDOException $erro) {
-    echo json_encode(["sucesso" => false, "mensagem" => "Erro ao cadastrar: " . $erro->getMessage(), "dados" => null]);
+    enviarErro("Erro no servidor ao cadastrar o aluno.", 500, $erro);
 }
-?>
