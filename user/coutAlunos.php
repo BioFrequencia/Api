@@ -4,27 +4,29 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 
 /**
- * ATENÇÃO — ENDPOINT PROVAVELMENTE QUEBRADO / SCHEMA NÃO CONFIRMADO
+ * ATENÇÃO — ENDPOINT QUEBRADO / SCHEMA CONFIRMADO COMO INCOMPATÍVEL
  * -----------------------------------------------------------------
  * Este arquivo assume uma tabela "tb_alunos" (plural) com colunas
  * (id_aluno, nome_aluno, email_aluno, turma_aluno, horario_entrada).
- * Em todo o resto da API (addaluno.php, filtroAluno.php, marcarFalta.php)
- * a tabela real usada é "tb_aluno" (singular), sem essas colunas de
- * email/horário de entrada. É bem provável que "tb_alunos" não exista
- * no banco e que esta query falhe com "relation does not exist".
+ * CONFIRMADO via schema do Supabase (Database > Schema Visualizer): a
+ * tabela real é "tb_aluno" (singular, sem "s"), com apenas as colunas
+ * id_aluno, nome_aluno, id_sala, dta_nasc_aluno, genero_aluno - nenhuma
+ * das colunas email_aluno/turma_aluno/horario_entrada existe. Além disso,
+ * "atraso" no schema real é um evento discreto (tabela tb_atraso, com
+ * data/motivo/justificativa - ver marcarAtraso.php), não um horário de
+ * entrada comparado a um limite.
  *
- * Não tenho acesso ao banco real neste momento para confirmar o schema,
- * então não posso corrigir isso com segurança sem adivinhar nomes de
- * coluna (o que o autor original também sinalizou como suposição no
- * comentário abaixo). Mantive o arquivo para não apagar histórico, mas:
+ * Esta query vai falhar com "relation tb_alunos does not exist" se for
+ * chamada. Mantido no repositório para não apagar histórico, mas:
  *
  *   -> filtroAluno.php já cobre listagem de alunos com faltas/atrasos/
- *      frequência/status usando o schema confirmado (tb_aluno).
- *   -> Se este relatório específico (atraso por horário de entrada) for
- *      necessário, me diga a estrutura real da tabela que eu implemento
- *      corretamente em cima de tb_aluno.
+ *      frequência/status usando o schema real (tb_aluno + tb_falta +
+ *      tb_atraso).
+ *   -> Se um relatório "quem chegou atrasado hoje" for necessário,
+ *      recomendo reescrever isso em cima de tb_atraso (dta_atraso = hoje)
+ *      em vez de tentar consertar as suposições deste arquivo.
  *
- * Até lá, considere este endpoint como NÃO TESTADO / NÃO CONFIÁVEL.
+ * Considere este endpoint DESCONTINUADO.
  */
 
 /**
