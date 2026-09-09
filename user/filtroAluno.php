@@ -2,6 +2,12 @@
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../Authentication/Authentication.php';
+
+// Faltava aqui: este endpoint devolve nome, turma, faltas e atrasos de
+// todos os alunos e ficou de fora quando autenticação foi adicionada aos
+// outros endpoints de aluno - dados de alunos não deveriam ficar públicos.
+autenticar();
 
 define('DIAS_LETIVOS_MES', 20); // mesma constante usada anteriormente em coutAlunos.php
 
