@@ -114,7 +114,7 @@ pontual de correção (`fix: use JWT_SECRET_KEY constant in tokenLogin.php`).
 | `listarSalas.php` (novo) | Lista `id_sala`, `nome_sala`, `periodo_sala` | ✅ |
 | `marcarFalta.php` | `id_coordenacao` vem do token, não do corpo | ✅ |
 | `marcarAtraso.php` (novo) | Espelha `marcarFalta.php` para `tb_atraso`, schema completo confirmado | ✅ |
-| `filtroAluno.php` | Faltas e atrasos contados em subconsultas separadas (evita tanto o bug do valor duplicado quanto um produto cartesiano) | ✅ valores distintos e corretos confirmados |
+| `filtroAluno.php` | Faltas e atrasos contados em subconsultas separadas (evita tanto o bug do valor duplicado quanto um produto cartesiano); agora também exige token, que tinha ficado de fora quando a autenticação foi adicionada aos outros endpoints | ✅ valores distintos e corretos confirmados; sem token → 401; paginação (10+3 em 2 páginas), busca por nome e filtro por turma testados com 13 alunos reais |
 | `coutAlunos.php` | Marcado como descontinuado (schema real não bate) | Não recomendo usar — ver comentário no arquivo |
 | Erros | `helpers/resposta.php` centraliza sucesso/erro; nenhuma mensagem de exceção crua vai mais para o cliente | ✅ |
 | Validação | `helpers/validacao.php`: email, senha, inteiros, data de nascimento | ✅ 29/29 testes unitários puros |
@@ -192,6 +192,11 @@ Branches (todas já mescladas em `master`): `refactor/api-service`,
   devolvia `Dados` no cadastro bem-sucedido); adicionada mensagem quando
   faltam campos (antes: clicar em Cadastrar com algo vazio não fazia nada
   visível).
+- **`Student` (listagem)**: era só um botão "Adicionar aluno", sem
+  nenhuma forma de ver os alunos cadastrados. Agora tem busca por nome,
+  filtro por turma, uma tabela (faltas/atrasos/frequência/status) e
+  paginação, consumindo `filtroAluno.php`; a lista se atualiza sozinha
+  quando a janela de cadastro é fechada.
 - **`.csproj`**: removida a referência quebrada `MySql.Data` (caminho fixo
   de outra máquina) e o pacote `Npgsql` não utilizado; removida a entrada
   `<None Include="Model\Classroom.cs">` redundante; `appsettings.json`
@@ -213,12 +218,9 @@ da entrega).
 1. Rodar `dotnet restore && dotnet build` no Visual Studio — primeiro
    teste real que falta no desktop.
 2. Considerar constraint `UNIQUE` em `tb_coordenacao.email_coordenacao`.
-3. Tela de listagem de alunos (`Student.xaml`) ainda não consome
-   `filtroAluno.php` — mostra só o botão de cadastro, sem tabela de dados.
-4. Nenhuma tela chama `marcarFalta.php`/`marcarAtraso.php` ainda — os
+3. Nenhuma tela chama `marcarFalta.php`/`marcarAtraso.php` ainda — os
    endpoints existem e foram testados, falta a UI para usá-los.
-5. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: sem endpoint
+4. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: sem endpoint
    nem tela (ver seção 3).
-6. Dashboard não exibe nenhum dado real da API ainda (é hoje só navegação).
-7. Sem logout explícito no desktop (consequência direta do item 4 do
-   diagnóstico ainda não ter uma tela).
+5. Dashboard não exibe nenhum dado real da API ainda (é hoje só navegação).
+6. Sem logout explícito no desktop.
