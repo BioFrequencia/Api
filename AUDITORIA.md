@@ -1,0 +1,224 @@
+# Auditoria técnica — BioFrequência
+
+Documento gerado durante uma sessão de estabilização do projeto (API PHP +
+desktop C#/WPF), com assistência de IA (Claude). Cobre o diagnóstico inicial,
+as correções aplicadas, como cada uma foi testada, e o que ainda fica em
+aberto. Commitado nos dois repositórios para ficar no histórico do TCC.
+
+## Como foi testado
+
+- **API (PHP)**: `php -l` em todo arquivo (sintaxe) + testes de integração
+  reais via `curl` contra um PostgreSQL local (não o Supabase de produção,
+  ao qual não há acesso a partir deste ambiente) rodando o schema real,
+  confirmado pelo usuário via screenshots do Schema Visualizer do Supabase.
+  Todas as chamadas HTTP abaixo marcadas como testadas foram de fato
+  executadas, não apenas lidas/inferidas.
+- **Desktop (C#/WPF)**: revisão manual linha a linha, **sem build real**.
+  Este ambiente não tem acesso ao NuGet (`api.nuget.org` fora da lista de
+  domínios liberados na configuração de rede) e projetos WPF só rodam de
+  fato no Windows. **Rode `dotnet restore && dotnet build` numa máquina
+  Windows normal como primeiro passo de verificação** — isso não foi
+  possível fazer aqui.
+- O schema do banco foi inferido a partir das queries existentes na
+  primeira parte da auditoria, e depois **confirmado/corrigido** com as
+  screenshots reais do Supabase que o usuário enviou (ver seção específica).
+
+---
+
+## 1. Diagnóstico inicial
+
+### O que já funcionava
+- Login e cadastro de coordenação, cadastro de aluno e listagem/filtro de
+  alunos existiam em alguma forma (parcial) nos dois lados.
+- `HttpClient` estático reutilizado em `clsConexao` (evita esgotamento de
+  socket) — já estava certo.
+- `marcarFalta.php` e `filtroAluno.php` já usavam PDO com prepared
+  statements (sem injeção de SQL) e já tratavam alguns casos de erro.
+- Segredos reais (senha do banco) já ficavam fora do Git
+  (`config/config.php` já estava no `.gitignore`); só o `config_example.php`
+  (template) era versionado.
+
+### Bugs e problemas encontrados
+1. **Autenticação nunca era aplicada.** `autenticar()` existia em
+   `Authentication.php` mas não era chamada em nenhum lugar do código —
+   toda a API estava efetivamente pública. O login (`selectCoord.php`)
+   nunca emitia token nenhum, apesar de toda a infraestrutura JWT já
+   existir (`tokenLogin.php`).
+2. **Senha em texto puro**, comparada diretamente em SQL
+   (`WHERE senha_coordenacao = ?`) e inserida sem hash.
+3. **`marcarFalta.php` confiava em `id_coordenacao` vindo do corpo da
+   requisição** — o próprio arquivo já tinha um comentário admitindo isso
+   como pendência ("qualquer requisição pode assinar a falta em nome de
+   outra coordenação").
+4. **`verificarEmail.php` quebrado nos dois ramos**: não respondia nada
+   quando o email estava disponível (branch vazio); dava erro fatal
+   ("call to undefined function criarToken") quando o email já existia,
+   porque chamava uma função de um arquivo nunca incluído ali.
+5. **Contrato quebrado entre desktop e API no cadastro de aluno**:
+   `clsApiService.RegisterStudent` enviava `{nome, sala, nasc, genero}`;
+   `addaluno.php` lia `$dados["aluno"]`, `$dados["id_sala"]`, etc. — todo
+   campo chegava `null` no servidor.
+6. **`txtClassroom` era um campo de texto livre**, sem nenhuma relação com
+   o `id_sala` (chave estrangeira inteira) que a API espera — e não havia
+   nenhum endpoint para listar as salas reais.
+7. **`filtroAluno.php` contava faltas e atrasos como o mesmo número**: só
+   fazia `LEFT JOIN` em `tb_atraso`; `tb_falta` nunca era consultada, e o
+   mesmo valor de `qtd_atrasos` era copiado para os campos `"faltas"` e
+   `"atrasos"` da resposta.
+8. **Não existia nenhum endpoint para gravar um atraso** — só para contá-lo.
+9. **`coutAlunos.php` usa uma tabela `tb_alunos` (plural) que não existe**
+   (confirmado depois via schema real — ver seção 3).
+10. **Toda mensagem de erro devolvia o texto bruto da exceção/PDO para o
+    cliente** (`"mensagem" => "Erro: " . $erro->getMessage()`), incluindo
+    detalhes de SQL, em todo endpoint.
+11. **Sem validação de servidor**: campos vazios, formato de email, força
+    de senha, datas de nascimento inválidas/futuras — nada disso era
+    checado na API, só (parcialmente) no desktop.
+12. **Senha visível na tela**: os campos de senha do login e do cadastro de
+    coordenação eram `TextBox` comuns, não `PasswordBox`.
+13. **Sessão do usuário se perdia ao navegar**: `MainWindow` guardava o
+    coordenador logado num campo privado que nunca era repassado ao
+    `Dashboard`; nada impedia abrir múltiplas Dashboards (login não
+    desabilitava o botão nem fechava/escondia a janela).
+14. **Referências quebradas/mortas no `.csproj` do desktop**: `MySql.Data`
+    apontava para um caminho fixo em "Program Files (x86)\MySQL\..." só
+    existente na máquina original; `Npgsql` nunca era usado em nenhum
+    `.cs`; `Model\Classroom.cs` tinha uma entrada `<None>` redundante.
+    `Model/Classroom.cs` (classe `Class`) não tinha `id`, tinha
+    propriedades confusas e não era usada em lugar nenhum do projeto.
+15. **URL da API hardcoded** em `clsConexao.cs`, apesar do pacote
+    `Microsoft.Extensions.Configuration.Json` já estar referenciado no
+    `.csproj` (e sem nenhum arquivo/código realmente usando-o).
+16. **`catch (Exception ex)` genérico devolvendo `ex.Message` ao usuário**,
+    repetido em todo método de `clsApiService.cs`.
+17. Métodos mortos: `Cadastro.xaml.cs` tinha `UserCadastro(string)`, sempre
+    retornava `false`, nunca era chamado.
+18. `iss` do JWT em `tokenLogin.php` estava copiado de outro projeto
+    (`"accuracy-mob-api"`).
+
+---
+
+## 2. O que foi corrigido (API — repositório `BioFrequenciaApi`)
+
+Branches (todas já mescladas em `master`): `refactor/api-error-handling`,
+`feature/api-authentication`, `feature/student-management`,
+`feature/attendance`, `feature/schema-confirmed-by-supabase`, mais um commit
+pontual de correção (`fix: use JWT_SECRET_KEY constant in tokenLogin.php`).
+
+| Item | Correção | Testado |
+|---|---|---|
+| Autenticação | Login emite JWT; `addaluno.php`, `marcarFalta.php`, `marcarAtraso.php`, `listarSalas.php` exigem token via `autenticar()` | ✅ token emitido; forjar `id_coordenacao` no corpo é ignorado (confirmado lendo o banco depois) |
+| Senha | `password_hash`/`password_verify`; contas antigas em texto puro são migradas automaticamente no primeiro login correto | ✅ login com senha antiga funciona e o hash muda para bcrypt logo em seguida |
+| `verificarEmail.php` | Sempre responde nos dois ramos; removida a emissão de token (seria brecha de segurança: token sem checar senha) | ✅ os dois casos (disponível / já cadastrado) testados |
+| `addaluno.php` | Lê `nome_aluno` (não `aluno`); valida sala/data/gênero; exige token; devolve `id_aluno` via `RETURNING` | ✅ sala inexistente → 422; data futura → 422; sucesso → 200 com id |
+| `listarSalas.php` (novo) | Lista `id_sala`, `nome_sala`, `periodo_sala` | ✅ |
+| `marcarFalta.php` | `id_coordenacao` vem do token, não do corpo | ✅ |
+| `marcarAtraso.php` (novo) | Espelha `marcarFalta.php` para `tb_atraso`, schema completo confirmado | ✅ |
+| `filtroAluno.php` | Faltas e atrasos contados em subconsultas separadas (evita tanto o bug do valor duplicado quanto um produto cartesiano) | ✅ valores distintos e corretos confirmados |
+| `coutAlunos.php` | Marcado como descontinuado (schema real não bate) | Não recomendo usar — ver comentário no arquivo |
+| Erros | `helpers/resposta.php` centraliza sucesso/erro; nenhuma mensagem de exceção crua vai mais para o cliente | ✅ |
+| Validação | `helpers/validacao.php`: email, senha, inteiros, data de nascimento | ✅ 29/29 testes unitários puros |
+| `composer.json` | Criado (não existia nenhum arquivo de dependências, apesar do projeto já usar `firebase/php-jwt`) | — |
+| `.gitattributes` | Normaliza quebra de linha (havia diffs "fantasma" de CRLF/LF) | — |
+
+**Pendência real**: `email_coordenacao` não aparece com constraint de
+unicidade no schema visualizado — a checagem de duplicidade hoje depende só
+da aplicação (pré-checagem + captura de SQLSTATE 23505, que só dispara se
+existir uma constraint). Recomendo rodar:
+```sql
+ALTER TABLE tb_coordenacao ADD CONSTRAINT uq_email_coordenacao UNIQUE (email_coordenacao);
+```
+
+---
+
+## 3. Schema real (confirmado via Supabase, screenshots do usuário)
+
+```
+tb_coordenacao(id_coordenacao PK, nome_coordenacao, email_coordenacao, senha_coordenacao)
+tb_aluno(id_aluno PK, nome_aluno, id_sala FK, dta_nasc_aluno, genero_aluno)
+tb_sala(id_sala PK, nome_sala, periodo_sala)
+tb_falta(id_falta PK, id_aluno FK, id_coordenacao FK, dta_falta, motivo_falta, justificado_falta, observacao_falta)
+tb_atraso(id_atraso PK, id_aluno FK, id_coordenacao FK, dta_atraso, motivo_atraso, justificado_atraso, observacao_atraso)
+tb_responsavel(id_responsavel PK, id_aluno FK, nome_responsavel, cpf_responsavel, telefone_responsavel, email_responsavel, genero_responsavel)
+tb_aluno_responsavel(id_aluno FK, id_responsavel FK)  -- N:N
+tb_notificacao(id_notificacao PK, id_aluno FK, id_responsavel FK, data_envio_notificacao, mensagem, status_notificacao)
+```
+
+`tb_responsavel`, `tb_aluno_responsavel` e `tb_notificacao` **existem no
+banco mas não têm nenhum endpoint na API nem tela no desktop ainda** — não
+implementei nada em cima delas nesta rodada (o pedido original foi
+explícito em não inventar funcionalidade fora do que já estava planejado/
+em uso), mas é claramente a próxima feature natural: cadastro de
+responsáveis + envio de notificação quando uma falta/atraso é registrado.
+Vale também esclarecer com quem desenhou o schema por que
+`tb_responsavel` tem um `id_aluno` direto **e** existe a tabela de
+associação `tb_aluno_responsavel` — parece redundante (uma delas deveria
+bastar, dependendo se um aluno pode ter vários responsáveis ou não).
+
+---
+
+## 4. O que foi corrigido (Desktop — repositório `SoftwareDesktop`)
+
+Branches (todas já mescladas em `master`): `refactor/api-service`,
+`feature/session-management`, `feature/student-registration-ui`,
+`fix/login-and-registration-screens`, `fix/classroom-periodo`.
+
+- **`Config/AppSettings.cs` + `appsettings.json`**: URL da API centralizada
+  (antes hardcoded em `clsConexao.cs`).
+- **`clsApiService.cs`**: reescrito. Dois métodos privados
+  (`InterpretarResposta`/`TratarExcecao`) eliminam a duplicação que existia
+  em cada chamada e diferenciam erro de conexão / timeout / JSON inválido /
+  401/404/503 / erro genérico — em vez do `catch (Exception ex)` que
+  devolvia `ex.Message` direto pro usuário em todo lugar.
+- **`RegisterStudent`**: corrigido para enviar `nome_aluno`/`id_sala`
+  (agora `int`)/`dta_nasc_aluno`/`genero_aluno`, batendo com o que
+  `addaluno.php` espera.
+- **`Model/Classroom.cs`**: reescrito (era `Class`, sem `id`, não usada em
+  lugar nenhum) — agora com `id_sala`, `nome_sala`, `periodo_sala`.
+- **`Model/clsCoordenacao.cs`**: adicionado `id_coordenacao` e `token`
+  (a API agora devolve os dois no login).
+- **`Session/SessaoUsuario.cs`** (novo): guarda o coordenador logado e
+  injeta o token como `Authorization: Bearer` em toda chamada seguinte.
+- **`MainWindow`**: `PasswordBox` no lugar do `TextBox` de senha; login
+  desabilita o botão durante a chamada e esconde a janela (não fecha —
+  fechar derrubaria o app inteiro, já que por padrão o `ShutdownMode`
+  do WPF é atrelado à primeira janela) ao entrar no Dashboard, com
+  `Application.Current.MainWindow` reatribuído ao Dashboard.
+- **`Cadastro`**: `PasswordBox` nos dois campos de senha; método morto
+  `UserCadastro` removido.
+- **`addStudent`**: `txtClassroom` (texto livre) virou um `ComboBox`
+  carregado via `ListarSalas()`; corrigido o bug em que
+  `resposta.Sucesso && resposta.Dados != null` nunca era true (a API não
+  devolvia `Dados` no cadastro bem-sucedido); adicionada mensagem quando
+  faltam campos (antes: clicar em Cadastrar com algo vazio não fazia nada
+  visível).
+- **`.csproj`**: removida a referência quebrada `MySql.Data` (caminho fixo
+  de outra máquina) e o pacote `Npgsql` não utilizado; removida a entrada
+  `<None Include="Model\Classroom.cs">` redundante; `appsettings.json`
+  configurado para copiar para a saída do build.
+- Nullable: propriedades `string` inicializadas em `Student`,
+  `clsCoordenacao`, `ApiResponse<T>` (reduz avisos do compilador sem mudar
+  comportamento).
+
+**Build**: não verificado neste ambiente (sem NuGet/WPF). Revisado à mão
+múltiplas vezes; um erro real de compilação foi pego e corrigido durante a
+própria auditoria (assinatura de `RegisterStudent` mudou de `string` para
+`int`, e `addStudent.xaml.cs` ainda chamava com `string` — corrigido antes
+da entrega).
+
+---
+
+## 5. Pendências / próximos passos recomendados
+
+1. Rodar `dotnet restore && dotnet build` no Visual Studio — primeiro
+   teste real que falta no desktop.
+2. Considerar constraint `UNIQUE` em `tb_coordenacao.email_coordenacao`.
+3. Tela de listagem de alunos (`Student.xaml`) ainda não consome
+   `filtroAluno.php` — mostra só o botão de cadastro, sem tabela de dados.
+4. Nenhuma tela chama `marcarFalta.php`/`marcarAtraso.php` ainda — os
+   endpoints existem e foram testados, falta a UI para usá-los.
+5. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: sem endpoint
+   nem tela (ver seção 3).
+6. Dashboard não exibe nenhum dado real da API ainda (é hoje só navegação).
+7. Sem logout explícito no desktop (consequência direta do item 4 do
+   diagnóstico ainda não ter uma tela).
