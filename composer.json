@@ -7,12 +7,5 @@
         "ext-pdo": "*",
         "ext-pdo_pgsql": "*",
         "firebase/php-jwt": "^6.10"
-    },
-    "autoload": {
-        "files": [
-            "helpers/validacao.php",
-            "helpers/resposta.php",
-            "helpers/senha.php"
-        ]
     }
 }
