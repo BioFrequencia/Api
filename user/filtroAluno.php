@@ -2,21 +2,13 @@
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/frequencia.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 // Faltava aqui: este endpoint devolve nome, turma, faltas e atrasos de
 // todos os alunos e ficou de fora quando autenticação foi adicionada aos
 // outros endpoints de aluno - dados de alunos não deveriam ficar públicos.
 autenticar();
-
-define('DIAS_LETIVOS_MES', 20); // mesma constante usada anteriormente em coutAlunos.php
-
-function calcularStatus($frequencia) {
-    if ($frequencia < 85) return "Em risco";
-    if ($frequencia < 90) return "Atenção";
-    if ($frequencia < 98) return "Regular";
-    return "Excelente";
-}
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -81,8 +73,8 @@ try {
     foreach ($alunos as $aluno) {
         $qtdFaltas  = (int)$aluno["qtd_faltas"];
         $qtdAtrasos = (int)$aluno["qtd_atrasos"];
-        $frequencia = max(0, round(100 - (($qtdFaltas / DIAS_LETIVOS_MES) * 100)));
-        $statusAluno = calcularStatus($frequencia);
+        $frequencia = calcularFrequencia($qtdFaltas);
+        $statusAluno = calcularStatusFrequencia($frequencia);
 
         if ($status !== null && $statusAluno !== $status) {
             continue; // aplica filtro de status
