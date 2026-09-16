@@ -3,6 +3,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/notificacao.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
@@ -33,11 +34,12 @@ $justificado  = (isset($dados["justificado_atraso"]) && $dados["justificado_atra
 // marcarFalta.php: PDO::PARAM_BOOL tem um bug conhecido no driver pgsql.
 
 try {
-    $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
+    $verificaAluno = $conexao->prepare("SELECT nome_aluno FROM tb_aluno WHERE id_aluno = ?");
     $verificaAluno->bindParam(1, $idAluno);
     $verificaAluno->execute();
+    $aluno = $verificaAluno->fetch(PDO::FETCH_ASSOC);
 
-    if ($verificaAluno->rowCount() === 0) {
+    if (!$aluno) {
         enviarErro("Aluno não encontrado.", 404);
     }
 
@@ -55,6 +57,11 @@ try {
     $insert->execute();
 
     $novoAtraso = $insert->fetch(PDO::FETCH_ASSOC);
+
+    $mensagem = "Atraso registrado para {$aluno['nome_aluno']} em " .
+        date('d/m/Y', strtotime($novoAtraso['dta_atraso'])) .
+        ($motivoAtraso ? ". Motivo: $motivoAtraso" : ".");
+    criarNotificacoesParaEvento($conexao, $idAluno, $mensagem);
 
     enviarSucesso("Atraso registrado com sucesso.", [
         "id_atraso"  => $novoAtraso["id_atraso"],
