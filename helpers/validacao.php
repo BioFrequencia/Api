@@ -33,6 +33,13 @@ function dataNascimentoValida(?string $data): bool {
     $dt = DateTime::createFromFormat('Y-m-d', $data);
     if (!$dt || $dt->format('Y-m-d') !== $data) return false;
 
+    // createFromFormat('Y-m-d', ...) preenche a HORA ATUAL (não meia-noite)
+    // quando o formato não especifica horário - sem isso, cadastrar um
+    // recém-nascido com data de nascimento igual a hoje era rejeitado como
+    // "data futura" sempre que o teste rodasse depois de 00:00:00 (ou seja,
+    // sempre). Zera a hora para comparar só as datas.
+    $dt->setTime(0, 0, 0);
+
     $hoje = new DateTime('today');
     if ($dt > $hoje) return false;
 
