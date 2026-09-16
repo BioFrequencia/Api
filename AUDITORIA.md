@@ -213,14 +213,122 @@ da entrega).
 
 ---
 
-## 5. Pendências / próximos passos recomendados
+## 5. Pendências / próximos passos recomendados (rodada anterior)
 
-1. Rodar `dotnet restore && dotnet build` no Visual Studio — primeiro
-   teste real que falta no desktop.
-2. Considerar constraint `UNIQUE` em `tb_coordenacao.email_coordenacao`.
-3. Nenhuma tela chama `marcarFalta.php`/`marcarAtraso.php` ainda — os
-   endpoints existem e foram testados, falta a UI para usá-los.
-4. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: sem endpoint
-   nem tela (ver seção 3).
-5. Dashboard não exibe nenhum dado real da API ainda (é hoje só navegação).
-6. Sem logout explícito no desktop.
+1. ~~Rodar `dotnet restore && dotnet build` no Visual Studio~~ — ainda não
+   verificado (ver seção 7: este ambiente também não tem SDK do .NET).
+2. ~~Considerar constraint `UNIQUE` em `tb_coordenacao.email_coordenacao`~~
+   — feito, ver `database/migrations/001_schema_base.sql`.
+3. ~~Nenhuma tela chama `marcarFalta.php`/`marcarAtraso.php` ainda~~ —
+   feito nesta rodada.
+4. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: **ainda sem
+   endpoint nem tela** (não mexido nesta rodada também - fora do escopo
+   pedido).
+5. ~~Dashboard não exibe nenhum dado real da API ainda~~ — feito.
+6. ~~Sem logout explícito no desktop~~ — feito.
+
+---
+
+## 6. Segunda rodada de estabilização (esta sessão)
+
+Pedido do usuário: terminar o sistema conforme o layout completo
+(Dashboard, Alertas, Acompanhamento, Relatórios) e adicionar biometria
+facial (captura + comparação real) e biometria "digital" via app no
+celular do próprio aluno. Trabalho de verdade nos dois repositórios, não
+só planejamento — ver commits em ambos.
+
+**Como foi testado desta vez**: `php -l` em tudo, testes de integração
+via `curl` contra um PostgreSQL local (mesma abordagem da rodada
+anterior, ambiente sem acesso ao Supabase de produção), e agora também
+um **suite de testes unitários persistido no repositório**
+(`tests/helpers_test.php`, 51 asserções, `php tests/helpers_test.php`) -
+a rodada anterior mencionava "29/29 testes" mas nenhum arquivo de teste
+tinha sido commitado, então não havia como rodá-los de novo.
+
+### Bugs reais encontrados nesta rodada (não só no que foi construído agora)
+
+1. **Login inteiro quebrado (HTTP 500 em toda chamada)**: `composer.json`
+   declarava `helpers/validacao.php`, `resposta.php` e `senha.php` em
+   `autoload.files`, mas todo endpoint também já dava `require_once`
+   neles diretamente. O autoloader do Composer carrega arquivos de
+   `autoload.files` com `require` simples, guardado por uma flag própria
+   que não sabe que o arquivo já tinha sido carregado pelo `require_once`
+   manual - resultado: `Cannot redeclare function campoPreenchido()` em
+   toda requisição que passasse pelas duas rotas de carregamento (ex.:
+   login, que carrega `validacao.php` direto e depois `tokenLogin.php`,
+   que puxa `vendor/autoload.php`). Removido o `autoload.files`
+   redundante; login voltou a funcionar (confirmado com token JWT
+   emitido de verdade).
+2. **`.gitignore` quebrado**: uma edição anterior concatenou `vendor/`
+   direto em `config/config.php` sem quebra de linha
+   (`config/config.phpvendor/`), e uma linha seguinte
+   (`config/config.php/`) tem uma barra final que só bate com um
+   *diretório* chamado `config.php`, não o arquivo. Resultado:
+   `config/config.php` (com credenciais reais do banco e o segredo JWT)
+   **não estava mais sendo ignorado pelo git** - confirmado com
+   `git check-ignore` antes/depois. Nenhum segredo chegou a ser
+   commitado (`git log` confirma), mas um `git add .` descuidado teria
+   pego o arquivo. Corrigido.
+3. **`dataNascimentoValida()` rejeitava a data de hoje como "futura"**:
+   `DateTime::createFromFormat('Y-m-d', $data)` preenche a *hora atual*
+   quando o formato não tem componente de hora (não meia-noite), então
+   comparar com `new DateTime('today')` (que É meia-noite) fazia
+   qualquer data igual a hoje parecer "no futuro" - ou seja, cadastrar
+   um aluno recém-nascido (data de nascimento = hoje) sempre falhava.
+   Achado pelo novo suite de testes, não só lendo o código. Corrigido
+   zerando a hora antes de comparar.
+4. **Bug introduzido e corrigido na mesma sessão**: a primeira versão de
+   `tb_alerta_encerrado`/`buscarAlertas()` comparava `encerrado_em`
+   (timestamp completo) com `dta_falta::date` (só data) - comparação de
+   string quebra sempre que os dois caem no mesmo dia, então um novo
+   evento no mesmo dia do encerramento nunca fazia o alerta reaparecer.
+   Pego em teste (curl), corrigido normalizando os dois lados para data.
+
+### O que foi construído (API)
+
+| Área | Arquivos | Testado |
+|---|---|---|
+| Acompanhamento | `acompanhamento/addAcompanhamento.php`, `listarAcompanhamento.php` | ✅ criar, listar, paginação |
+| Alertas | `helpers/alertas.php` (`buscarAlertas`), `user/alertas.php`, `user/encerrarAlerta.php` | ✅ geração por frequência/faltas consecutivas/atrasos, filtros, encerrar + reaparecimento no dia seguinte |
+| Dashboard | `user/dashboard.php` | ✅ frequência geral + delta, evolução de 6 meses, por turma, contatos pendentes |
+| Relatório individual | `user/historicoAluno.php` | ✅ |
+| Biometria facial | `helpers/biometriaFacial.php`, `biometria/*.php` | ✅ cadastro, verificação (matemática da similaridade de cosseno confirmada com vetor idêntico/ortogonal/oposto), auditoria em `tb_verificacao_facial` |
+| Biometria digital | `helpers/dispositivo.php`, `digital/*.php` | ✅ pareamento por código de uso único, HMAC-SHA256 válido/forjado, revogação, fila de confirmação |
+| Testes | `tests/helpers_test.php` | ✅ 51/51 |
+
+Migrações novas: `database/migrations/001_schema_base.sql` (schema já
+existente em produção, só para montar um banco de teste local do zero +
+a constraint UNIQUE pendente da rodada anterior),
+`002_acompanhamento_alertas.sql`, `003_biometria.sql`.
+
+### Limitação conhecida e documentada (não escondida)
+
+O limiar de decisão da biometria facial (`LIMIAR_SIMILARIDADE_FACIAL`,
+`helpers/biometriaFacial.php`) é um placeholder (0.55) - **não foi
+possível calibrá-lo** com um modelo real e fotos reais, porque este
+ambiente não tem webcam, não tem os binários do OpenCV e não tem um
+modelo `.onnx` real disponível. A matemática da similaridade de cosseno
+em si foi testada e está correta; o limiar de decisão precisa de
+calibração com dados reais antes de qualquer uso com alunos de verdade.
+Ver `SoftwareDesktop/BioFrequencia/Recursos/LEIA-ME.md` para o que falta
+do lado do desktop.
+
+### Pendências reais depois desta rodada
+
+1. `dotnet build` do desktop continua não verificado (sem SDK do .NET
+   neste ambiente também).
+2. Calibração do limiar de similaridade facial com modelo/fotos reais.
+3. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: continuam
+   sem endpoint/tela (fora do escopo desta rodada).
+4. "Faltas consecutivas" (`calcularFaltasConsecutivas`,
+   `helpers/frequencia.php`) é uma estimativa: o banco só registra o
+   evento negativo (falta), não existe uma tabela de presença positiva,
+   então um gap de até 3 dias corridos é tolerado como fim de semana -
+   isso também tolera (incorretamente) um único dia útil isolado de
+   presença real entre duas faltas não consecutivas. Documentado no
+   próprio código; a correção de verdade seria registrar frequência
+   positiva por dia letivo.
+5. Em produção, considerar criptografar `tb_dispositivo_aluno.device_secret`
+   em repouso (pgcrypto) - hoje fica em texto puro no banco porque o
+   HMAC precisa do segredo original, não de um hash (ver comentário na
+   migração 003).
