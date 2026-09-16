@@ -318,8 +318,8 @@ do lado do desktop.
 1. `dotnet build` do desktop continua não verificado (sem SDK do .NET
    neste ambiente também).
 2. Calibração do limiar de similaridade facial com modelo/fotos reais.
-3. `tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: continuam
-   sem endpoint/tela (fora do escopo desta rodada).
+3. ~~`tb_responsavel`/`tb_aluno_responsavel`/`tb_notificacao`: sem
+   endpoint/tela~~ — feito na sessão seguinte (seção 7).
 4. "Faltas consecutivas" (`calcularFaltasConsecutivas`,
    `helpers/frequencia.php`) é uma estimativa: o banco só registra o
    evento negativo (falta), não existe uma tabela de presença positiva,
@@ -332,3 +332,67 @@ do lado do desktop.
    em repouso (pgcrypto) - hoje fica em texto puro no banco porque o
    HMAC precisa do segredo original, não de um hash (ver comentário na
    migração 003).
+
+---
+
+## 7. Terceira rodada: responsáveis, notificações, e um bug real de tipo
+
+Pedido do usuário: implementar `tb_responsavel`/`tb_aluno_responsavel`/
+`tb_notificacao` (confirmado como pendência nas duas rodadas anteriores),
+depois de o usuário mandar screenshots do Schema Visualizer do Supabase
+confirmando a estrutura real do banco em produção - conferido campo a
+campo contra o que já estava documentado aqui; `tb_acompanhamento` já
+existia em produção batendo exatamente com a tabela criada na rodada
+anterior, nenhum ajuste necessário.
+
+### Bug real encontrado (não relacionado ao pedido, achado testando)
+
+**`bindParam()` do PDO muda o TIPO da variável PHP original depois do
+`execute()`**, quando o driver é `pdo_pgsql`. Reproduzido isoladamente:
+
+```php
+$id = $stmt->fetch(PDO::FETCH_ASSOC)['id']; // int(4), vindo de RETURNING
+$outro->bindParam(1, $id);
+$outro->execute();
+// $id agora é string("4") - a MESMA variável mudou de tipo
+```
+
+Isso pegou em cheio o padrão que várias das novas rotas passaram a usar
+(buscar um id gerado via `RETURNING`, reusar essa variável numa segunda
+query, depois devolver no JSON): `addResponsavel.php` devolvia
+`{"id_responsavel": "4"}` (string) em vez de `{"id_responsavel": 4}`
+(número), inconsistente com todo o resto da API. Corrigido trocando
+**todo** `bindParam()` por `bindValue()` no repositório inteiro (~120
+ocorrências, nenhuma delas dependia de verdade da semântica por
+referência do `bindParam` - são todas consultas de uso único, não loops
+reaproveitando a mesma variável). Confirmado antes/depois com o mesmo
+teste isolado, e a resposta de `addResponsavel.php` voltou a ser um
+número JSON de verdade.
+
+### O que foi construído
+
+| Área | Arquivos | Testado |
+|---|---|---|
+| Responsáveis | `helpers/validacaoResponsavel.php`, `responsavel/*.php` | ✅ cadastro, listagem, busca por CPF, vínculo a um segundo aluno (irmão), remoção de vínculo, CPF/telefone inválidos, CPF duplicado (409, antes e depois de existir a constraint) |
+| Notificações | `helpers/notificacao.php`, `notificacao/*.php`, integrado em `marcarFalta.php`/`marcarAtraso.php` | ✅ geração automática ao registrar falta/atraso (best-effort, não derruba a resposta principal se falhar), listagem com filtro de status, confirmação manual de envio |
+
+Migração nova: `database/migrations/004_responsavel_cpf_unique.sql`
+(constraint UNIQUE recomendada em `cpf_responsavel` - documentado que
+pode falhar se já existirem duplicados reais no banco, com a query pra
+achá-los antes de rodar).
+
+**Importante sobre "notificação"**: isto só grava a intenção de
+notificar (uma linha em `tb_notificacao` com status "pendente"). Não há
+nenhum provedor de email/SMS/push configurado nesta rodada - nenhuma
+mensagem é de fato enviada a ninguém. A coordenação vê a fila e confirma
+manualmente depois de avisar por fora do sistema. Isso está documentado
+no código e é uma decisão de escopo, não uma simulação de resultado.
+
+### Pendências depois desta rodada
+
+Mesma lista da seção 6 (build do desktop, calibração facial, teste em
+celular real, limitação de "faltas consecutivas"), menos o item de
+responsáveis/notificações, que está resolvido agora. Adicionado:
+
+6. Nenhum provedor real de notificação (email/SMS/push) integrado -
+   `tb_notificacao` é uma fila que a coordenação trabalha manualmente.
