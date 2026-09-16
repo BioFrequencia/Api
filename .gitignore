@@ -1,1 +1,4 @@
-config/config.phpvendor/
+config/config.php
+vendor/
+.env
+*.log
