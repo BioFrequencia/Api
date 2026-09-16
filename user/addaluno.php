@@ -37,7 +37,7 @@ $nomeAluno = trim($nomeAluno);
 try {
     // Confere se a sala informada realmente existe antes de tentar gravar.
     $verificaSala = $conexao->prepare("SELECT id_sala FROM tb_sala WHERE id_sala = ?");
-    $verificaSala->bindParam(1, $idSala);
+    $verificaSala->bindValue(1, $idSala);
     $verificaSala->execute();
 
     if ($verificaSala->rowCount() === 0) {
@@ -49,10 +49,10 @@ try {
          VALUES(?,?,?,?)
          RETURNING id_aluno"
     );
-    $insert->bindParam(1, $nomeAluno);
-    $insert->bindParam(2, $idSala);
-    $insert->bindParam(3, $dtaNascAluno);
-    $insert->bindParam(4, $generoAluno);
+    $insert->bindValue(1, $nomeAluno);
+    $insert->bindValue(2, $idSala);
+    $insert->bindValue(3, $dtaNascAluno);
+    $insert->bindValue(4, $generoAluno);
     $insert->execute();
 
     $novoAluno = $insert->fetch(PDO::FETCH_ASSOC);

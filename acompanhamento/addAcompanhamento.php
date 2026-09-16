@@ -31,7 +31,7 @@ if (!campoPreenchido($canal) || !in_array($canal, $canaisAceitos, true)) {
 
 try {
     $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     if ($verificaAluno->rowCount() === 0) {
         enviarErro("Aluno não encontrado.", 404);
@@ -42,10 +42,10 @@ try {
         VALUES (?, ?, ?, ?)
         RETURNING id_acompanhamento, data_registro
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $idCoordenacao);
-    $insert->bindParam(3, $canal);
-    $insert->bindParam(4, $observacao);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $idCoordenacao);
+    $insert->bindValue(3, $canal);
+    $insert->bindValue(4, $observacao);
     $insert->execute();
     $novo = $insert->fetch(PDO::FETCH_ASSOC);
 

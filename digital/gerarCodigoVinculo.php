@@ -24,7 +24,7 @@ if (!inteiroValido($idAluno)) {
 
 try {
     $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     if ($verificaAluno->rowCount() === 0) {
         enviarErro("Aluno não encontrado.", 404);
@@ -33,7 +33,7 @@ try {
     // Invalida qualquer código anterior ainda não usado para este aluno,
     // para não deixar vários códigos válidos circulando ao mesmo tempo.
     $invalida = $conexao->prepare("UPDATE tb_codigo_vinculo SET usado = TRUE WHERE id_aluno = ? AND usado = FALSE");
-    $invalida->bindParam(1, $idAluno);
+    $invalida->bindValue(1, $idAluno);
     $invalida->execute();
 
     $expiraEm = date('Y-m-d H:i:s', strtotime('+15 minutes'));
@@ -49,10 +49,10 @@ try {
         $codigo = gerarCodigoVinculo();
         $tentativas++;
         try {
-            $insert->bindParam(1, $idAluno);
-            $insert->bindParam(2, $idCoordenacao);
-            $insert->bindParam(3, $codigo);
-            $insert->bindParam(4, $expiraEm);
+            $insert->bindValue(1, $idAluno);
+            $insert->bindValue(2, $idCoordenacao);
+            $insert->bindValue(3, $codigo);
+            $insert->bindValue(4, $expiraEm);
             $insert->execute();
             break;
         } catch (PDOException $erro) {

@@ -21,7 +21,7 @@ try {
         // turma), então o filtro por turma é feito pelo nome - suficiente
         // aqui pois nome_sala já é único no schema atual.
         $stmt = $conexao->prepare("SELECT nome_sala FROM tb_sala WHERE id_sala = ?");
-        $stmt->bindParam(1, $idSala);
+        $stmt->bindValue(1, $idSala);
         $stmt->execute();
         $nomeSala = $stmt->fetchColumn();
         $todos = array_values(array_filter($todos, fn($a) => $a['turma'] === $nomeSala));

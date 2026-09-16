@@ -35,7 +35,7 @@ $justificado  = (isset($dados["justificado_atraso"]) && $dados["justificado_atra
 
 try {
     $verificaAluno = $conexao->prepare("SELECT nome_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     $aluno = $verificaAluno->fetch(PDO::FETCH_ASSOC);
 
@@ -48,12 +48,12 @@ try {
         VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?)
         RETURNING id_atraso, dta_atraso
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $idCoordenacao);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $idCoordenacao);
     $insert->bindValue(3, $dtaAtraso, $dtaAtraso === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
-    $insert->bindParam(4, $motivoAtraso);
-    $insert->bindParam(5, $justificado);
-    $insert->bindParam(6, $observacao);
+    $insert->bindValue(4, $motivoAtraso);
+    $insert->bindValue(5, $justificado);
+    $insert->bindValue(6, $observacao);
     $insert->execute();
 
     $novoAtraso = $insert->fetch(PDO::FETCH_ASSOC);

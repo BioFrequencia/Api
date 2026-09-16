@@ -28,7 +28,7 @@ try {
         LEFT JOIN tb_sala s ON s.id_sala = al.id_sala
         WHERE al.id_aluno = ?
     ");
-    $stmtAluno->bindParam(1, $idAluno);
+    $stmtAluno->bindValue(1, $idAluno);
     $stmtAluno->execute();
     $aluno = $stmtAluno->fetch(PDO::FETCH_ASSOC);
 
@@ -41,8 +41,8 @@ try {
         FROM tb_falta WHERE id_aluno = ? AND dta_falta >= ? AND dta_falta <= ?
         ORDER BY dta_falta DESC
     ");
-    $stmtFaltas->bindParam(1, $idAluno);
-    $stmtFaltas->bindParam(2, $dataInicio);
+    $stmtFaltas->bindValue(1, $idAluno);
+    $stmtFaltas->bindValue(2, $dataInicio);
     $stmtFaltas->bindValue(3, $dataFim . ' 23:59:59');
     $stmtFaltas->execute();
     $faltas = $stmtFaltas->fetchAll(PDO::FETCH_ASSOC);
@@ -52,8 +52,8 @@ try {
         FROM tb_atraso WHERE id_aluno = ? AND dta_atraso >= ? AND dta_atraso <= ?
         ORDER BY dta_atraso DESC
     ");
-    $stmtAtrasos->bindParam(1, $idAluno);
-    $stmtAtrasos->bindParam(2, $dataInicio);
+    $stmtAtrasos->bindValue(1, $idAluno);
+    $stmtAtrasos->bindValue(2, $dataInicio);
     $stmtAtrasos->bindValue(3, $dataFim . ' 23:59:59');
     $stmtAtrasos->execute();
     $atrasos = $stmtAtrasos->fetchAll(PDO::FETCH_ASSOC);

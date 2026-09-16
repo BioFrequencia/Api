@@ -53,7 +53,7 @@ $email = campoPreenchido($email) ? trim($email) : null;
 
 try {
     $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     if ($verificaAluno->rowCount() === 0) {
         enviarErro("Aluno não encontrado.", 404);
@@ -77,19 +77,19 @@ try {
         VALUES (?, ?, ?, ?, ?, ?)
         RETURNING id_responsavel
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $nome);
-    $insert->bindParam(3, $cpfDigitos);
-    $insert->bindParam(4, $telefoneDigitos);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $nome);
+    $insert->bindValue(3, $cpfDigitos);
+    $insert->bindValue(4, $telefoneDigitos);
     $insert->bindValue(5, $email, $email === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
-    $insert->bindParam(6, $genero);
+    $insert->bindValue(6, $genero);
     $insert->execute();
     $novo = $insert->fetch(PDO::FETCH_ASSOC);
     $idResponsavel = $novo["id_responsavel"];
 
     $vinculo = $conexao->prepare("INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel) VALUES (?, ?)");
-    $vinculo->bindParam(1, $idAluno);
-    $vinculo->bindParam(2, $idResponsavel);
+    $vinculo->bindValue(1, $idAluno);
+    $vinculo->bindValue(2, $idResponsavel);
     $vinculo->execute();
 
     $conexao->commit();

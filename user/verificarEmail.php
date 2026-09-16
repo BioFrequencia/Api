@@ -14,7 +14,7 @@ if (!campoPreenchido($email)) {
 
 try {
     $select = $conexao->prepare("SELECT email_coordenacao FROM tb_coordenacao WHERE email_coordenacao = ?");
-    $select->bindParam(1, $email);
+    $select->bindValue(1, $email);
     $select->execute();
     $coordenacao = $select->fetch(PDO::FETCH_ASSOC);
 

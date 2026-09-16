@@ -29,7 +29,7 @@ if (!embeddingValido($embeddingVivo)) {
 
 try {
     $stmt = $conexao->prepare("SELECT embedding FROM tb_biometria_facial WHERE id_aluno = ?");
-    $stmt->bindParam(1, $idAluno);
+    $stmt->bindValue(1, $idAluno);
     $stmt->execute();
     $registro = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -49,9 +49,9 @@ try {
         INSERT INTO tb_verificacao_facial (id_aluno, id_coordenacao, similaridade, correspondeu)
         VALUES (?, ?, ?, ?)
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $idCoordenacao);
-    $insert->bindParam(3, $similaridade);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $idCoordenacao);
+    $insert->bindValue(3, $similaridade);
     $insert->bindValue(4, $correspondeu ? 'true' : 'false');
     $insert->execute();
 

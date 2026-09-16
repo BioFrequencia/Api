@@ -26,7 +26,7 @@ if (!campoPreenchido($modelo)) {
 
 try {
     $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     if ($verificaAluno->rowCount() === 0) {
         enviarErro("Aluno não encontrado.", 404);
@@ -43,10 +43,10 @@ try {
             id_coordenacao = EXCLUDED.id_coordenacao,
             atualizado_em = NOW()
     ");
-    $upsert->bindParam(1, $idAluno);
-    $upsert->bindParam(2, $embeddingJson);
-    $upsert->bindParam(3, $modelo);
-    $upsert->bindParam(4, $idCoordenacao);
+    $upsert->bindValue(1, $idAluno);
+    $upsert->bindValue(2, $embeddingJson);
+    $upsert->bindValue(3, $modelo);
+    $upsert->bindValue(4, $idCoordenacao);
     $upsert->execute();
 
     enviarSucesso("Biometria facial cadastrada com sucesso.");

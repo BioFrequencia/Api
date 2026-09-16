@@ -20,7 +20,7 @@ try {
         "SELECT id_coordenacao, nome_coordenacao, email_coordenacao, senha_coordenacao
          FROM tb_coordenacao WHERE email_coordenacao = ?"
     );
-    $select->bindParam(1, $email);
+    $select->bindValue(1, $email);
     $select->execute();
     $coordenacao = $select->fetch(PDO::FETCH_ASSOC);
 
@@ -42,8 +42,8 @@ try {
     if ($verificacao['precisaAtualizar']) {
         $novoHash = password_hash($senha, PASSWORD_DEFAULT);
         $update = $conexao->prepare("UPDATE tb_coordenacao SET senha_coordenacao = ? WHERE id_coordenacao = ?");
-        $update->bindParam(1, $novoHash);
-        $update->bindParam(2, $coordenacao['id_coordenacao']);
+        $update->bindValue(1, $novoHash);
+        $update->bindValue(2, $coordenacao['id_coordenacao']);
         $update->execute();
     }
 

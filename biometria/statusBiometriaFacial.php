@@ -16,7 +16,7 @@ if (!inteiroValido($idAluno)) {
 
 try {
     $stmt = $conexao->prepare("SELECT modelo, data_cadastro, atualizado_em FROM tb_biometria_facial WHERE id_aluno = ?");
-    $stmt->bindParam(1, $idAluno);
+    $stmt->bindValue(1, $idAluno);
     $stmt->execute();
     $registro = $stmt->fetch(PDO::FETCH_ASSOC);
 

@@ -22,8 +22,8 @@ if (!inteiroValido($idAluno) || !inteiroValido($idResponsavel)) {
 
 try {
     $delete = $conexao->prepare("DELETE FROM tb_aluno_responsavel WHERE id_aluno = ? AND id_responsavel = ?");
-    $delete->bindParam(1, $idAluno);
-    $delete->bindParam(2, $idResponsavel);
+    $delete->bindValue(1, $idAluno);
+    $delete->bindValue(2, $idResponsavel);
     $delete->execute();
 
     if ($delete->rowCount() === 0) {

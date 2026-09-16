@@ -26,7 +26,7 @@ try {
         SET status_notificacao = 'enviada', data_envio_notificacao = NOW()
         WHERE id_notificacao = ? AND status_notificacao != 'enviada'
     ");
-    $update->bindParam(1, $idNotificacao);
+    $update->bindValue(1, $idNotificacao);
     $update->execute();
 
     if ($update->rowCount() === 0) {

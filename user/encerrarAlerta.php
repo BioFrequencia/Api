@@ -16,7 +16,7 @@ $idAluno = $dados["id_aluno"];
 
 try {
     $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     if ($verificaAluno->rowCount() === 0) {
         enviarErro("Aluno não encontrado.", 404);
@@ -30,8 +30,8 @@ try {
         VALUES (?, ?, NOW())
         ON CONFLICT (id_aluno) DO UPDATE SET id_coordenacao = EXCLUDED.id_coordenacao, encerrado_em = NOW()
     ");
-    $upsert->bindParam(1, $idAluno);
-    $upsert->bindParam(2, $idCoordenacao);
+    $upsert->bindValue(1, $idAluno);
+    $upsert->bindValue(2, $idCoordenacao);
     $upsert->execute();
 
     enviarSucesso("Alerta encerrado.");

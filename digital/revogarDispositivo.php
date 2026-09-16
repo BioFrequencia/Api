@@ -21,7 +21,7 @@ try {
         UPDATE tb_dispositivo_aluno SET ativo = FALSE, revogado_em = NOW()
         WHERE id_aluno = ? AND ativo = TRUE
     ");
-    $update->bindParam(1, $idAluno);
+    $update->bindValue(1, $idAluno);
     $update->execute();
 
     enviarSucesso("Dispositivo(s) revogado(s).", ["quantidade" => $update->rowCount()]);

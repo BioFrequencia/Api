@@ -28,8 +28,8 @@ try {
         SET confirmado_em = NOW(), id_coordenacao_confirmacao = ?
         WHERE id_checkin = ? AND confirmado_em IS NULL
     ");
-    $update->bindParam(1, $idCoordenacao);
-    $update->bindParam(2, $idCheckin);
+    $update->bindValue(1, $idCoordenacao);
+    $update->bindValue(2, $idCheckin);
     $update->execute();
 
     if ($update->rowCount() === 0) {

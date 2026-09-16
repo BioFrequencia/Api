@@ -20,14 +20,14 @@ if (!inteiroValido($idResponsavel)) {
 
 try {
     $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     if ($verificaAluno->rowCount() === 0) {
         enviarErro("Aluno não encontrado.", 404);
     }
 
     $verificaResponsavel = $conexao->prepare("SELECT id_responsavel FROM tb_responsavel WHERE id_responsavel = ?");
-    $verificaResponsavel->bindParam(1, $idResponsavel);
+    $verificaResponsavel->bindValue(1, $idResponsavel);
     $verificaResponsavel->execute();
     if ($verificaResponsavel->rowCount() === 0) {
         enviarErro("Responsável não encontrado.", 404);
@@ -37,8 +37,8 @@ try {
         INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel) VALUES (?, ?)
         ON CONFLICT (id_aluno, id_responsavel) DO NOTHING
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $idResponsavel);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $idResponsavel);
     $insert->execute();
 
     enviarSucesso("Responsável vinculado ao aluno.");

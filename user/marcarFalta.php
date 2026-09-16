@@ -29,7 +29,7 @@ $justificado = (isset($dados["justificado_falta"]) && $dados["justificado_falta"
 try {
     // Confere se o aluno existe antes de tentar gravar a falta
     $verificaAluno = $conexao->prepare("SELECT nome_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindParam(1, $idAluno);
+    $verificaAluno->bindValue(1, $idAluno);
     $verificaAluno->execute();
     $aluno = $verificaAluno->fetch(PDO::FETCH_ASSOC);
 
@@ -42,12 +42,12 @@ try {
         VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?)
         RETURNING id_falta, dta_falta
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $idCoordenacao);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $idCoordenacao);
     $insert->bindValue(3, $dtaFalta, $dtaFalta === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
-    $insert->bindParam(4, $motivoFalta);
-    $insert->bindParam(5, $justificado);
-    $insert->bindParam(6, $observacao);
+    $insert->bindValue(4, $motivoFalta);
+    $insert->bindValue(5, $justificado);
+    $insert->bindValue(6, $observacao);
     $insert->execute();
 
     $novaFalta = $insert->fetch(PDO::FETCH_ASSOC);

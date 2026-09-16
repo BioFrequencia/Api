@@ -47,7 +47,7 @@ try {
         FROM tb_dispositivo_aluno
         WHERE device_uuid = ? AND ativo = TRUE
     ");
-    $stmt->bindParam(1, $deviceUuid);
+    $stmt->bindValue(1, $deviceUuid);
     $stmt->execute();
     $dispositivo = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -65,9 +65,9 @@ try {
         VALUES (?, ?, ?, ?)
         RETURNING id_checkin
     ");
-    $insert->bindParam(1, $dispositivo['id_aluno']);
-    $insert->bindParam(2, $dispositivo['id_dispositivo']);
-    $insert->bindParam(3, $tipo);
+    $insert->bindValue(1, $dispositivo['id_aluno']);
+    $insert->bindValue(2, $dispositivo['id_dispositivo']);
+    $insert->bindValue(3, $tipo);
     $insert->bindValue(4, $momentoCheckin->format('Y-m-d H:i:s'));
     $insert->execute();
     $novo = $insert->fetch(PDO::FETCH_ASSOC);

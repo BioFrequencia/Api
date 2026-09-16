@@ -23,7 +23,7 @@ try {
         WHERE ar.id_aluno = ?
         ORDER BY r.nome_responsavel
     ");
-    $stmt->bindParam(1, $idAluno);
+    $stmt->bindValue(1, $idAluno);
     $stmt->execute();
     $responsaveis = $stmt->fetchAll(PDO::FETCH_ASSOC);
 

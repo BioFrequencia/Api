@@ -18,7 +18,7 @@
 function criarNotificacoesParaEvento(PDO $conexao, int $idAluno, string $mensagem): void {
     try {
         $stmt = $conexao->prepare("SELECT id_responsavel FROM tb_aluno_responsavel WHERE id_aluno = ?");
-        $stmt->bindParam(1, $idAluno);
+        $stmt->bindValue(1, $idAluno);
         $stmt->execute();
         $responsaveis = $stmt->fetchAll(PDO::FETCH_COLUMN);
 

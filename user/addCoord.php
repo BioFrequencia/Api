@@ -30,7 +30,7 @@ try {
     // no banco (ver tratamento do SQLSTATE 23505 abaixo); esta consulta
     // só existe para devolver uma mensagem amigável no caso comum.
     $verifica = $conexao->prepare("SELECT 1 FROM tb_coordenacao WHERE email_coordenacao = ?");
-    $verifica->bindParam(1, $email);
+    $verifica->bindValue(1, $email);
     $verifica->execute();
 
     if ($verifica->fetch()) {
@@ -40,9 +40,9 @@ try {
     $senhaHash = password_hash($senha, PASSWORD_DEFAULT);
 
     $insert = $conexao->prepare("INSERT INTO tb_coordenacao(nome_coordenacao,email_coordenacao,senha_coordenacao) VALUES(?,?,?)");
-    $insert->bindParam(1, $nome);
-    $insert->bindParam(2, $email);
-    $insert->bindParam(3, $senhaHash);
+    $insert->bindValue(1, $nome);
+    $insert->bindValue(2, $email);
+    $insert->bindValue(3, $senhaHash);
     $insert->execute();
 
     enviarSucesso("Usuário cadastrado com sucesso.");

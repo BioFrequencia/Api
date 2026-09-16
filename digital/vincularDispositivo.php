@@ -30,7 +30,7 @@ try {
         SELECT id_codigo, id_aluno FROM tb_codigo_vinculo
         WHERE codigo = ? AND usado = FALSE AND expira_em >= NOW()
     ");
-    $stmt->bindParam(1, $codigo);
+    $stmt->bindValue(1, $codigo);
     $stmt->execute();
     $registro = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -43,14 +43,14 @@ try {
     $conexao->beginTransaction();
 
     $marcaUsado = $conexao->prepare("UPDATE tb_codigo_vinculo SET usado = TRUE WHERE id_codigo = ?");
-    $marcaUsado->bindParam(1, $registro['id_codigo']);
+    $marcaUsado->bindValue(1, $registro['id_codigo']);
     $marcaUsado->execute();
 
     // Um dispositivo pode ser reaproveitado (mesmo device_uuid vinculado
     // de novo, ex.: reinstalou o app) - desativa o vínculo anterior desse
     // UUID e cria um novo, em vez de acumular linhas mortas.
     $desativaAnterior = $conexao->prepare("UPDATE tb_dispositivo_aluno SET ativo = FALSE, revogado_em = NOW() WHERE device_uuid = ? AND ativo = TRUE");
-    $desativaAnterior->bindParam(1, $deviceUuid);
+    $desativaAnterior->bindValue(1, $deviceUuid);
     $desativaAnterior->execute();
 
     $segredo = gerarSegredoDispositivo();
@@ -59,16 +59,16 @@ try {
         VALUES (?, ?, ?)
         RETURNING id_dispositivo
     ");
-    $insert->bindParam(1, $idAluno);
-    $insert->bindParam(2, $deviceUuid);
-    $insert->bindParam(3, $segredo);
+    $insert->bindValue(1, $idAluno);
+    $insert->bindValue(2, $deviceUuid);
+    $insert->bindValue(3, $segredo);
     $insert->execute();
     $novoDispositivo = $insert->fetch(PDO::FETCH_ASSOC);
 
     $conexao->commit();
 
     $stmtAluno = $conexao->prepare("SELECT nome_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $stmtAluno->bindParam(1, $idAluno);
+    $stmtAluno->bindValue(1, $idAluno);
     $stmtAluno->execute();
     $nomeAluno = $stmtAluno->fetchColumn();
 
