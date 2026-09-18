@@ -27,17 +27,32 @@ reais.
 
 ## Banco de dados
 
-O schema de produção (Supabase/PostgreSQL) já existe. Para montar um
-banco de testes local do zero:
+**Passo obrigatório, fácil de esquecer**: `dashboard.php`,
+`notificacao/listarNotificacoes.php` e `digital/*` usam tabelas
+(`tb_acompanhamento`, `tb_alerta_encerrado`, `tb_biometria_facial`,
+`tb_verificacao_facial`, `tb_codigo_vinculo`, `tb_dispositivo_aluno`,
+`tb_checkin_biometrico`) que **não existem** no schema original do
+Supabase - elas foram criadas só durante este projeto. Sem rodar a
+migração abaixo no banco de produção, esses endpoints (e as telas do
+desktop/site que dependem deles) respondem "Erro no servidor" (500). Ver
+"Causa raiz de dias de erro 500" em `AUDITORIA.md` para o diagnóstico
+completo (isto já aconteceu de verdade e ficou sem solução por dias).
+
+Rode `database/migracao-completa.sql` inteiro no SQL Editor do Supabase
+(ou via `psql`) contra o banco de produção - é seguro mesmo que algumas
+tabelas já existam (todo `CREATE TABLE` usa `IF NOT EXISTS`, e o único
+`ALTER TABLE` está protegido contra "já existe"; testado rodando duas
+vezes seguidas sem erro):
 
 ```bash
-psql -U seu_usuario -d seu_banco -f database/migrations/001_schema_base.sql
-psql -U seu_usuario -d seu_banco -f database/migrations/002_acompanhamento_alertas.sql
-psql -U seu_usuario -d seu_banco -f database/migrations/003_biometria.sql
+psql -U seu_usuario -d seu_banco -f database/migracao-completa.sql
 ```
 
-Em produção, rode só as migrações `002` e `003` (o `001` documenta o que
-já existe, não recrie).
+Alternativamente, os arquivos individuais em `database/migrations/`
+(`001_schema_base.sql` é só documentação do schema original - não
+precisa rodar; `002_acompanhamento_alertas.sql` e `003_biometria.sql`
+são os que faltam; `004_responsavel_cpf_unique.sql` é opcional, ver o
+comentário no próprio arquivo antes de rodar).
 
 ## Rodando localmente
 

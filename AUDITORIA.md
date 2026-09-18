@@ -396,3 +396,50 @@ responsáveis/notificações, que está resolvido agora. Adicionado:
 
 6. Nenhum provedor real de notificação (email/SMS/push) integrado -
    `tb_notificacao` é uma fila que a coordenação trabalha manualmente.
+
+## Causa raiz de dias de erro 500: migrações nunca rodadas no banco de produção
+
+O usuário reportou (com prints do DevTools) `500 Internal Server Error`
+persistente em `user/dashboard.php`, `notificacao/listarNotificacoes.php`
+e `digital/listarCheckinsPendentes.php`, "já fazia dias".
+
+**Causa raiz**: `database/migrations/002_acompanhamento_alertas.sql` e
+`003_biometria.sql` criam tabelas (`tb_acompanhamento`,
+`tb_alerta_encerrado`, `tb_biometria_facial`, `tb_verificacao_facial`,
+`tb_codigo_vinculo`, `tb_dispositivo_aluno`, `tb_checkin_biometrico`)
+que só existiram no banco de testes usado para desenvolver a API nesta
+sessão - nunca foram aplicadas no banco de produção (Supabase) do
+usuário. `dashboard.php` usa `tb_acompanhamento`/`tb_alerta_encerrado`
+(via `buscarAlertas()`), `listarCheckinsPendentes.php` usa
+`tb_checkin_biometrico` - qualquer consulta a uma tabela inexistente
+lança `PDOException`, capturada por `enviarErro(..., 500, $erro)`, que
+intencionalmente esconde o detalhe da exceção do cliente (só loga no
+servidor) - por isso o navegador só mostrava "Erro no servidor", nunca
+"relation does not exist".
+
+**Correção entregue**: `database/migracao-completa.sql` (na raiz do
+projeto) - as migrações 001+002+003 concatenadas num único script
+idempotente (`CREATE TABLE IF NOT EXISTS` em tudo; o `ALTER TABLE ...
+ADD CONSTRAINT` de `tb_coordenacao` envolto num `DO $$ ... EXCEPTION
+WHEN duplicate_object OR duplicate_table THEN NULL; END $$` para não
+falhar se a constraint já existir). Verificado rodando de verdade contra
+Postgres local, três vezes: (1) banco vazio - cria as 15 tabelas sem
+erro; (2) rodado uma SEGUNDA vez sobre o mesmo banco - nenhum erro
+(idempotência real, não só teórica: a primeira versão do script, sem o
+`duplicate_table` no `WHEN`, falhava nesse re-run porque o Postgres
+levanta `duplicate_table`, não `duplicate_object`, quando o índice
+implícito da UNIQUE constraint já existe - bug pego só testando, não
+lendo); (3) simulando o cenário real - banco só com o schema 001 (como
+o do usuário), migração aplicada por cima, e as 3 chamadas que davam
+500 (`dashboard.php`, `listarNotificacoes.php`,
+`listarCheckinsPendentes.php`) testadas de ponta a ponta contra esse
+banco migrado: as três voltaram `200` com dados reais.
+
+**Nota para quando o usuário rodar isto**: se depois de rodar a
+migração aparecer um erro NOVO tipo "permission denied for table
+tb_acompanhamento" (não "relation does not exist"), é só a role usada
+pela API não ter privilégio nas tabelas novas (aconteceu no meu teste
+local, onde a tabela foi criada por um usuário diferente do que a API
+usa) - resolve com `GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public
+TO <role_da_api>;`. Não deve acontecer no Supabase se a API já conecta
+com a mesma role usada no SQL Editor, mas fica documentado caso apareça.
