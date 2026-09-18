@@ -25,6 +25,18 @@ Edite `config/config.php` com os dados reais do banco e um
 Esse arquivo é ignorado pelo git de propósito - nunca commite credenciais
 reais.
 
+**Se `DB_HOST` for do Supabase, use o *connection pooler* (PgBouncer),
+não a conexão direta.** Cada requisição desta API abre sua própria
+conexão PDO; o site chega a disparar 2-6 requisições ao mesmo tempo ao
+carregar uma única tela, e a conexão direta do Supabase tem um limite
+baixo de conexões simultâneas (mais apertado ainda no plano gratuito) -
+isso já causou 500 intermitentes de verdade num teste real (ver
+AUDITORIA.md). No painel do Supabase: Project Settings → Database →
+Connection pooling → copie a *connection string* do modo "Transaction"
+(porta `6543`) e use o host/porta/usuário de lá em `DB_HOST`/`DB_PORT`/
+`DB_USER` (o usuário muda de formato, normalmente
+`postgres.<referência-do-projeto>`).
+
 ## Banco de dados
 
 **Passo obrigatório, fácil de esquecer**: `dashboard.php`,
