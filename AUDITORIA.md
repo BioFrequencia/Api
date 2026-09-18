@@ -443,3 +443,67 @@ local, onde a tabela foi criada por um usuário diferente do que a API
 usa) - resolve com `GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public
 TO <role_da_api>;`. Não deve acontecer no Supabase se a API já conecta
 com a mesma role usada no SQL Editor, mas fica documentado caso apareça.
+
+## Fix: 500 intermitente de verdade - PDO + connection pooler em modo Transaction
+
+Depois de: (1) rodar a migração, (2) o site já reduzir o número de
+chamadas simultâneas, e (3) o usuário trocar `DB_HOST` pro connection
+pooler do Supabase como eu tinha recomendado - o problema continuou,
+agora até em endpoints simples (`listarSalas.php`, que só lê
+`tb_sala`), com o MESMO endpoint às vezes voltando 200 e às vezes 500
+sem nenhum padrão visível no navegador.
+
+**Tentei reproduzir contra o banco real do usuário e não consegui por
+uma limitação do meu próprio ambiente**: este sandbox não tem acesso de
+rede a hosts arbitrários - confirmado tentando abrir uma conexão TCP
+direta na porta 6543 do pooler (timeout) e até um HTTPS simples pra
+`supabase.com` (rejeitado pela política de rede do ambiente, erro
+`connect_rejected`). Não é um problema de credencial; é o sandbox que
+não tem internet geral, só acesso a destinos específicos liberados.
+
+**Causa raiz (diagnóstico, não confirmado ao vivo contra o banco do
+usuário - só contra um banco local, ver abaixo)**: o usuário está usando
+a porta `6543` do pooler do Supabase, que é o PgBouncer em modo
+**Transaction** - nesse modo, cada instrução SQL de uma "sessão" pode
+ser servida por uma conexão de backend Postgres diferente. O PDO, por
+padrão, usa *prepared statements* de verdade no servidor
+(`PQprepare`/`PQexecPrepared`); se o `prepare()` for atendido por um
+backend e o `execute()` seguinte cair em outro (coisa que o modo
+Transaction pode fazer a qualquer momento), o Postgres não encontra
+aquele prepared statement e retorna erro - capturado como
+`PDOException` por cada endpoint, virando exatamente o "Erro no
+servidor" (500) relatado, de forma imprevisível porque depende de qual
+backend o PgBouncer escolhe a cada instrução. Esse é um problema
+documentado e conhecido de PDO + PgBouncer em modo Transaction, não
+específico deste projeto.
+
+**Correção**: `database/conexao.php` agora passa
+`PDO::ATTR_EMULATE_PREPARES => true` na conexão. Com isso o PDO nunca
+cria um prepared statement de verdade no servidor - monta o SQL final
+(com os valores já escapados contra injeção, a proteção contra SQL
+injection continua intacta) inteiramente no PHP antes de mandar pro
+banco, então não depende de nenhum estado sobrevivendo entre duas idas
+ao Postgres. Seguro em qualquer tipo de conexão (direta, pooler em modo
+Session, ou Transaction) - só deixa de usar uma otimização que não faz
+diferença de performance perceptível nesta API.
+
+**O que foi testado de verdade**: `php tests/helpers_test.php` (50/51 -
+a falha é uma pendência antiga não relacionada, sobre cálculo de faltas
+consecutivas num fim de semana, não sobre conexão) e as 7 chamadas que
+apareceram nos prints do usuário (`dashboard`, `filtroAluno`, `alertas`,
+`listarSalas`, `listarAcompanhamento`, `listarNotificacoes`,
+`listarCheckinsPendentes`), cada uma repetida 3 vezes seguidas, todas
+200 - mas isso foi contra um Postgres local com conexão direta (sem
+PgBouncer no meio), porque não consigo alcançar o banco do usuário
+daqui. Ou seja: **confirmei que a mudança não quebra nada, mas não
+consegui confirmar ao vivo que ela resolve o problema específico do
+usuário** - só a análise de causa raiz aponta fortemente pra isso.
+Pedido ao usuário pra testar esta versão e confirmar.
+
+**Nota de segurança**: o usuário colou a senha real do banco (Supabase)
+em texto puro no chat pra que eu pudesse tentar testar. Removi o
+`config.php` com essas credenciais do disco assim que terminei de usar
+e ele nunca foi commitado (está no `.gitignore`) - mas como a senha
+ficou registrada na conversa, vale considerar trocá-la depois (Supabase
+→ Database → Reset database password) como boa prática, não porque
+algo específico tenha vazado daqui.
