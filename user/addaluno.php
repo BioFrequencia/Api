@@ -4,10 +4,11 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 // Só coordenadores autenticados podem cadastrar alunos.
-autenticar();
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -36,9 +37,13 @@ if (!campoPreenchido($generoAluno) || !in_array($generoAluno, $generosAceitos, t
 $nomeAluno = trim($nomeAluno);
 
 try {
-    // Confere se a sala informada realmente existe antes de tentar gravar.
-    $verificaSala = $conexao->prepare("SELECT id_sala FROM tb_sala WHERE id_sala = ?");
+    // A turma precisa existir E pertencer à escola de quem está
+    // cadastrando - sem a segunda parte, bastaria mandar o id de uma
+    // turma de outra escola para inserir um aluno no cadastro alheio.
+    $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
+    $verificaSala = $conexao->prepare("SELECT id_sala FROM tb_sala WHERE id_sala = ? AND id_escola = ?");
     $verificaSala->bindValue(1, $idSala);
+    $verificaSala->bindValue(2, $idEscola);
     $verificaSala->execute();
 
     if ($verificaSala->rowCount() === 0) {

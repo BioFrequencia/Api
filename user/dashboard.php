@@ -5,9 +5,10 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/frequencia.php';
 require_once __DIR__ . '/../helpers/alertas.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
-autenticar();
+$idCoordenacao = autenticar();
 
 /**
  * Frequência "da rede" (ou de uma turma) num intervalo: 100% menos a
@@ -94,7 +95,7 @@ try {
         ];
     }
 
-    $alertas = buscarAlertas($conexao);
+    $alertas = buscarAlertas($conexao, escolaDaCoordenacao($conexao, $idCoordenacao));
     $alertasAltaPrioridade = count(array_filter($alertas, fn($a) => $a['prioridade'] === 'alta'));
 
     // Contatos pendentes: alunos com alerta ativo sem nenhum registro de

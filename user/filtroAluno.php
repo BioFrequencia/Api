@@ -4,12 +4,13 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/frequencia.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 // Faltava aqui: este endpoint devolve nome, turma, faltas e atrasos de
 // todos os alunos e ficou de fora quando autenticação foi adicionada aos
 // outros endpoints de aluno - dados de alunos não deveriam ficar públicos.
-autenticar();
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -32,7 +33,7 @@ try {
                COALESCE(f.qtd_faltas, 0)  AS qtd_faltas,
                COALESCE(a.qtd_atrasos, 0) AS qtd_atrasos
         FROM tb_aluno al
-        LEFT JOIN tb_sala s ON s.id_sala = al.id_sala
+        JOIN tb_sala s ON s.id_sala = al.id_sala
         LEFT JOIN (
             SELECT id_aluno, COUNT(*) AS qtd_faltas
             FROM tb_falta
@@ -45,9 +46,12 @@ try {
             WHERE dta_atraso >= ?
             GROUP BY id_aluno
         ) a ON a.id_aluno = al.id_aluno
-        WHERE 1 = 1
+        WHERE s.id_escola = ?
     ";
-    $params = [$primeiroDiaMes, $primeiroDiaMes];
+    // O aluno pertence à escola pela turma: o JOIN com tb_sala deixou de
+    // ser LEFT justamente para este filtro valer sempre.
+    $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
+    $params = [$primeiroDiaMes, $primeiroDiaMes, $idEscola];
 
     if (!empty($busca)) {
         $sql .= " AND (al.nome_aluno ILIKE ? OR al.id_aluno::text = ?)";

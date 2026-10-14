@@ -28,7 +28,7 @@ require_once __DIR__ . '/frequencia.php';
  * evento no dia seguinte (ou depois) faz o alerta correspondente
  * reaparecer sozinho, sem precisar de nenhuma ação manual.
  */
-function buscarAlertas(PDO $conexao): array {
+function buscarAlertas(PDO $conexao, int $idEscola): array {
     $primeiroDiaMes = date('Y-m-01');
     $seteDiasAtras = date('Y-m-d', strtotime('-7 days'));
     $sessentaDiasAtras = date('Y-m-d', strtotime('-60 days'));
@@ -37,15 +37,16 @@ function buscarAlertas(PDO $conexao): array {
         SELECT al.id_aluno, al.nome_aluno, s.nome_sala,
                COALESCE(f.qtd_faltas, 0) AS qtd_faltas
         FROM tb_aluno al
-        LEFT JOIN tb_sala s ON s.id_sala = al.id_sala
+        JOIN tb_sala s ON s.id_sala = al.id_sala
         LEFT JOIN (
             SELECT id_aluno, COUNT(*) AS qtd_faltas
             FROM tb_falta
             WHERE dta_falta >= ?
             GROUP BY id_aluno
         ) f ON f.id_aluno = al.id_aluno
+        WHERE s.id_escola = ?
     ");
-    $stmt->execute([$primeiroDiaMes]);
+    $stmt->execute([$primeiroDiaMes, $idEscola]);
     $alunos = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     // Datas de falta (para calcular consecutivas) e atrasos recentes,

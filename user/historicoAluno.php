@@ -4,13 +4,14 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
  * Histórico de faltas e atrasos de UM aluno num período - usado pelo
  * relatório "Frequência individual por período" no desktop.
  */
-autenticar();
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -23,13 +24,15 @@ if (!inteiroValido($idAluno)) {
 }
 
 try {
+    // Só o histórico de aluno da própria escola.
     $stmtAluno = $conexao->prepare("
         SELECT al.id_aluno, al.nome_aluno, s.nome_sala
         FROM tb_aluno al
-        LEFT JOIN tb_sala s ON s.id_sala = al.id_sala
-        WHERE al.id_aluno = ?
+        JOIN tb_sala s ON s.id_sala = al.id_sala
+        WHERE al.id_aluno = ? AND s.id_escola = ?
     ");
     $stmtAluno->bindValue(1, $idAluno);
+    $stmtAluno->bindValue(2, escolaDaCoordenacao($conexao, $idCoordenacao));
     $stmtAluno->execute();
     $aluno = $stmtAluno->fetch(PDO::FETCH_ASSOC);
 

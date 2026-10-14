@@ -4,9 +4,10 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/alertas.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
-autenticar();
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -15,7 +16,7 @@ $tipo       = $dados["tipo"] ?? null;         // faltas | frequencia | atrasos (
 $prioridade = $dados["prioridade"] ?? null;   // alta | media | baixa (opcional)
 
 try {
-    $todos = buscarAlertas($conexao);
+    $todos = buscarAlertas($conexao, escolaDaCoordenacao($conexao, $idCoordenacao));
 
     if (!empty($idSala)) {
         // id_sala não vem no retorno de buscarAlertas() (só o nome da

@@ -5,6 +5,7 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/notificacao.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 // O id da coordenação agora vem do token validado, não mais do corpo da
@@ -29,8 +30,16 @@ $justificado = (isset($dados["justificado_falta"]) && $dados["justificado_falta"
 
 try {
     // Confere se o aluno existe antes de tentar gravar a falta
-    $verificaAluno = $conexao->prepare("SELECT nome_aluno FROM tb_aluno WHERE id_aluno = ?");
+    // O aluno precisa ser da escola de quem está lançando: sem isso,
+    // bastaria mandar um id_aluno de outra escola no corpo da requisição.
+    $verificaAluno = $conexao->prepare("
+        SELECT a.nome_aluno
+        FROM tb_aluno a
+        JOIN tb_sala s ON s.id_sala = a.id_sala
+        WHERE a.id_aluno = ? AND s.id_escola = ?
+    ");
     $verificaAluno->bindValue(1, $idAluno);
+    $verificaAluno->bindValue(2, escolaDaCoordenacao($conexao, $idCoordenacao));
     $verificaAluno->execute();
     $aluno = $verificaAluno->fetch(PDO::FETCH_ASSOC);
 
