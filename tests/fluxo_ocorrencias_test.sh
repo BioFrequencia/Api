@@ -6,6 +6,19 @@ export PGHOST=/tmp
 ok(){ echo "  ✓ $1"; }
 falha(){ echo "  ✗ $1"; exit 1; }
 
+# O teste confere contagens exatas (ex.: "tb_falta ainda vazia"), então
+# precisa partir sempre do mesmo estado - sem isto, rodar duas vezes ou
+# rodar depois de um teste manual faz asserções corretas falharem.
+echo "=== Limpando estado de execuções anteriores ==="
+$PG -c "DELETE FROM tb_ocorrencia_pendente;" >/dev/null
+$PG -c "DELETE FROM tb_notificacao;" >/dev/null
+$PG -c "DELETE FROM tb_falta;" >/dev/null
+$PG -c "DELETE FROM tb_atraso;" >/dev/null
+$PG -c "DELETE FROM tb_alerta_nivel;" >/dev/null
+$PG -c "DELETE FROM tb_checkin_biometrico;" >/dev/null
+$PG -c "DELETE FROM tb_dispositivo_aluno;" >/dev/null
+$PG -c "DELETE FROM tb_codigo_vinculo;" >/dev/null
+
 echo "=== Preparo: segunda escola + conta ==="
 $PG -c "INSERT INTO tb_escola (nome_escola) SELECT 'Escola Vizinha' WHERE NOT EXISTS (SELECT 1 FROM tb_escola WHERE nome_escola='Escola Vizinha');" >/dev/null
 ESC2=$($PG -c "SELECT id_escola FROM tb_escola WHERE nome_escola='Escola Vizinha';")
