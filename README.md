@@ -113,3 +113,48 @@ tests/            testes unitários
   propósito - é um segredo simétrico necessário para verificar a
   assinatura HMAC dos check-ins, não uma senha de usuário. Considere
   criptografar essa coluna em repouso (pgcrypto) em produção.
+
+## Variáveis de ambiente
+
+| Variável | Obrigatória | Para quê |
+|---|---|---|
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | sim | Conexão com o PostgreSQL. No Docker, o entrypoint gera `config/config.php` a partir delas. |
+| `JWT_SECRET_KEY` | sim | Assina os tokens de login. Use uma string longa e aleatória, diferente em cada ambiente. |
+| `CORS_ORIGENS` | não | Origens liberadas, separadas por vírgula (ex.: `https://biofrequencia.vercel.app`). Sem ela valem as origens locais de desenvolvimento. |
+| `PORT` | não | Porta do Apache no container (padrão 8080). O Render define sozinho. |
+| `SMTP_REMETENTE` | não | Remetente dos e-mails de nível máximo de alerta. Sem ela, o aviso fica na fila em vez de ser enviado. |
+| `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | não | Provedor de WhatsApp. Sem eles, a fila guarda um link `wa.me` pronto para a coordenação clicar. |
+
+## Docker
+
+```bash
+docker build -t biofrequencia-api .
+
+docker run -p 8080:8080 \
+  -e DB_HOST=seu-host -e DB_PORT=5432 -e DB_NAME=biofrequencia \
+  -e DB_USER=postgres -e DB_PASSWORD='sua-senha' \
+  -e JWT_SECRET_KEY='chave-longa-e-aleatoria' \
+  -e CORS_ORIGENS=https://seu-site.com \
+  biofrequencia-api
+
+curl http://localhost:8080/health.php
+```
+
+O container recusa subir se faltar alguma variável obrigatória — é melhor
+falhar na inicialização do que responder erro na primeira requisição.
+
+## Quando o navegador acusar erro de CORS
+
+Confira primeiro se não é a URL da API que está errada. Um caminho
+inexistente devolve 404, e um 404 sem cabeçalho de CORS aparece no
+console como "blocked by CORS policy". Teste direto:
+
+```bash
+curl -i -X POST https://sua-api/health.php -H 'Origin: https://seu-site.com'
+```
+
+- Resposta com `Access-Control-Allow-Origin`: o CORS está certo.
+- Resposta 404 com `{"sucesso":false,...}`: a URL base está errada.
+- Sem `Access-Control-Allow-Origin`: a origem do site não está em `CORS_ORIGENS`.
+- Site em HTTPS chamando API em HTTP: o navegador bloqueia por conteúdo
+  misto e a mensagem no console parece CORS. Publique a API em HTTPS.

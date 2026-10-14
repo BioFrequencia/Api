@@ -1,0 +1,143 @@
+name: API
+
+# Valida a BioFrequenciaApi: sintaxe, testes das regras de cálculo,
+# migrações contra um PostgreSQL de verdade e build da imagem Docker.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validar:
+    name: Lint, testes e migrações
+    runs-on: ubuntu-latest
+
+    # PostgreSQL real em vez de mock: o que mais quebrou neste projeto
+    # foram as migrações nunca rodadas no banco e diferenças de SQL, e
+    # isso só aparece executando contra o banco.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: biofrequencia_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_pgsql, mbstring, json
+          coverage: none
+
+      - name: Verificar sintaxe de todos os PHP
+        run: |
+          erros=0
+          while IFS= read -r arquivo; do
+            php -l "$arquivo" > /dev/null || { echo "ERRO de sintaxe: $arquivo"; erros=1; }
+          done < <(find . -name '*.php' -not -path './vendor/*')
+          exit $erros
+
+      - name: Instalar dependências
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Aplicar migrações
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d biofrequencia_ci -v ON_ERROR_STOP=1 \
+            -f database/migracao-completa.sql
+          for migracao in database/migrations/*.sql; do
+            echo "-> $migracao"
+            psql -h localhost -U postgres -d biofrequencia_ci -v ON_ERROR_STOP=1 -f "$migracao"
+          done
+
+      - name: Migrações são idempotentes (rodar duas vezes não quebra)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for migracao in database/migrations/*.sql; do
+            psql -h localhost -U postgres -d biofrequencia_ci -v ON_ERROR_STOP=1 -f "$migracao"
+          done
+
+      - name: Testes das regras de cálculo
+        run: php tests/helpers_test.php
+
+      - name: Subir a API e testar o fluxo de ocorrências
+        env:
+          PGPASSWORD: postgres
+        run: |
+          cat > config/config.php <<'PHP'
+          <?php
+          define("DB_HOST","localhost");
+          define("DB_NAME","biofrequencia_ci");
+          define("DB_USER","postgres");
+          define("DB_PASSWORD","postgres");
+          define("DB_PORT","5432");
+          define("JWT_SECRET_KEY","chave-apenas-para-ci-nao-usar-em-producao");
+          PHP
+          php -S 127.0.0.1:8080 -t . > /tmp/api.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8080/health.php > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8080/health.php | tee /dev/stderr | grep -q '"sucesso":true'
+          bash tests/fluxo_ocorrencias_test.sh
+
+      - name: Nenhum segredo versionado
+        run: |
+          # config/config.php é gerado em tempo de execução e está no
+          # .gitignore; se aparecer rastreado pelo git, é vazamento.
+          if git ls-files --error-unmatch config/config.php 2>/dev/null; then
+            echo "ERRO: config/config.php está versionado"; exit 1
+          fi
+          echo "ok: nenhuma credencial versionada"
+
+  docker:
+    name: Build da imagem Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: biofrequencia-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Container sobe e responde
+        run: |
+          # Sem banco acessível o health devolve 503 - o que se verifica
+          # aqui é que o container inicia, lê as variáveis e responde.
+          docker run -d --name api -p 8080:8080 \
+            -e PORT=8080 -e DB_HOST=localhost -e DB_NAME=x -e DB_USER=x \
+            -e DB_PASSWORD=x -e DB_PORT=5432 -e JWT_SECRET_KEY=x \
+            biofrequencia-api:ci
+          sleep 10
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health.php)
+          docker logs api
+          # 200 (com banco) ou 503 (sem banco) provam que PHP respondeu.
+          case "$codigo" in
+            200|503) echo "ok: container respondeu HTTP $codigo" ;;
+            *) echo "ERRO: container respondeu HTTP $codigo"; exit 1 ;;
+          esac
+      - name: Falha sem variáveis obrigatórias
+        run: |
+          if docker run --rm biofrequencia-api:ci 2>&1 | grep -q "variáveis de ambiente obrigatórias"; then
+            echo "ok: recusa subir sem configuração"
+          else
+            echo "ERRO: subiu sem as variáveis obrigatórias"; exit 1
+          fi
