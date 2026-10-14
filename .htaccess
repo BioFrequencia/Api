@@ -1,33 +1,28 @@
 # Apache (XAMPP e a imagem Docker desta API).
 #
-# Os cabeçalhos de CORS do PHP (helpers/cors.php) só existem quando o PHP
-# chega a rodar. Quando a URL está errada, o Apache devolve o 404 dele
-# sozinho, sem passar pelo PHP - e aí o navegador não vê cabeçalho de CORS
-# nenhum e reporta "blocked by CORS policy" em vez de "404". Foi isso que
-# fez horas de depuração irem para o lugar errado.
+# Quando a URL está errada, o Apache devolve o 404 dele sozinho, sem
+# passar pelo PHP - e sem cabeçalho de CORS o navegador reporta "blocked
+# by CORS policy" em vez de "404". Foi isso que fez horas de depuração
+# irem para o lugar errado.
 #
-# O "always" abaixo é o que faz o cabeçalho valer também nas respostas de
-# erro geradas pelo próprio Apache (sem ele, só valem nas respostas 2xx).
-<IfModule mod_headers.c>
-    Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS"
-    Header always set Access-Control-Allow-Headers "Content-Type, Authorization"
+# A correção NÃO é o Apache devolver o cabeçalho por conta própria: ele
+# não conhece a allowlist, então refletiria qualquer origem e anularia a
+# restrição feita em helpers/cors.php. Em vez disso, os erros são
+# roteados para um PHP que aplica exatamente a mesma regra de CORS do
+# resto da API - uma fonte de verdade só.
+ErrorDocument 404 /erro.php
+ErrorDocument 403 /erro.php
+ErrorDocument 500 /erro.php
 
-    # Em erro gerado pelo Apache (404/500 antes do PHP), devolve a origem
-    # da requisição para o navegador conseguir ler o status de verdade.
-    SetEnvIf Origin "^(https?://.+)$" ORIGEM_CORS=$1
-    Header always set Access-Control-Allow-Origin "%{ORIGEM_CORS}e" env=ORIGEM_CORS
-    Header always set Vary "Origin"
-</IfModule>
-
-# Preflight nunca deve cair em regra de autenticação do servidor.
 <IfModule mod_rewrite.c>
     RewriteEngine On
+    # Preflight nunca deve cair em regra de autenticação do servidor.
     RewriteCond %{REQUEST_METHOD} OPTIONS
     RewriteRule ^(.*)$ $1 [R=204,L]
 </IfModule>
 
 # Nunca servir configuração, dependências ou histórico por HTTP.
-<FilesMatch "^(config\.php|composer\.(json|lock)|\.env.*)$">
+<FilesMatch "^(config\.php|composer\.(json|lock)|\.env.*|Dockerfile|docker-entrypoint\.sh)$">
     Require all denied
 </FilesMatch>
 RedirectMatch 404 /\.git

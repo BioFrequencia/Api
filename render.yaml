@@ -1,0 +1,38 @@
+# Render - infraestrutura declarada. Com este arquivo na raiz do
+# repositório, o Render cria o serviço com as configurações abaixo
+# (Blueprint). As variáveis marcadas sync:false NÃO ficam no repositório:
+# você as preenche no painel, em Environment.
+services:
+  - type: web
+    name: biofrequencia-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # A API responde 200 aqui só quando o banco também está acessível,
+    # então o Render não manda tráfego para um container meio pronto.
+    healthCheckPath: /health.php
+    envVars:
+      # O Render injeta a porta; o entrypoint configura o Apache com ela.
+      - key: PORT
+        value: 8080
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true   # o Render gera uma chave aleatória
+      - key: CORS_ORIGENS
+        sync: false           # ex.: https://biofrequencia.vercel.app
+      # Opcionais - sem elas o contato de nível máximo fica na fila.
+      - key: SMTP_REMETENTE
+        sync: false
+      - key: WHATSAPP_API_URL
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false

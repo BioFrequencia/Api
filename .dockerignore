@@ -1,0 +1,8 @@
+.git
+.github
+vendor
+config/config.php
+.env
+*.log
+AUDITORIA.md
+tests
