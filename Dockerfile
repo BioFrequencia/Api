@@ -9,10 +9,13 @@
 FROM php:8.3-apache
 
 # pdo_pgsql é a única extensão que falta na imagem base; libpq-dev é
-# necessária para compilá-la. O apt é limpo na mesma camada para a
+# necessária para compilá-la. unzip é o que o Composer usa para extrair
+# os pacotes: a imagem base não tem unzip nem a extensão zip, e sem
+# nenhum dos dois o "composer install" abaixo falhava (era o motivo do
+# build da imagem quebrar no CI). O apt é limpo na mesma camada para a
 # imagem não carregar o cache.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq-dev \
+ && apt-get install -y --no-install-recommends libpq-dev unzip \
  && docker-php-ext-install pdo_pgsql \
  && apt-get purge -y --auto-remove \
  && rm -rf /var/lib/apt/lists/*

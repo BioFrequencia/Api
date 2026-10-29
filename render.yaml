@@ -2,19 +2,28 @@
 # repositório, o Render cria o serviço com as configurações abaixo
 # (Blueprint). As variáveis marcadas sync:false NÃO ficam no repositório:
 # você as preenche no painel, em Environment.
+#
+# Sem preview por pull request de propósito: só existe um banco (o de
+# produção, no Supabase), e uma API de preview gravaria nele. Os PRs são
+# validados pelo CI (.github/workflows/api.yml), que sobe a imagem Docker
+# contra um PostgreSQL descartável.
 services:
   - type: web
     name: biofrequencia-api
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    # A API responde 200 aqui só quando o banco também está acessível,
-    # então o Render não manda tráfego para um container meio pronto.
+    # Deploy automático só depois do CI passar no commit.
+    autoDeployTrigger: checksPass
+    # A API responde 200 aqui só quando o banco está acessível E tem as
+    # migrações que o código usa; senão o Render não coloca a versão nova
+    # no ar e a anterior continua atendendo.
     healthCheckPath: /health.php
     envVars:
       # O Render injeta a porta; o entrypoint configura o Apache com ela.
       - key: PORT
         value: 8080
+      # Use o connection pooler do Supabase (porta 6543), ver README.
       - key: DB_HOST
         sync: false
       - key: DB_PORT
@@ -28,7 +37,11 @@ services:
       - key: JWT_SECRET_KEY
         generateValue: true   # o Render gera uma chave aleatória
       - key: CORS_ORIGENS
-        sync: false           # ex.: https://biofrequencia.vercel.app
+        sync: false           # ex.: https://site-xyz.vercel.app,https://site-git-*-equipe.vercel.app
+      # Código que quem vai criar uma conta de coordenação precisa
+      # informar no cadastro. Sem ele, o cadastro pelo site fica desligado.
+      - key: CADASTRO_CODIGO_ACESSO
+        sync: false
       # Opcionais - sem elas o contato de nível máximo fica na fila.
       - key: SMTP_REMETENTE
         sync: false
