@@ -6,6 +6,7 @@ require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../helpers/notificacao.php';
+require_once __DIR__ . '/../helpers/registroEvento.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
@@ -40,7 +41,7 @@ if (!in_array($decisao, ["aprovar", "rejeitar"], true)) {
 
 try {
     $busca = $conexao->prepare("
-        SELECT o.id_ocorrencia, o.id_aluno, o.tipo, o.motivo, o.observacao, o.status
+        SELECT o.id_ocorrencia, o.id_aluno, o.tipo, o.motivo, o.observacao, o.status, o.criado_em
         FROM tb_ocorrencia_pendente o
         JOIN tb_aluno a ON a.id_aluno = o.id_aluno
         JOIN tb_sala  s ON s.id_sala  = a.id_sala
@@ -70,6 +71,9 @@ try {
         $upd->bindValue(2, $observacao !== null ? trim($observacao) : null);
         $upd->bindValue(3, $idOcorrencia);
         $upd->execute();
+        if ($upd->rowCount() === 0) {
+            enviarErro("Esta ocorrência já foi analisada por outra pessoa.", 409);
+        }
         enviarSucesso("Ocorrência rejeitada. O registro foi mantido no histórico.", [
             "id_ocorrencia" => (int) $idOcorrencia,
             "status" => "rejeitado",
@@ -78,24 +82,22 @@ try {
 
     $conexao->beginTransaction();
 
-    if ($ocorrencia['tipo'] === 'falta') {
-        $ins = $conexao->prepare("
-            INSERT INTO tb_falta (id_aluno, id_coordenacao, motivo_falta, justificado_falta, observacao_falta)
-            VALUES (?, ?, ?, ?, ?) RETURNING id_falta
-        ");
-    } else {
-        $ins = $conexao->prepare("
-            INSERT INTO tb_atraso (id_aluno, id_coordenacao, motivo_atraso, justificado_atraso, observacao_atraso)
-            VALUES (?, ?, ?, ?, ?) RETURNING id_atraso
-        ");
-    }
-    $ins->bindValue(1, $ocorrencia['id_aluno']);
-    $ins->bindValue(2, $idCoordenacao);
-    $ins->bindValue(3, $ocorrencia['motivo']);
-    $ins->bindValue(4, $justificado ? 'true' : 'false');
-    $ins->bindValue(5, $ocorrencia['observacao']);
-    $ins->execute();
-    $idCriado = (int) $ins->fetchColumn();
+    // A falta/atraso é do dia em que o aluno ENVIOU, não do dia em que a
+    // coordenação aprovou: antes o lançamento usava NOW(), e uma
+    // ocorrência de sexta aprovada na segunda virava falta de segunda.
+    // Se a coordenação já tinha lançado o mesmo dia à mão, a aprovação
+    // aponta para esse lançamento em vez de criar uma duplicata.
+    $registro = registrarEventoFrequencia(
+        $conexao,
+        $ocorrencia['tipo'],
+        (int) $ocorrencia['id_aluno'],
+        (int) $idCoordenacao,
+        $ocorrencia['criado_em'],
+        $ocorrencia['motivo'],
+        $ocorrencia['observacao'],
+        $justificado
+    );
+    $idCriado = $registro['id'];
 
     $colunaCriada = $ocorrencia['tipo'] === 'falta' ? 'id_falta_criada' : 'id_atraso_criado';
     $upd = $conexao->prepare("
@@ -118,20 +120,33 @@ try {
 
     $conexao->commit();
 
+    $dataLocal = date('d/m/Y', strtotime(dataNaEscola($registro['data'])));
+    if ($registro['ja_existia']) {
+        // Os responsáveis já foram avisados quando o dia foi lançado.
+        enviarSucesso("Ocorrência aprovada. Este dia já estava lançado; nenhuma duplicata foi criada.", [
+            "id_ocorrencia" => (int) $idOcorrencia,
+            "status"        => "aprovado",
+            "tipo"          => $ocorrencia['tipo'],
+            "id_registro"   => $idCriado,
+            "ja_existia"    => true,
+        ]);
+    }
+
     // Mesmas notificações do lançamento manual (helpers/notificacao.php),
     // fora da transação de propósito: falhar ao enfileirar um aviso não
     // pode desfazer a falta que já foi gravada.
     $rotulo = $ocorrencia['tipo'] === 'falta' ? 'Falta registrada' : 'Atraso registrado';
-    $mensagem = "$rotulo em " . date('d/m/Y')
+    $mensagem = "$rotulo em $dataLocal"
         . ($ocorrencia['motivo'] ? ". Motivo: {$ocorrencia['motivo']}" : ".")
         . " (enviado pelo aplicativo e aprovado pela coordenação)";
     criarNotificacoesParaEvento($conexao, (int) $ocorrencia['id_aluno'], $mensagem);
 
     enviarSucesso("Ocorrência aprovada e lançada.", [
-        "id_ocorrencia"   => (int) $idOcorrencia,
-        "status"          => "aprovado",
-        "tipo"            => $ocorrencia['tipo'],
-        "id_registro"     => $idCriado,
+        "id_ocorrencia" => (int) $idOcorrencia,
+        "status"        => "aprovado",
+        "tipo"          => $ocorrencia['tipo'],
+        "id_registro"   => $idCriado,
+        "ja_existia"    => false,
     ]);
 } catch (PDOException $erro) {
     if ($conexao->inTransaction()) {

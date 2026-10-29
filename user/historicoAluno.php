@@ -16,12 +16,24 @@ $idCoordenacao = autenticar();
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
 $idAluno = $dados["id_aluno"] ?? null;
-$dataInicio = $dados["data_inicio"] ?? date('Y-m-01');
-$dataFim = $dados["data_fim"] ?? date('Y-m-d');
+// Datas do período no calendário da escola (padrão: mês corrente).
+$dataInicio = $dados["data_inicio"] ?? inicioDoMesLocal();
+$dataFim = $dados["data_fim"] ?? hojeNaEscola();
 
 if (!inteiroValido($idAluno)) {
     enviarErro("Informe um aluno válido.", 422);
 }
+// Antes qualquer texto ia direto para a consulta e virava erro 500.
+if (!dataIsoValida($dataInicio) || !dataIsoValida($dataFim)) {
+    enviarErro("Informe o período no formato AAAA-MM-DD.", 422);
+}
+if ($dataInicio > $dataFim) {
+    enviarErro("A data inicial não pode ser depois da final.", 422);
+}
+// Limites do período em UTC: do início do primeiro dia ao início do dia
+// seguinte ao último (no fuso da escola).
+$limiteInicio = localParaUtc($dataInicio);
+$limiteFim = localParaUtc((new DateTimeImmutable($dataFim))->modify('+1 day')->format('Y-m-d'));
 
 try {
     // Só o histórico de aluno da própria escola.
@@ -42,23 +54,23 @@ try {
 
     $stmtFaltas = $conexao->prepare("
         SELECT id_falta AS id, dta_falta AS data, motivo_falta AS motivo, justificado_falta AS justificado, observacao_falta AS observacao
-        FROM tb_falta WHERE id_aluno = ? AND dta_falta >= ? AND dta_falta <= ?
+        FROM tb_falta WHERE id_aluno = ? AND dta_falta >= ? AND dta_falta < ?
         ORDER BY dta_falta DESC
     ");
     $stmtFaltas->bindValue(1, $idAluno);
-    $stmtFaltas->bindValue(2, $dataInicio);
-    $stmtFaltas->bindValue(3, $dataFim . ' 23:59:59');
+    $stmtFaltas->bindValue(2, $limiteInicio);
+    $stmtFaltas->bindValue(3, $limiteFim);
     $stmtFaltas->execute();
     $faltas = $stmtFaltas->fetchAll(PDO::FETCH_ASSOC);
 
     $stmtAtrasos = $conexao->prepare("
         SELECT id_atraso AS id, dta_atraso AS data, motivo_atraso AS motivo, justificado_atraso AS justificado, observacao_atraso AS observacao
-        FROM tb_atraso WHERE id_aluno = ? AND dta_atraso >= ? AND dta_atraso <= ?
+        FROM tb_atraso WHERE id_aluno = ? AND dta_atraso >= ? AND dta_atraso < ?
         ORDER BY dta_atraso DESC
     ");
     $stmtAtrasos->bindValue(1, $idAluno);
-    $stmtAtrasos->bindValue(2, $dataInicio);
-    $stmtAtrasos->bindValue(3, $dataFim . ' 23:59:59');
+    $stmtAtrasos->bindValue(2, $limiteInicio);
+    $stmtAtrasos->bindValue(3, $limiteFim);
     $stmtAtrasos->execute();
     $atrasos = $stmtAtrasos->fetchAll(PDO::FETCH_ASSOC);
 
