@@ -20,32 +20,33 @@ $deviceUuid = $dados["device_uuid"] ?? null;
 if (!campoPreenchido($codigo)) {
     enviarErro("Informe o código de vínculo.", 422);
 }
-if (!campoPreenchido($deviceUuid)) {
-    enviarErro("Identificador do dispositivo ausente.", 422);
+if (!campoPreenchido($deviceUuid) || mb_strlen($deviceUuid) > 100) {
+    enviarErro("Identificador do dispositivo ausente ou inválido.", 422);
 }
 
 $codigo = strtoupper(trim($codigo));
 
 try {
-    $stmt = $conexao->prepare("
-        SELECT id_codigo, id_aluno FROM tb_codigo_vinculo
+    $conexao->beginTransaction();
+
+    // "Gasta" o código e lê o aluno numa instrução só. Antes era um
+    // SELECT seguido de um UPDATE: dois aparelhos com o mesmo código ao
+    // mesmo tempo passavam os dois no SELECT e os dois eram vinculados.
+    $consome = $conexao->prepare("
+        UPDATE tb_codigo_vinculo SET usado = TRUE
         WHERE codigo = ? AND usado = FALSE AND expira_em >= NOW()
+        RETURNING id_codigo, id_aluno
     ");
-    $stmt->bindValue(1, $codigo);
-    $stmt->execute();
-    $registro = $stmt->fetch(PDO::FETCH_ASSOC);
+    $consome->bindValue(1, $codigo);
+    $consome->execute();
+    $registro = $consome->fetch(PDO::FETCH_ASSOC);
 
     if (!$registro) {
+        $conexao->rollBack();
         enviarErro("Código inválido, já usado ou expirado. Peça um novo código à coordenação.", 401);
     }
 
-    $idAluno = $registro['id_aluno'];
-
-    $conexao->beginTransaction();
-
-    $marcaUsado = $conexao->prepare("UPDATE tb_codigo_vinculo SET usado = TRUE WHERE id_codigo = ?");
-    $marcaUsado->bindValue(1, $registro['id_codigo']);
-    $marcaUsado->execute();
+    $idAluno = (int) $registro['id_aluno'];
 
     // Um dispositivo pode ser reaproveitado (mesmo device_uuid vinculado
     // de novo, ex.: reinstalou o app) - desativa o vínculo anterior desse
@@ -54,33 +55,38 @@ try {
     $desativaAnterior->bindValue(1, $deviceUuid);
     $desativaAnterior->execute();
 
+    // device_uuid é UNIQUE na tabela (inclusive entre linhas inativas):
+    // um aparelho já vinculado antes reaproveita a própria linha.
     $segredo = gerarSegredoDispositivo();
-    $insert = $conexao->prepare("
+    $grava = $conexao->prepare("
         INSERT INTO tb_dispositivo_aluno (id_aluno, device_uuid, device_secret)
         VALUES (?, ?, ?)
+        ON CONFLICT (device_uuid) DO UPDATE
+        SET id_aluno = EXCLUDED.id_aluno, device_secret = EXCLUDED.device_secret,
+            ativo = TRUE, criado_em = NOW(), revogado_em = NULL
         RETURNING id_dispositivo
     ");
-    $insert->bindValue(1, $idAluno);
-    $insert->bindValue(2, $deviceUuid);
-    $insert->bindValue(3, $segredo);
-    $insert->execute();
-    $novoDispositivo = $insert->fetch(PDO::FETCH_ASSOC);
-
-    $conexao->commit();
+    $grava->bindValue(1, $idAluno);
+    $grava->bindValue(2, $deviceUuid);
+    $grava->bindValue(3, $segredo);
+    $grava->execute();
+    $idDispositivo = (int) $grava->fetchColumn();
 
     $stmtAluno = $conexao->prepare("SELECT nome_aluno FROM tb_aluno WHERE id_aluno = ?");
     $stmtAluno->bindValue(1, $idAluno);
     $stmtAluno->execute();
     $nomeAluno = $stmtAluno->fetchColumn();
 
+    $conexao->commit();
+
     // device_secret só é devolvido AQUI, uma única vez - o app precisa
-    // guardá-lo (ex.: SecureStore/Keychain) porque a API não tem como
+    // guardá-lo (SecureStore/Keychain) porque a API não tem como
     // reenviá-lo depois.
     enviarSucesso("Dispositivo vinculado com sucesso.", [
-        "id_dispositivo" => $novoDispositivo["id_dispositivo"],
-        "id_aluno"        => $idAluno,
-        "nome_aluno"      => $nomeAluno,
-        "device_secret"   => $segredo,
+        "id_dispositivo" => $idDispositivo,
+        "id_aluno"       => $idAluno,
+        "nome_aluno"     => $nomeAluno,
+        "device_secret"  => $segredo,
     ]);
 } catch (PDOException $erro) {
     if ($conexao->inTransaction()) {

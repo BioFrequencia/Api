@@ -4,11 +4,13 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 // Revoga o(s) dispositivo(s) ativo(s) de um aluno - ex.: celular perdido
 // ou trocado. Um novo vínculo (novo código) cria um dispositivo novo.
-autenticar();
+// Só para alunos da escola de quem chama.
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 $idAluno = $dados["id_aluno"] ?? null;
@@ -16,6 +18,8 @@ $idAluno = $dados["id_aluno"] ?? null;
 if (!inteiroValido($idAluno)) {
     enviarErro("Informe um aluno válido.", 422);
 }
+
+exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
 try {
     $update = $conexao->prepare("

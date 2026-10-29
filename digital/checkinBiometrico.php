@@ -12,53 +12,42 @@ require_once __DIR__ . '/../helpers/dispositivo.php';
  * biométrico, só recebe um check-in assinado com o segredo trocado em
  * vincularDispositivo.php. Também sem autenticar() (é o celular do
  * aluno chamando, não a coordenação); a autenticidade vem da assinatura.
+ *
+ * A verificação de assinatura/janela de tempo é a mesma do envio de
+ * ocorrências (helpers/dispositivo.php) - antes este arquivo tinha a
+ * própria cópia, com o mesmo problema de fuso no timestamp.
  */
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
-$deviceUuid  = $dados["device_uuid"] ?? null;
-$tipo        = $dados["tipo"] ?? null;
-$timestamp   = $dados["timestamp"] ?? null; // ISO 8601, gerado pelo app
-$assinatura  = $dados["assinatura"] ?? null; // HMAC-SHA256 hex
-
-$tiposAceitos = ["atraso", "presenca"];
-
-if (!campoPreenchido($deviceUuid) || !campoPreenchido($tipo) || !campoPreenchido($timestamp) || !campoPreenchido($assinatura)) {
-    enviarErro("Requisição de check-in incompleta.", 422);
-}
-if (!in_array($tipo, $tiposAceitos, true)) {
+$tipo = $dados["tipo"] ?? null;
+if (!in_array($tipo, ["atraso", "presenca"], true)) {
     enviarErro("Tipo de check-in inválido.", 422);
 }
 
-$momentoCheckin = DateTime::createFromFormat(DateTime::ATOM, $timestamp) ?: DateTime::createFromFormat('Y-m-d\TH:i:s.v\Z', $timestamp);
-if (!$momentoCheckin) {
-    enviarErro("Timestamp em formato inválido (use ISO 8601).", 422);
-}
-
-// Tolerância de 5 minutos para o relógio do celular - fora disso, o
-// check-in é recusado (mitiga replay de uma assinatura antiga capturada).
-$agora = new DateTime('now', new DateTimeZone('UTC'));
-$diferencaSegundos = abs($agora->getTimestamp() - $momentoCheckin->getTimestamp());
-if ($diferencaSegundos > 300) {
-    enviarErro("Check-in fora da janela de tempo aceita. Verifique o relógio do aparelho.", 401);
-}
+$dispositivo = exigirDispositivoAssinado(
+    $conexao,
+    $dados["device_uuid"] ?? null,
+    $tipo,
+    $dados["timestamp"] ?? null,    // ISO 8601, gerado pelo app
+    $dados["assinatura"] ?? null    // HMAC-SHA256 hex
+);
 
 try {
-    $stmt = $conexao->prepare("
-        SELECT id_dispositivo, id_aluno, device_secret
-        FROM tb_dispositivo_aluno
-        WHERE device_uuid = ? AND ativo = TRUE
+    // Um check-in por tipo, por dia, enquanto a coordenação não revisa:
+    // o botão é um toque só e o aluno tende a tocar de novo quando a
+    // rede demora. O segundo toque devolve o mesmo check-in.
+    $existente = $conexao->prepare("
+        SELECT id_checkin FROM tb_checkin_biometrico
+        WHERE id_aluno = ? AND tipo = ? AND confirmado_em IS NULL
+          AND " . sqlDataNaEscola('data_checkin') . " = ?::date
+        LIMIT 1
     ");
-    $stmt->bindValue(1, $deviceUuid);
-    $stmt->execute();
-    $dispositivo = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$dispositivo) {
-        enviarErro("Dispositivo não vinculado ou revogado.", 401);
-    }
-
-    $assinaturaEsperada = assinaturaCheckin($deviceUuid, $tipo, $timestamp, $dispositivo['device_secret']);
-    if (!hash_equals($assinaturaEsperada, strtolower($assinatura))) {
-        enviarErro("Assinatura inválida.", 401);
+    $existente->execute([$dispositivo['id_aluno'], $tipo, dataNaEscola($dispositivo['momento_utc'])]);
+    $idExistente = $existente->fetchColumn();
+    if ($idExistente !== false) {
+        enviarSucesso("Seu check-in de hoje já foi registrado e aguarda a coordenação.", [
+            "id_checkin" => (int) $idExistente,
+        ]);
     }
 
     $insert = $conexao->prepare("
@@ -69,12 +58,11 @@ try {
     $insert->bindValue(1, $dispositivo['id_aluno']);
     $insert->bindValue(2, $dispositivo['id_dispositivo']);
     $insert->bindValue(3, $tipo);
-    $insert->bindValue(4, $momentoCheckin->format('Y-m-d H:i:s'));
+    $insert->bindValue(4, $dispositivo['momento_utc']);
     $insert->execute();
-    $novo = $insert->fetch(PDO::FETCH_ASSOC);
 
     enviarSucesso("Check-in registrado. Aguardando confirmação da coordenação.", [
-        "id_checkin" => $novo["id_checkin"],
+        "id_checkin" => (int) $insert->fetchColumn(),
     ]);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao registrar o check-in.", 500, $erro);
