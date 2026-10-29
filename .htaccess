@@ -28,6 +28,15 @@ ErrorDocument 500 /erro.php
     # o caso do XAMPP e do Docker, não muda nada).
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # OPTIONS para um arquivo que não existe: o Apache responderia ele
+    # mesmo (200, sem CORS) e o navegador acusaria erro de CORS em vez do
+    # 404. Vai para o erro.php, que responde o preflight com a allowlist;
+    # a chamada seguinte recebe o 404 em JSON. (Confirmado no CI contra a
+    # imagem Docker.)
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ erro.php [L]
 </IfModule>
 
 # Nunca servir configuração, dependências, testes ou histórico por HTTP.
