@@ -6,9 +6,11 @@ name: API
 # embutido do PHP e com a imagem Docker real (Apache + .htaccess), que é
 # o que roda no Render. O Render só publica depois que este workflow
 # passa (autoDeployTrigger: checksPass no render.yaml).
+#
+# Roda em push de QUALQUER branch (não só da master): uma branch de
+# trabalho fica validada assim que é publicada, antes mesmo do PR.
 on:
   push:
-    branches: [master, main]
   pull_request:
   workflow_dispatch:
 
