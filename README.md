@@ -60,11 +60,17 @@ vezes seguidas sem erro):
 psql -U seu_usuario -d seu_banco -f database/migracao-completa.sql
 ```
 
+O script já inclui a migração **005** (escopo por escola, fila de
+ocorrências do app e níveis de alerta), da qual o código atual depende
+em quase todo endpoint. Em 29/10/2026 o banco de produção **ainda não a
+tinha**. Para saber se falta alguma migração, abra `/health.php`: ele
+responde 503 com `"schema": "desatualizado"` e a lista em `"faltando"`.
+
 Alternativamente, os arquivos individuais em `database/migrations/`
-(`001_schema_base.sql` é só documentação do schema original - não
-precisa rodar; `002_acompanhamento_alertas.sql` e `003_biometria.sql`
-são os que faltam; `004_responsavel_cpf_unique.sql` é opcional, ver o
-comentário no próprio arquivo antes de rodar).
+(`001_schema_base.sql` reproduz o schema original de produção, com as
+mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003` e
+`005` são os que faltavam; `004_responsavel_cpf_unique.sql` é opcional).
+Todos podem ser rodados mais de uma vez sem erro.
 
 ## Rodando localmente
 
@@ -81,10 +87,25 @@ ela via `appsettings.json` (ver o repositório `SoftwareDesktop`).
 php tests/helpers_test.php
 ```
 
-Testes unitários puros das funções de validação/cálculo (sem banco).
-Para testar os endpoints de verdade, suba o servidor local acima e use
-`curl` contra um banco de teste - não há suíte de integração automatizada
-ainda (ver AUDITORIA.md, seção de pendências).
+Testes unitários puros (sem banco): validação, CPF, fuso da escola,
+CORS, status de notificação, escalonamento dos alertas.
+
+Testes de integração (requisições HTTP de verdade + conferência no
+banco): `tests/integracao_test.php`. **Apaga todos os dados do banco
+apontado** - só roda com `BANCO_DE_TESTE=1` e banco em localhost. O CI
+(`.github/workflows/api.yml`) roda tudo contra um Postgres 17 com as
+restrições de produção, com `php -S` e com a imagem Docker (Apache); veja
+lá as variáveis usadas. Para rodar na sua máquina, com um Postgres de
+teste e a API no ar:
+
+```bash
+php -S 127.0.0.1:8099 tests/mock_whatsapp.php &   # provedor de WhatsApp falso
+BANCO_DE_TESTE=1 API_URL=http://127.0.0.1:8080 DB_NAME=biofrequencia_teste \
+  JWT_SECRET_KEY=... CADASTRO_CODIGO_ACESSO=... CORS_ORIGENS=https://site-teste.example \
+  php tests/integracao_test.php
+```
+
+Arquitetura e fluxos entre site, app, API e banco: `docs/ARQUITETURA.md`.
 
 ## Estrutura
 
@@ -97,7 +118,12 @@ user/             coordenação, alunos, salas, faltas/atrasos, alertas, dashboa
 helpers/          validação, respostas padronizadas, cálculo de frequência/alertas
 database/         conexão PDO + migrações SQL
 config/           configuração (config.php é local, não versionado)
-tests/            testes unitários
+ocorrencia/       ocorrências enviadas pelo app e revisão pela coordenação
+notificacao/      fila de mensagens aos responsáveis
+responsavel/      cadastro e vínculo de responsáveis
+relatorio/        exportação XML
+tests/            testes unitários e de integração
+docs/             arquitetura
 ```
 
 ## Segurança
@@ -120,7 +146,8 @@ tests/            testes unitários
 |---|---|---|
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | sim | Conexão com o PostgreSQL. No Docker, o entrypoint gera `config/config.php` a partir delas. |
 | `JWT_SECRET_KEY` | sim | Assina os tokens de login. Use uma string longa e aleatória, diferente em cada ambiente. |
-| `CORS_ORIGENS` | não | Origens liberadas, separadas por vírgula (ex.: `https://biofrequencia.vercel.app`). Sem ela valem as origens locais de desenvolvimento. |
+| `CORS_ORIGENS` | não | Origens liberadas, separadas por vírgula (ex.: `https://biofrequencia.vercel.app`). Barra final e maiúsculas não importam. Um `*` num trecho do host libera os previews da Vercel (`https://site-git-*-equipe.vercel.app`); `https://*.vercel.app` é recusado. Sem ela valem as origens locais de desenvolvimento. |
+| `CADASTRO_CODIGO_ACESSO` | não | Código pedido no cadastro de uma nova conta de coordenação. Sem ele, o cadastro fica desligado. No XAMPP pode ser a constante de mesmo nome em `config/config.php`. |
 | `PORT` | não | Porta do Apache no container (padrão 8080). O Render define sozinho. |
 | `SMTP_REMETENTE` | não | Remetente dos e-mails de nível máximo de alerta. Sem ela, o aviso fica na fila em vez de ser enviado. |
 | `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | não | Provedor de WhatsApp. Sem eles, a fila guarda um link `wa.me` pronto para a coordenação clicar. |
