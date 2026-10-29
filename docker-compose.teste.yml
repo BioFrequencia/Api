@@ -1,0 +1,107 @@
+# Testes de integração com Docker, iguais aos do CI (.github/workflows/
+# api.yml, job "docker"): banco PostgreSQL 17 descartável (some ao parar),
+# migrações aplicadas duas vezes, a imagem real da API (Apache +
+# .htaccess) e um provedor de WhatsApp falso. Nenhum serviço externo é
+# chamado e nenhuma mensagem real é enviada.
+#
+#   docker compose -f docker-compose.teste.yml up -d --build --wait api whatsapp-falso
+#   docker compose -f docker-compose.teste.yml run --rm testes
+#   docker compose -f docker-compose.teste.yml down -v
+#
+# (Não use "up --abort-on-container-exit": o contêiner de migrações
+# termina assim que aplica o schema, e isso derrubaria a pilha inteira
+# antes dos testes.)
+#
+# Os valores abaixo são só de teste (mesmos do CI) - não use em produção.
+name: biofrequencia-teste
+
+x-variaveis: &variaveis
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_NAME: biofrequencia_teste
+  DB_USER: postgres
+  DB_PASSWORD: postgres-teste
+  JWT_SECRET_KEY: chave-apenas-para-testes-nao-usar-em-producao
+  CORS_ORIGENS: https://site-teste.example,https://site-git-*-equipe-teste.vercel.app
+  CADASTRO_CODIGO_ACESSO: codigo-de-acesso-somente-teste
+  WHATSAPP_API_URL: http://whatsapp-falso:8099/
+  WHATSAPP_TOKEN: token-somente-teste
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres-teste
+      POSTGRES_DB: biofrequencia_teste
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d biofrequencia_teste"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migracoes:
+    image: postgres:17
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      PGPASSWORD: postgres-teste
+    volumes:
+      - ./database:/database:ro
+    # Mesma ordem do CI: schema de produção, script consolidado e todas as
+    # migrações de novo, duas vezes (prova que nenhuma quebra ao repetir).
+    command: >-
+      sh -c "set -e; P='psql -h db -U postgres -d biofrequencia_teste -v ON_ERROR_STOP=1 -q';
+      $$P -f /database/migrations/001_schema_base.sql; $$P -f /database/migracao-completa.sql;
+      for r in 1 2; do for m in /database/migrations/*.sql; do $$P -f $$m; done; done;
+      $$P -f /database/migracao-completa.sql; echo 'migrações aplicadas (2x)'"
+
+  api:
+    build: .
+    image: biofrequencia-api:teste
+    depends_on:
+      migracoes: { condition: service_completed_successfully }
+    environment:
+      <<: *variaveis
+      PORT: "8080"
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(str_contains((string) @file_get_contents('http://127.0.0.1:8080/health.php'), '\"sucesso\":true') ? 0 : 1);"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
+  whatsapp-falso:
+    build: .
+    image: biofrequencia-api:teste
+    entrypoint: ["php", "-S", "0.0.0.0:8099", "/tests/mock_whatsapp.php"]
+    # A imagem traz o health check da API (porta 8080); este serviço é outro.
+    healthcheck:
+      disable: true
+    environment:
+      WHATSAPP_LOG: /logs/whatsapp.log
+    volumes:
+      - ./tests:/tests:ro
+      - logs:/logs
+
+  testes:
+    build: .
+    image: biofrequencia-api:teste
+    entrypoint: ["php", "/tests/integracao_test.php"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api: { condition: service_healthy }
+      whatsapp-falso: { condition: service_started }
+    environment:
+      <<: *variaveis
+      API_URL: http://api:8080
+      BANCO_DE_TESTE: "1"
+      APACHE: "1"
+      WHATSAPP_LOG: /logs/whatsapp.log
+    volumes:
+      - ./tests:/tests:ro
+      - logs:/logs
+
+volumes:
+  logs:

@@ -1,0 +1,72 @@
+# Ambiente local da API com Docker: PostgreSQL 17 (a versão do Supabase),
+# as migrações e a API na MESMA imagem que vai para o Render (Apache).
+#
+#   docker compose up -d --build     API em http://localhost:8080
+#   docker compose logs -f api       logs do Apache/PHP
+#   docker compose down              para tudo (os dados ficam no volume "dados")
+#
+# Variáveis: arquivo .env nesta pasta (copie de .env.exemplo). O .env não
+# vai para o Git nem para a imagem. Nada daqui é credencial de produção.
+#
+# Testes de integração: use docker-compose.teste.yml (banco descartável).
+name: biofrequencia
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD no .env (copie de .env.exemplo)}
+      POSTGRES_DB: biofrequencia
+    # 5433 no computador para não colidir com um Postgres já instalado.
+    ports: ["127.0.0.1:5433:5432"]
+    volumes:
+      - dados:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d biofrequencia"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Schema de produção (001) + script consolidado (002-005). Idempotente:
+  # roda a cada "up" sem estragar dados existentes.
+  migracoes:
+    image: postgres:17
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./database:/database:ro
+    command: >-
+      sh -c "psql -h db -U postgres -d biofrequencia -v ON_ERROR_STOP=1 -q -f /database/migrations/001_schema_base.sql
+      && psql -h db -U postgres -d biofrequencia -v ON_ERROR_STOP=1 -q -f /database/migracao-completa.sql
+      && echo 'migrações aplicadas'"
+
+  api:
+    build: .
+    image: biofrequencia-api:local
+    depends_on:
+      migracoes: { condition: service_completed_successfully }
+    environment:
+      PORT: "8080"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: biofrequencia
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?defina JWT_SECRET_KEY no .env}
+      CORS_ORIGENS: ${CORS_ORIGENS:-http://localhost:3000,http://127.0.0.1:3000}
+      CADASTRO_CODIGO_ACESSO: ${CADASTRO_CODIGO_ACESSO:-}
+      SMTP_REMETENTE: ${SMTP_REMETENTE:-}
+      WHATSAPP_API_URL: ${WHATSAPP_API_URL:-}
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+    ports: ["127.0.0.1:8080:8080"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(str_contains((string) @file_get_contents('http://127.0.0.1:8080/health.php'), '\"sucesso\":true') ? 0 : 1);"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  dados:

@@ -154,21 +154,45 @@ docs/             arquitetura
 
 ## Docker
 
+Ambiente local completo (PostgreSQL 17 + migrações + a mesma imagem que
+vai para o Render), com as variáveis em `.env` (copie de `.env.exemplo`;
+o `.env` fica fora do Git e da imagem):
+
+```bash
+docker compose up -d --build     # API em http://localhost:8080 (banco na porta 5433)
+docker compose logs -f api
+docker compose down              # os dados ficam no volume "dados"
+```
+
+Testes de integração no Docker, iguais aos do CI (banco descartável e um
+provedor de WhatsApp falso - nenhuma mensagem real sai):
+
+```bash
+docker compose -f docker-compose.teste.yml up -d --build --wait api whatsapp-falso
+docker compose -f docker-compose.teste.yml run --rm testes
+docker compose -f docker-compose.teste.yml down -v
+```
+
+O site aponta para essa API com `NEXT_PUBLIC_API_URL=http://localhost:8080/`
+no `.env.local` dele.
+
+Só a imagem, sem compose:
+
 ```bash
 docker build -t biofrequencia-api .
-
-docker run -p 8080:8080 \
-  -e DB_HOST=seu-host -e DB_PORT=5432 -e DB_NAME=biofrequencia \
-  -e DB_USER=postgres -e DB_PASSWORD='sua-senha' \
-  -e JWT_SECRET_KEY='chave-longa-e-aleatoria' \
-  -e CORS_ORIGENS=https://seu-site.com \
-  biofrequencia-api
-
+docker run -p 8080:8080 --env-file .env -e DB_HOST=seu-host -e DB_PORT=5432 \
+  -e DB_NAME=biofrequencia -e DB_USER=postgres biofrequencia-api
 curl http://localhost:8080/health.php
 ```
 
 O container recusa subir se faltar alguma variável obrigatória — é melhor
 falhar na inicialização do que responder erro na primeira requisição.
+
+### Variáveis no Render
+
+No painel do serviço: Environment → "Add from .env". Use `.env.exemplo`
+como modelo; o banco é o Supabase pelo **connection pooler** (o host
+direto `db.<ref>.supabase.co` só tem IPv6, que o Render não acessa).
 
 ## Quando o navegador acusar erro de CORS
 

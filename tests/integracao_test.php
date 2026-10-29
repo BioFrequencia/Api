@@ -11,7 +11,9 @@
  * Os cenários dele continuam aqui (seção "App").
  *
  * APAGA TODOS OS DADOS do banco apontado. Por isso só roda com
- * BANCO_DE_TESTE=1 e banco em localhost - nunca contra o Supabase.
+ * BANCO_DE_TESTE=1 e banco local: localhost ou um nome de serviço do
+ * Docker sem domínio (ex.: "db" em docker-compose.teste.yml). Endereços
+ * do Supabase sempre têm domínio e são recusados.
  *
  * Variáveis (as mesmas usadas para subir a API no CI):
  *   API_URL                 http://127.0.0.1:8080
@@ -34,8 +36,9 @@ $origens = array_map('trim', explode(',', (string) getenv('CORS_ORIGENS')));
 $origem = $origens[0] ?? '';
 $logWhatsapp = getenv('WHATSAPP_LOG') ?: sys_get_temp_dir() . '/whatsapp.log';
 
-if (getenv('BANCO_DE_TESTE') !== '1' || !in_array($dbHost, ['127.0.0.1', 'localhost'], true)) {
-    fwrite(STDERR, "Recusado: este teste apaga o banco. Use BANCO_DE_TESTE=1 com um banco em localhost.\n");
+$bancoLocal = in_array($dbHost, ['127.0.0.1', 'localhost'], true) || preg_match('/^[a-z0-9-]+$/i', $dbHost) === 1;
+if (getenv('BANCO_DE_TESTE') !== '1' || !$bancoLocal) {
+    fwrite(STDERR, "Recusado: este teste apaga o banco. Use BANCO_DE_TESTE=1 com um banco local (localhost ou serviço do Docker).\n");
     exit(2);
 }
 foreach (['JWT_SECRET_KEY' => $jwtSecret, 'CADASTRO_CODIGO_ACESSO' => $codigoCadastro, 'CORS_ORIGENS' => $origem] as $nome => $valor) {
