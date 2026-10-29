@@ -17,11 +17,18 @@ if (!campoPreenchido($email) || !campoPreenchido($senha)) {
 }
 
 try {
+    // Sem diferenciar maiúsculas: o teclado do celular capitaliza a
+    // primeira letra e o login falhava com a senha certa. Se existirem
+    // duas contas que só diferem na caixa (cadastros antigos), vale a
+    // que bate exatamente com o que foi digitado.
     $select = $conexao->prepare(
         "SELECT id_coordenacao, nome_coordenacao, email_coordenacao, senha_coordenacao
-         FROM tb_coordenacao WHERE email_coordenacao = ?"
+         FROM tb_coordenacao WHERE lower(email_coordenacao) = lower(?)
+         ORDER BY (email_coordenacao = ?) DESC, id_coordenacao
+         LIMIT 1"
     );
-    $select->bindValue(1, $email);
+    $select->bindValue(1, trim($email));
+    $select->bindValue(2, trim($email));
     $select->execute();
     $coordenacao = $select->fetch(PDO::FETCH_ASSOC);
 

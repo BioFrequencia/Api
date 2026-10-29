@@ -14,8 +14,8 @@ if (!campoPreenchido($email)) {
 }
 
 try {
-    $select = $conexao->prepare("SELECT email_coordenacao FROM tb_coordenacao WHERE email_coordenacao = ?");
-    $select->bindValue(1, $email);
+    $select = $conexao->prepare("SELECT email_coordenacao FROM tb_coordenacao WHERE lower(email_coordenacao) = lower(?) LIMIT 1");
+    $select->bindValue(1, trim($email));
     $select->execute();
     $coordenacao = $select->fetch(PDO::FETCH_ASSOC);
 
