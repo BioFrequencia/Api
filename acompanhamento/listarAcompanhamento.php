@@ -4,9 +4,14 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
-autenticar();
+// Histórico de contatos com as famílias: só da escola de quem está
+// logado (antes devolvia os registros de todas as escolas, com as
+// observações sobre cada aluno).
+$idCoordenacao = autenticar();
+$idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -16,17 +21,22 @@ $porPagina = max(1, min(100, (int) ($dados["por_pagina"] ?? 20)));
 $offset    = ($pagina - 1) * $porPagina;
 
 try {
-    $params = [];
-    $where = "";
+    $params = [$idEscola];
+    $where = "WHERE s.id_escola = ?";
     if ($idAluno !== null) {
         if (!inteiroValido($idAluno)) {
             enviarErro("Aluno inválido.", 422);
         }
-        $where = "WHERE ac.id_aluno = ?";
+        $where .= " AND ac.id_aluno = ?";
         $params[] = $idAluno;
     }
 
-    $sqlTotal = "SELECT COUNT(*) FROM tb_acompanhamento ac $where";
+    $sqlTotal = "
+        SELECT COUNT(*) FROM tb_acompanhamento ac
+        JOIN tb_aluno al ON al.id_aluno = ac.id_aluno
+        JOIN tb_sala s ON s.id_sala = al.id_sala
+        $where
+    ";
     $stmtTotal = $conexao->prepare($sqlTotal);
     $stmtTotal->execute($params);
     $total = (int) $stmtTotal->fetchColumn();
@@ -37,7 +47,7 @@ try {
                co.nome_coordenacao
         FROM tb_acompanhamento ac
         JOIN tb_aluno al ON al.id_aluno = ac.id_aluno
-        LEFT JOIN tb_sala s ON s.id_sala = al.id_sala
+        JOIN tb_sala s ON s.id_sala = al.id_sala
         JOIN tb_coordenacao co ON co.id_coordenacao = ac.id_coordenacao
         $where
         ORDER BY ac.data_registro DESC

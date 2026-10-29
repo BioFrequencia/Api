@@ -5,6 +5,7 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/biometriaFacial.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 $idCoordenacao = autenticar();
@@ -25,14 +26,11 @@ if (!campoPreenchido($modelo)) {
     enviarErro("Informe o identificador do modelo usado para gerar o embedding.", 422);
 }
 
-try {
-    $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindValue(1, $idAluno);
-    $verificaAluno->execute();
-    if ($verificaAluno->rowCount() === 0) {
-        enviarErro("Aluno não encontrado.", 404);
-    }
+// Dado biométrico: só para alunos da escola de quem cadastra (antes
+// bastava o id existir).
+exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
+try {
     $embeddingJson = json_encode(array_map('floatval', $embedding));
 
     $upsert = $conexao->prepare("

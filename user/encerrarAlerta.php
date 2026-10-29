@@ -4,6 +4,7 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 $idCoordenacao = autenticar();
@@ -15,14 +16,11 @@ if (!isset($dados["id_aluno"]) || !inteiroValido($dados["id_aluno"])) {
 }
 $idAluno = $dados["id_aluno"];
 
-try {
-    $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindValue(1, $idAluno);
-    $verificaAluno->execute();
-    if ($verificaAluno->rowCount() === 0) {
-        enviarErro("Aluno não encontrado.", 404);
-    }
+// Antes só conferia se o aluno existia: qualquer coordenação encerrava
+// os alertas dos alunos de outra escola.
+exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
+try {
     // upsert: um encerramento por aluno; encerrar de novo só atualiza o
     // carimbo de data/hora (empurra a data a partir da qual um novo
     // evento faz o alerta reaparecer).

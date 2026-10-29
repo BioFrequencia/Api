@@ -4,9 +4,17 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
-autenticar();
+/**
+ * Vincula um responsável que já é desta escola a outro aluno dela
+ * (irmãos). As duas pontas precisam ser da escola de quem chama: sem
+ * isso, bastava vincular o id de um responsável de outra escola a um
+ * aluno próprio para depois ler CPF e telefone dele em
+ * listarResponsaveis.php.
+ */
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 $idAluno = $dados["id_aluno"] ?? null;
@@ -19,18 +27,11 @@ if (!inteiroValido($idResponsavel)) {
     enviarErro("Informe um responsável válido.", 422);
 }
 
-try {
-    $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindValue(1, $idAluno);
-    $verificaAluno->execute();
-    if ($verificaAluno->rowCount() === 0) {
-        enviarErro("Aluno não encontrado.", 404);
-    }
+$idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
+exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
 
-    $verificaResponsavel = $conexao->prepare("SELECT id_responsavel FROM tb_responsavel WHERE id_responsavel = ?");
-    $verificaResponsavel->bindValue(1, $idResponsavel);
-    $verificaResponsavel->execute();
-    if ($verificaResponsavel->rowCount() === 0) {
+try {
+    if (!responsavelVisivelNaEscola($conexao, $idResponsavel, $idEscola)) {
         enviarErro("Responsável não encontrado.", 404);
     }
 

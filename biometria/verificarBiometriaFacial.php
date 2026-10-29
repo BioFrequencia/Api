@@ -5,6 +5,7 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/biometriaFacial.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
@@ -27,6 +28,8 @@ if (!inteiroValido($idAluno)) {
 if (!embeddingValido($embeddingVivo)) {
     enviarErro("Embedding facial inválido ou ausente.", 422);
 }
+
+exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
 try {
     $stmt = $conexao->prepare("SELECT embedding FROM tb_biometria_facial WHERE id_aluno = ?");
