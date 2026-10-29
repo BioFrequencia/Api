@@ -14,16 +14,27 @@ ErrorDocument 404 /erro.php
 ErrorDocument 403 /erro.php
 ErrorDocument 500 /erro.php
 
+# O preflight (OPTIONS) NÃO pode ser respondido aqui. Existia uma regra
+# "RewriteCond %{REQUEST_METHOD} OPTIONS / RewriteRule ... [R=204]" que
+# devolvia 204 sem passar pelo PHP - logo, sem Access-Control-Allow-Origin
+# - e o navegador bloqueava toda chamada do site depois que os cabeçalhos
+# de CORS saíram deste arquivo. helpers/cors.php já responde o OPTIONS
+# antes de abrir banco ou exigir token; erro.php faz o mesmo para URL
+# inexistente.
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    # Preflight nunca deve cair em regra de autenticação do servidor.
-    RewriteCond %{REQUEST_METHOD} OPTIONS
-    RewriteRule ^(.*)$ $1 [R=204,L]
+    # Em PHP via CGI/FPM o Apache não repassa o cabeçalho Authorization
+    # para o PHP; isto o devolve em HTTP_AUTHORIZATION (no mod_php, que é
+    # o caso do XAMPP e do Docker, não muda nada).
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 </IfModule>
 
-# Nunca servir configuração, dependências ou histórico por HTTP.
-<FilesMatch "^(config\.php|composer\.(json|lock)|\.env.*|Dockerfile|docker-entrypoint\.sh)$">
+# Nunca servir configuração, dependências, testes ou histórico por HTTP.
+<FilesMatch "^(config\.php|composer\.(json|lock)|\.env.*|Dockerfile|docker-entrypoint\.sh|.*\.sql|.*\.md)$">
     Require all denied
 </FilesMatch>
 RedirectMatch 404 /\.git
 RedirectMatch 404 /vendor/
+RedirectMatch 404 /tests/
+RedirectMatch 404 /database/migrations/
