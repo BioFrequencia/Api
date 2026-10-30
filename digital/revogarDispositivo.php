@@ -7,9 +7,9 @@ require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
-// Revoga o(s) dispositivo(s) ativo(s) de um aluno - ex.: celular perdido
-// ou trocado. Um novo vínculo (novo código) cria um dispositivo novo.
-// Só para alunos da escola de quem chama.
+// Desconecta o(s) celular(es) de um aluno - ex.: celular perdido ou
+// trocado. A conta do app continua: o aluno entra de novo (e-mail e senha)
+// no aparelho novo. Só para alunos da escola de quem chama.
 $idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];

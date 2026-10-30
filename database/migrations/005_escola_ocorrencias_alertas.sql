@@ -109,4 +109,12 @@ ALTER TABLE tb_notificacao ADD COLUMN IF NOT EXISTS canal        VARCHAR(20);
 ALTER TABLE tb_notificacao ADD COLUMN IF NOT EXISTS nivel_alerta SMALLINT;
 UPDATE tb_notificacao SET canal = 'manual' WHERE canal IS NULL;
 
+-- Como as tabelas que já existem no Supabase: RLS ligado e nenhuma
+-- política, para só a API (dona das tabelas) acessar. Sem isto, as
+-- tabelas novas ficariam legíveis pela API REST pública do Supabase com a
+-- chave "anon" (o Supabase dá SELECT ao papel anon em tabela nova).
+ALTER TABLE tb_escola              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tb_ocorrencia_pendente ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tb_alerta_nivel        ENABLE ROW LEVEL SECURITY;
+
 COMMIT;

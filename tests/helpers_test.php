@@ -18,6 +18,7 @@ require_once __DIR__ . '/../helpers/notificacao.php';
 require_once __DIR__ . '/../helpers/escalonamento.php';
 require_once __DIR__ . '/../helpers/dispositivo.php';
 require_once __DIR__ . '/../helpers/registroEvento.php';
+require_once __DIR__ . '/../helpers/contaAluno.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -227,6 +228,20 @@ afirmar('embeddingValido: array numérico de tamanho razoável', embeddingValido
 afirmar('embeddingValido: array pequeno demais (< 8)', embeddingValido([1, 2, 3]) === false);
 afirmar('embeddingValido: não é array', embeddingValido('não é array') === false);
 afirmar('embeddingValido: contém elemento não numérico', embeddingValido([1, 2, 3, 4, 5, 6, 7, 'oito']) === false);
+
+// ---------- conta do aluno no app (helpers/contaAluno.php) ----------
+afirmar('normalizarNome: caixa, acentos e espaços', normalizarNome("  JOÃO  Pédro\tda Conceição ") === 'joao pedro da conceicao');
+afirmar('normalizarNome: ç e ñ', normalizarNome('Açaí Muñoz') === 'acai munoz');
+afirmar('nomesConferem: nome completo igual', nomesConferem('Ana Clara Souza', 'Ana Clara Souza') === true);
+afirmar('nomesConferem: sem acento e com outra caixa', nomesConferem('joao pedro da silva', 'João Pedro da Silva') === true);
+afirmar('nomesConferem: só primeiro e último nome', nomesConferem('João Silva', 'João Pedro da Silva') === true);
+afirmar('nomesConferem: último nome diferente', nomesConferem('João Souza', 'João Pedro da Silva') === false);
+afirmar('nomesConferem: primeiro nome diferente', nomesConferem('Pedro Silva', 'João Pedro da Silva') === false);
+afirmar('nomesConferem: só o primeiro nome não basta', nomesConferem('João', 'João Pedro da Silva') === false);
+afirmar('nomesConferem: vazio não confere', nomesConferem('  ', 'João Silva') === false);
+afirmar('identificadorDispositivoValido: UUID do app', identificadorDispositivoValido('3f2b8c1e-9d4a-4c7e-8b1a-2d5e6f7a8b9c') === true);
+afirmar('identificadorDispositivoValido: vazio', identificadorDispositivoValido('') === false);
+afirmar('identificadorDispositivoValido: maior que a coluna (100)', identificadorDispositivoValido(str_repeat('a', 101)) === false);
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

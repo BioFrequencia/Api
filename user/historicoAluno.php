@@ -36,11 +36,16 @@ $limiteInicio = localParaUtc($dataInicio);
 $limiteFim = localParaUtc((new DateTimeImmutable($dataFim))->modify('+1 day')->format('Y-m-d'));
 
 try {
-    // Só o histórico de aluno da própria escola.
+    // Só o histórico de aluno da própria escola. Junto, a conta do app
+    // (e-mail e desde quando) e quantos celulares estão conectados, para
+    // o painel "App do aluno" do site.
     $stmtAluno = $conexao->prepare("
-        SELECT al.id_aluno, al.nome_aluno, s.nome_sala
+        SELECT al.id_aluno, al.nome_aluno, s.nome_sala,
+               c.email_conta AS email_app, c.criado_em AS conta_app_desde,
+               (SELECT count(*) FROM tb_dispositivo_aluno d WHERE d.id_aluno = al.id_aluno AND d.ativo) AS celulares_ativos
         FROM tb_aluno al
         JOIN tb_sala s ON s.id_sala = al.id_sala
+        LEFT JOIN tb_conta_aluno c ON c.id_aluno = al.id_aluno
         WHERE al.id_aluno = ? AND s.id_escola = ?
     ");
     $stmtAluno->bindValue(1, $idAluno);

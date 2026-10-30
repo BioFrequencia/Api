@@ -115,7 +115,7 @@ jobs:
           php -S 127.0.0.1:8099 tests/mock_whatsapp.php > /tmp/mock.log 2>&1 &
           # Vários processos: os testes disparam requisições simultâneas.
           PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8080 -t . > /tmp/api.log 2>&1 &
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             curl -sf http://127.0.0.1:8080/health.php > /dev/null && break
             sleep 1
           done
@@ -192,7 +192,7 @@ jobs:
           docker run -d --name api-sem-schema --network host \
             -e PORT=8081 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
             biofrequencia-api:ci
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             codigo=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:8081/health.php) && [ "$codigo" != "000" ] && break
             sleep 1
           done
@@ -216,7 +216,7 @@ jobs:
             -e PORT=8080 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
             -e CORS_ORIGENS -e CADASTRO_CODIGO_ACESSO -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
             biofrequencia-api:ci
-          for i in $(seq 1 40); do
+          for _ in $(seq 1 40); do
             curl -sf http://127.0.0.1:8080/health.php > /dev/null && break
             sleep 1
           done

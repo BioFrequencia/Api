@@ -5,6 +5,7 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/senha.php';
+require_once __DIR__ . '/../helpers/contaAluno.php';
 require_once __DIR__ . '/../Authentication/tokenLogin.php';
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
@@ -36,6 +37,11 @@ try {
     $mensagemCredenciaisInvalidas = "Email ou senha incorretos.";
 
     if (!$coordenacao) {
+        // Conta de aluno (criada no app) digitada no site: explica, em vez
+        // de "senha incorreta" - mas só com a senha certa.
+        if (contaDeAlunoConfere($conexao, $email, $senha)) {
+            enviarErro("Esta é uma conta de aluno: ela entra pelo aplicativo BioFrequência, no celular. O site é da coordenação.", 403);
+        }
         enviarErro($mensagemCredenciaisInvalidas, 401);
     }
 
