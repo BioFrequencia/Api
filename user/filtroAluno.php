@@ -21,13 +21,15 @@ $pagina     = max(1, (int)($dados["pagina"] ?? 1));
 $porPagina  = max(1, (int)($dados["por_pagina"] ?? 10));
 
 try {
-    $primeiroDiaMes = date('Y-m-01');
+    // Início do mês no fuso da escola (em UTC, como as colunas).
+    $primeiroDiaMes = inicioDoMesUtc();
 
     // Faltas e atrasos são contados em subconsultas separadas e só depois
     // unidas ao aluno. Antes disso, um único LEFT JOIN em tb_atraso alimentava
     // as duas colunas (faltas E atrasos recebiam o mesmo número); juntar
     // tb_falta e tb_atraso num JOIN só, sem agregar antes, também geraria
     // contagem errada (produto cartesiano entre as duas tabelas).
+    // Conta DIAS, não linhas: dois lançamentos no mesmo dia são uma falta.
     $sql = "
         SELECT al.id_aluno, al.nome_aluno, s.nome_sala,
                COALESCE(f.qtd_faltas, 0)  AS qtd_faltas,
@@ -35,13 +37,13 @@ try {
         FROM tb_aluno al
         JOIN tb_sala s ON s.id_sala = al.id_sala
         LEFT JOIN (
-            SELECT id_aluno, COUNT(*) AS qtd_faltas
+            SELECT id_aluno, COUNT(DISTINCT " . sqlDataNaEscola('dta_falta') . ") AS qtd_faltas
             FROM tb_falta
             WHERE dta_falta >= ?
             GROUP BY id_aluno
         ) f ON f.id_aluno = al.id_aluno
         LEFT JOIN (
-            SELECT id_aluno, COUNT(*) AS qtd_atrasos
+            SELECT id_aluno, COUNT(DISTINCT " . sqlDataNaEscola('dta_atraso') . ") AS qtd_atrasos
             FROM tb_atraso
             WHERE dta_atraso >= ?
             GROUP BY id_aluno

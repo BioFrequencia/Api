@@ -35,35 +35,56 @@ function assinaturaCheckin(string $deviceUuid, string $tipo, string $timestamp, 
  * Encerra a requisição (401/422) quando algo não confere; só retorna em
  * caso de sucesso.
  */
-function exigirDispositivoAssinado(PDO $conexao, ?string $deviceUuid, ?string $tipo, ?string $timestamp, ?string $assinatura): array {
+/**
+ * Lê o timestamp ISO 8601 mandado pelo app. O app usa
+ * new Date().toISOString() ("2026-10-29T13:45:00.123Z"); também aceita
+ * com fuso explícito ("+00:00", "-03:00"). O "Z" é lido como UTC de
+ * forma explícita - sem o terceiro argumento, o PHP o tratava no fuso
+ * padrão do servidor, e um php.ini fora de UTC deslocava o horário em
+ * horas (e recusava todo envio por "fora da janela de tempo").
+ */
+function lerTimestampAssinado(string $timestamp): DateTimeImmutable|false {
+    $utc = new DateTimeZone('UTC');
+    foreach (['Y-m-d\TH:i:s.v\Z', 'Y-m-d\TH:i:s\Z', DATE_ATOM, 'Y-m-d\TH:i:s.vP'] as $formato) {
+        $momento = DateTimeImmutable::createFromFormat($formato, $timestamp, $utc);
+        if ($momento !== false) {
+            return $momento;
+        }
+    }
+    return false;
+}
+
+function exigirDispositivoAssinado(PDO $conexao, $deviceUuid, $tipo, $timestamp, $assinatura): array {
     if (!campoPreenchido($deviceUuid) || !campoPreenchido($tipo)
         || !campoPreenchido($timestamp) || !campoPreenchido($assinatura)) {
         enviarErro("Requisição incompleta.", 422);
     }
 
-    $momento = DateTime::createFromFormat(DateTime::ATOM, $timestamp)
-        ?: DateTime::createFromFormat('Y-m-d\TH:i:s.v\Z', $timestamp);
+    $momento = lerTimestampAssinado($timestamp);
     if (!$momento) {
         enviarErro("Timestamp em formato inválido (use ISO 8601).", 422);
     }
 
-    // Mesma tolerância de 5 minutos do check-in: fora dela, uma
-    // assinatura antiga capturada não pode ser reenviada.
-    $agora = new DateTime('now', new DateTimeZone('UTC'));
-    if (abs($agora->getTimestamp() - $momento->getTimestamp()) > 300) {
+    // Tolerância de 5 minutos: fora dela, uma assinatura antiga
+    // capturada não pode ser reenviada.
+    if (abs(agoraUtc()->getTimestamp() - $momento->getTimestamp()) > 300) {
         enviarErro("Requisição fora da janela de tempo aceita. Verifique o relógio do aparelho.", 401);
     }
 
-    $stmt = $conexao->prepare("
-        SELECT d.id_dispositivo, d.id_aluno, d.device_secret, a.nome_aluno, s.id_escola
-        FROM tb_dispositivo_aluno d
-        JOIN tb_aluno a ON a.id_aluno = d.id_aluno
-        JOIN tb_sala  s ON s.id_sala  = a.id_sala
-        WHERE d.device_uuid = ? AND d.ativo = TRUE
-    ");
-    $stmt->bindValue(1, $deviceUuid);
-    $stmt->execute();
-    $dispositivo = $stmt->fetch(PDO::FETCH_ASSOC);
+    try {
+        $stmt = $conexao->prepare("
+            SELECT d.id_dispositivo, d.id_aluno, d.device_secret, a.nome_aluno, s.id_escola
+            FROM tb_dispositivo_aluno d
+            JOIN tb_aluno a ON a.id_aluno = d.id_aluno
+            JOIN tb_sala  s ON s.id_sala  = a.id_sala
+            WHERE d.device_uuid = ? AND d.ativo = TRUE
+        ");
+        $stmt->bindValue(1, $deviceUuid);
+        $stmt->execute();
+        $dispositivo = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $erro) {
+        enviarErro("Erro no servidor ao identificar o aparelho.", 500, $erro);
+    }
 
     if (!$dispositivo) {
         // É esta a resposta de "biometria não corresponde a nenhum aluno
@@ -76,5 +97,6 @@ function exigirDispositivoAssinado(PDO $conexao, ?string $deviceUuid, ?string $t
         enviarErro("Assinatura inválida.", 401);
     }
 
+    $dispositivo['momento_utc'] = $momento->format('Y-m-d H:i:s');
     return $dispositivo;
 }

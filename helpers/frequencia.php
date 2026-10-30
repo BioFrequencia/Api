@@ -21,32 +21,55 @@ function calcularStatusFrequencia(int $frequencia): string {
 }
 
 /**
- * A partir das datas (Y-m-d) de falta de um aluno, da mais recente para
- * a mais antiga, estima a sequência atual de faltas consecutivas.
- *
- * Limitação conhecida: o banco só registra o evento negativo (falta),
- * não existe uma tabela de presença positiva - então um "gap" de até 3
- * dias corridos é tolerado como fim de semana, mas isso também tolera
- * (incorretamente) um único dia útil isolado em que o aluno esteve
- * presente entre duas faltas não consecutivas. Documentado como
- * pendência no relatório final; a forma correta de resolver isso é
- * registrar frequência positiva por dia letivo, não só ausências.
+ * Quantos dias úteis (segunda a sexta) existem ESTRITAMENTE entre duas
+ * datas Y-m-d, em qualquer ordem.
  */
-function calcularFaltasConsecutivas(array $datasFaltaDesc): int {
-    if (empty($datasFaltaDesc)) return 0;
+function diasUteisEntre(string $dataA, string $dataB): int {
+    $inicio = new DateTimeImmutable(min($dataA, $dataB));
+    $fim = new DateTimeImmutable(max($dataA, $dataB));
+    $uteis = 0;
+    for ($dia = $inicio->modify('+1 day'); $dia < $fim; $dia = $dia->modify('+1 day')) {
+        if ((int) $dia->format('N') <= 5) {
+            $uteis++;
+        }
+    }
+    return $uteis;
+}
 
-    $hoje = new DateTime('today');
-    $maisRecente = new DateTime($datasFaltaDesc[0]);
-    if ((int)$hoje->diff($maisRecente)->format('%a') > 3) return 0;
+/**
+ * A partir das datas (Y-m-d, no fuso da escola) de falta de um aluno,
+ * estima a sequência atual de faltas consecutivas.
+ *
+ * Duas faltas são consecutivas quando não há nenhum dia útil entre elas
+ * (sexta e a segunda seguinte contam; terça e sexta, não - quarta e
+ * quinta foram dias de aula sem falta). A sequência só está "em
+ * andamento" se também não houver dia útil sem falta entre a última
+ * falta e hoje.
+ *
+ * Antes a regra era "até 3 dias corridos", o que juntava terça e sexta
+ * como consecutivas. Continua sendo uma estimativa: o banco só registra
+ * a ausência, não a presença, então um feriado no meio quebra a
+ * sequência. A solução completa seria registrar a frequência de todo dia
+ * letivo.
+ *
+ * Datas repetidas contam uma vez só (duas faltas lançadas no mesmo dia
+ * são o mesmo dia de ausência).
+ */
+function calcularFaltasConsecutivas(array $datasFalta, ?string $hoje = null): int {
+    $hoje = $hoje ?? date('Y-m-d');
+    $datas = array_unique(array_map(fn($d) => substr((string) $d, 0, 10), $datasFalta));
+    $datas = array_values(array_filter($datas, fn($d) => $d <= $hoje));
+    if (empty($datas)) return 0;
+    rsort($datas);
+
+    if (diasUteisEntre($datas[0], $hoje) > 0) {
+        return 0;
+    }
 
     $sequencia = 1;
-    $anterior = $maisRecente;
-    for ($i = 1; $i < count($datasFaltaDesc); $i++) {
-        $atual = new DateTime($datasFaltaDesc[$i]);
-        $gap = (int)$anterior->diff($atual)->format('%a');
-        if ($gap <= 3) {
+    for ($i = 1; $i < count($datas); $i++) {
+        if (diasUteisEntre($datas[$i - 1], $datas[$i]) === 0) {
             $sequencia++;
-            $anterior = $atual;
         } else {
             break;
         }

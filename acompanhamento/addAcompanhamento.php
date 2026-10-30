@@ -4,11 +4,12 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
  * tb_acompanhamento não existia no schema original - foi adicionada
- * nesta rodada (ver database/migrations/002_acompanhamento_biometria.sql)
+ * nesta rodada (ver database/migrations/002_acompanhamento_alertas.sql)
  * porque o design previa a tela "Acompanhamento" (histórico de contatos
  * com o responsável) e não havia como persistir isso em nenhuma tabela
  * existente.
@@ -29,15 +30,14 @@ if (!inteiroValido($idAluno)) {
 if (!campoPreenchido($canal) || !in_array($canal, $canaisAceitos, true)) {
     enviarErro("Selecione um canal de contato válido.", 422);
 }
+if ($observacao !== null && (!is_string($observacao) || mb_strlen($observacao) > 5000)) {
+    enviarErro("A observação está longa demais.", 422);
+}
+
+// Só alunos da escola de quem registra.
+exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
 try {
-    $verificaAluno = $conexao->prepare("SELECT id_aluno FROM tb_aluno WHERE id_aluno = ?");
-    $verificaAluno->bindValue(1, $idAluno);
-    $verificaAluno->execute();
-    if ($verificaAluno->rowCount() === 0) {
-        enviarErro("Aluno não encontrado.", 404);
-    }
-
     $insert = $conexao->prepare("
         INSERT INTO tb_acompanhamento (id_aluno, id_coordenacao, canal, observacao)
         VALUES (?, ?, ?, ?)

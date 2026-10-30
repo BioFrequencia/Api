@@ -1,24 +1,54 @@
 name: API
 
-# Valida a BioFrequenciaApi: sintaxe, testes das regras de cálculo,
-# migrações contra um PostgreSQL de verdade e build da imagem Docker.
+# Valida a BioFrequenciaApi: sintaxe, testes unitários, migrações contra
+# um PostgreSQL de verdade (com as mesmas restrições do banco de
+# produção) e testes de integração HTTP - duas vezes: com o servidor
+# embutido do PHP e com a imagem Docker real (Apache + .htaccess), que é
+# o que roda no Render. O Render só publica depois que este workflow
+# passa (autoDeployTrigger: checksPass no render.yaml).
+#
+# Roda em push de QUALQUER branch (não só da master): uma branch de
+# trabalho fica validada assim que é publicada, antes mesmo do PR.
 on:
   push:
-    branches: [master, main]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: true
+
+# Valores só de teste, usados tanto para subir a API quanto pelos testes
+# de integração (que precisam saber o que a API espera).
+env:
+  CORS_ORIGENS: https://site-teste.example,https://site-git-*-equipe-teste.vercel.app
+  CADASTRO_CODIGO_ACESSO: codigo-de-acesso-somente-ci
+  JWT_SECRET_KEY: chave-apenas-para-ci-nao-usar-em-producao
+  WHATSAPP_API_URL: http://127.0.0.1:8099/
+  WHATSAPP_TOKEN: token-somente-ci
+  WHATSAPP_LOG: /tmp/whatsapp.log
+  BANCO_DE_TESTE: '1'
+  DB_HOST: 127.0.0.1
+  DB_PORT: '5432'
+  DB_NAME: biofrequencia_ci
+  DB_USER: postgres
+  DB_PASSWORD: postgres
+  PGPASSWORD: postgres
+
 jobs:
   validar:
-    name: Lint, testes e migrações
+    name: Lint, unitários, migrações e integração (php -S)
     runs-on: ubuntu-latest
 
     # PostgreSQL real em vez de mock: o que mais quebrou neste projeto
-    # foram as migrações nunca rodadas no banco e diferenças de SQL, e
-    # isso só aparece executando contra o banco.
+    # foram migrações nunca rodadas e diferenças entre o schema de teste
+    # e o de produção. Mesma versão principal do Supabase (17).
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -37,78 +67,108 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: pdo, pdo_pgsql, mbstring, json
+          extensions: pdo, pdo_pgsql, mbstring, json, curl, dom, simplexml
           coverage: none
 
       - name: Verificar sintaxe de todos os PHP
         run: |
           erros=0
           while IFS= read -r arquivo; do
-            php -l "$arquivo" > /dev/null || { echo "ERRO de sintaxe: $arquivo"; erros=1; }
+            php -l "$arquivo" > /dev/null || { echo "::error file=$arquivo::Erro de sintaxe"; erros=1; }
           done < <(find . -name '*.php' -not -path './vendor/*')
           exit $erros
 
       - name: Instalar dependências
         run: composer install --no-interaction --no-progress --prefer-dist
 
-      - name: Aplicar migrações
-        env:
-          PGPASSWORD: postgres
-        run: |
-          psql -h localhost -U postgres -d biofrequencia_ci -v ON_ERROR_STOP=1 \
-            -f database/migracao-completa.sql
-          for migracao in database/migrations/*.sql; do
-            echo "-> $migracao"
-            psql -h localhost -U postgres -d biofrequencia_ci -v ON_ERROR_STOP=1 -f "$migracao"
-          done
-
-      - name: Migrações são idempotentes (rodar duas vezes não quebra)
-        env:
-          PGPASSWORD: postgres
-        run: |
-          for migracao in database/migrations/*.sql; do
-            psql -h localhost -U postgres -d biofrequencia_ci -v ON_ERROR_STOP=1 -f "$migracao"
-          done
-
-      - name: Testes das regras de cálculo
+      - name: Testes unitários (regras de cálculo, fuso, CORS, escalonamento)
         run: php tests/helpers_test.php
 
-      - name: Subir a API e testar o fluxo de ocorrências
-        env:
-          PGPASSWORD: postgres
+      # Ordem igual à da produção: o schema base (001, que reproduz as
+      # restrições do Supabase), depois o script consolidado que se roda
+      # no SQL Editor, depois cada migração. Tudo de novo na sequência,
+      # para provar que nenhuma quebra se rodada duas vezes.
+      - name: Aplicar migrações (duas vezes)
         run: |
-          cat > config/config.php <<'PHP'
+          psql_ci() { psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -q "$@"; }
+          psql_ci -f database/migrations/001_schema_base.sql
+          psql_ci -f database/migracao-completa.sql
+          for rodada in 1 2; do
+            for migracao in database/migrations/*.sql; do
+              echo "-> rodada $rodada: $migracao"
+              psql_ci -f "$migracao"
+            done
+          done
+          psql_ci -f database/migracao-completa.sql
+
+      - name: Subir a API (php -S) e o provedor de WhatsApp falso
+        run: |
+          cat > config/config.php <<PHP
           <?php
-          define("DB_HOST","localhost");
-          define("DB_NAME","biofrequencia_ci");
-          define("DB_USER","postgres");
-          define("DB_PASSWORD","postgres");
-          define("DB_PORT","5432");
-          define("JWT_SECRET_KEY","chave-apenas-para-ci-nao-usar-em-producao");
+          define("DB_HOST", "$DB_HOST");
+          define("DB_NAME", "$DB_NAME");
+          define("DB_USER", "$DB_USER");
+          define("DB_PASSWORD", "$DB_PASSWORD");
+          define("DB_PORT", "$DB_PORT");
+          define("JWT_SECRET_KEY", "$JWT_SECRET_KEY");
           PHP
-          php -S 127.0.0.1:8080 -t . > /tmp/api.log 2>&1 &
-          for i in $(seq 1 20); do
+          php -S 127.0.0.1:8099 tests/mock_whatsapp.php > /tmp/mock.log 2>&1 &
+          # Vários processos: os testes disparam requisições simultâneas.
+          PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8080 -t . > /tmp/api.log 2>&1 &
+          for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:8080/health.php > /dev/null && break
             sleep 1
           done
-          curl -sf http://127.0.0.1:8080/health.php | tee /dev/stderr | grep -q '"sucesso":true'
-          bash tests/fluxo_ocorrencias_test.sh
+          curl -s http://127.0.0.1:8080/health.php
+
+      - name: Testes de integração
+        env:
+          API_URL: http://127.0.0.1:8080
+        run: php tests/integracao_test.php
+
+      - name: Log da API (em caso de falha)
+        if: failure()
+        run: tail -n 200 /tmp/api.log /tmp/mock.log || true
 
       - name: Nenhum segredo versionado
         run: |
           # config/config.php é gerado em tempo de execução e está no
           # .gitignore; se aparecer rastreado pelo git, é vazamento.
           if git ls-files --error-unmatch config/config.php 2>/dev/null; then
-            echo "ERRO: config/config.php está versionado"; exit 1
+            echo "::error::config/config.php está versionado"; exit 1
           fi
           echo "ok: nenhuma credencial versionada"
 
   docker:
-    name: Build da imagem Docker
+    name: Imagem Docker (Apache) + integração
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: biofrequencia_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
+
+      # PHP no runner só para o provedor falso e o script de testes; a
+      # API em si roda dentro do container.
+      - name: Instalar PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_pgsql, mbstring, json, curl, dom, simplexml
+          coverage: none
+
       - uses: docker/setup-buildx-action@v3
+
       - name: Build
         uses: docker/build-push-action@v6
         with:
@@ -118,26 +178,56 @@ jobs:
           tags: biofrequencia-api:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Container sobe e responde
-        run: |
-          # Sem banco acessível o health devolve 503 - o que se verifica
-          # aqui é que o container inicia, lê as variáveis e responde.
-          docker run -d --name api -p 8080:8080 \
-            -e PORT=8080 -e DB_HOST=localhost -e DB_NAME=x -e DB_USER=x \
-            -e DB_PASSWORD=x -e DB_PORT=5432 -e JWT_SECRET_KEY=x \
-            biofrequencia-api:ci
-          sleep 10
-          codigo=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health.php)
-          docker logs api
-          # 200 (com banco) ou 503 (sem banco) provam que PHP respondeu.
-          case "$codigo" in
-            200|503) echo "ok: container respondeu HTTP $codigo" ;;
-            *) echo "ERRO: container respondeu HTTP $codigo"; exit 1 ;;
-          esac
+
       - name: Falha sem variáveis obrigatórias
         run: |
           if docker run --rm biofrequencia-api:ci 2>&1 | grep -q "variáveis de ambiente obrigatórias"; then
             echo "ok: recusa subir sem configuração"
           else
-            echo "ERRO: subiu sem as variáveis obrigatórias"; exit 1
+            echo "::error::subiu sem as variáveis obrigatórias"; exit 1
           fi
+
+      - name: Health check acusa banco sem migrações (503)
+        run: |
+          docker run -d --name api-sem-schema --network host \
+            -e PORT=8081 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
+            biofrequencia-api:ci
+          for i in $(seq 1 30); do
+            codigo=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:8081/health.php) && [ "$codigo" != "000" ] && break
+            sleep 1
+          done
+          cat /tmp/health.json; echo
+          docker rm -f api-sem-schema > /dev/null
+          if [ "$codigo" = "503" ] && grep -q '"desatualizado"' /tmp/health.json; then
+            echo "ok: o deploy não ficaria no ar sem as migrações"
+          else
+            echo "::error::health.php deveria responder 503 com o banco sem migrações (respondeu $codigo)"; exit 1
+          fi
+
+      - name: Aplicar migrações
+        run: |
+          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -q -f database/migrations/001_schema_base.sql
+          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -q -f database/migracao-completa.sql
+
+      - name: Subir o container e o provedor de WhatsApp falso
+        run: |
+          php -S 127.0.0.1:8099 tests/mock_whatsapp.php > /tmp/mock.log 2>&1 &
+          docker run -d --name api --network host \
+            -e PORT=8080 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
+            -e CORS_ORIGENS -e CADASTRO_CODIGO_ACESSO -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
+            biofrequencia-api:ci
+          for i in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8080/health.php > /dev/null && break
+            sleep 1
+          done
+          curl -s http://127.0.0.1:8080/health.php
+
+      - name: Testes de integração contra o Apache (inclui .htaccess e erro.php)
+        env:
+          API_URL: http://127.0.0.1:8080
+          APACHE: '1'
+        run: php tests/integracao_test.php
+
+      - name: Log do container (em caso de falha)
+        if: failure()
+        run: docker logs api 2>&1 | tail -n 200 || true

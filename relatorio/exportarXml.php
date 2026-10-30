@@ -89,12 +89,13 @@ try {
                    COALESCE(f.qtd, 0) AS faltas, COALESCE(t.qtd, 0) AS atrasos
             FROM tb_aluno a
             JOIN tb_sala s ON s.id_sala = a.id_sala
-            LEFT JOIN (SELECT id_aluno, COUNT(*) qtd FROM tb_falta  WHERE dta_falta  >= ? GROUP BY id_aluno) f ON f.id_aluno = a.id_aluno
-            LEFT JOIN (SELECT id_aluno, COUNT(*) qtd FROM tb_atraso WHERE dta_atraso >= ? GROUP BY id_aluno) t ON t.id_aluno = a.id_aluno
+            LEFT JOIN (SELECT id_aluno, COUNT(DISTINCT " . sqlDataNaEscola('dta_falta') . ") qtd FROM tb_falta  WHERE dta_falta  >= ? GROUP BY id_aluno) f ON f.id_aluno = a.id_aluno
+            LEFT JOIN (SELECT id_aluno, COUNT(DISTINCT " . sqlDataNaEscola('dta_atraso') . ") qtd FROM tb_atraso WHERE dta_atraso >= ? GROUP BY id_aluno) t ON t.id_aluno = a.id_aluno
             WHERE s.id_escola = ?
             ORDER BY a.nome_aluno
         ");
-        $stmt->execute([date('Y-m-01'), date('Y-m-01'), $idEscola]);
+        // Mesma regra de filtroAluno.php: mês no fuso da escola, contando dias.
+        $stmt->execute([inicioDoMesUtc(), inicioDoMesUtc(), $idEscola]);
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $linha) {
             $frequencia = calcularFrequencia((int) $linha['faltas']);
             $item = $doc->createElement('aluno');
@@ -157,7 +158,7 @@ try {
     $itens->setAttribute('quantidade', (string) $itens->childNodes->length);
     $raiz->appendChild($itens);
 
-    $nomeArquivo = sprintf('biofrequencia_%s_%s.xml', $relatorio, date('Y-m-d'));
+    $nomeArquivo = sprintf('biofrequencia_%s_%s.xml', $relatorio, hojeNaEscola());
 
     // Content-Type e Content-Disposition corretos: sem eles o navegador
     // abre o XML na própria aba em vez de baixar, ou salva com nome

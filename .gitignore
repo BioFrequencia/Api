@@ -1,4 +1,6 @@
 config/config.php
 vendor/
 .env
+.env.*
+!.env.exemplo
 *.log

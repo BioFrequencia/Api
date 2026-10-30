@@ -3,6 +3,7 @@
 vendor
 config/config.php
 .env
+.env.*
 *.log
 AUDITORIA.md
 tests

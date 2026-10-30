@@ -4,9 +4,10 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
-autenticar();
+$idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 $idAluno = $dados["id_aluno"] ?? null;
@@ -14,6 +15,9 @@ $idAluno = $dados["id_aluno"] ?? null;
 if (!inteiroValido($idAluno)) {
     enviarErro("Informe um aluno válido.", 422);
 }
+
+// CPF, telefone e email dos responsáveis: só para a escola do aluno.
+exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
 try {
     $stmt = $conexao->prepare("

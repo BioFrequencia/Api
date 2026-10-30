@@ -14,4 +14,10 @@ define("DB_PORT","PORTA");
 // que já está no .gitignore.
 define("JWT_SECRET_KEY","SUBSTITUA_POR_UMA_CHAVE_ALEATORIA_LONGA");
 
+// Código que quem cria uma conta de coordenação precisa informar no
+// cadastro (user/addCoord.php). Sem ele, o cadastro fica desligado. Em
+// produção (Render/Docker) use a variável de ambiente de mesmo nome;
+// esta constante é a alternativa para quem roda no XAMPP.
+// define("CADASTRO_CODIGO_ACESSO","TROQUE_POR_UM_CODIGO_DA_ESCOLA");
+
 ?>

@@ -507,3 +507,81 @@ e ele nunca foi commitado (está no `.gitignore`) - mas como a senha
 ficou registrada na conversa, vale considerar trocá-la depois (Supabase
 → Database → Reset database password) como boa prática, não porque
 algo específico tenha vazado daqui.
+
+---
+
+## 8. Quarta rodada (29/10/2026): auditoria dos três repositórios
+
+Pedido: auditoria completa de API, site e app, com correção, testes de
+regressão e CI. Trabalho na branch `finalizacao/auditoria-tcc` dos três
+repositórios. Arquitetura documentada em `docs/ARQUITETURA.md`.
+
+### Como foi verificado
+
+- **Banco de produção** consultado só para leitura (Supabase, via MCP):
+  tabelas, colunas, restrições, fuso e contagens. Nenhum dado foi
+  alterado.
+- **PHP**: sem PHP nem Docker utilizáveis nesta máquina (o Docker
+  Desktop não sobe sem WSL). Sintaxe e testes unitários rodados com
+  PHP 8.3 em WebAssembly; SQL das migrações e das consultas novas
+  validado num PostgreSQL 17 em WebAssembly (PGlite); testes de
+  integração HTTP rodados **no CI do GitHub** (Postgres 17 real), contra
+  `php -S` e contra a imagem Docker com Apache - os dois jobs verdes no
+  commit `e7f69a7`.
+- **Site e app**: testes, `tsc`, ESLint e build/bundle rodados localmente
+  e no CI do site (verde). O CI do app (repositório privado) não pôde ser
+  acompanhado daqui.
+
+### Defeitos encontrados e corrigidos (API)
+
+| # | Defeito | Causa raiz | Teste de regressão |
+|---|---|---|---|
+| 1 | Todo POST do site bloqueado por CORS | `.htaccess` respondia o OPTIONS no Apache ([R=204]) sem passar pelo PHP; os cabeçalhos de CORS saíram do `.htaccess` no commit 8acf64a e o preflight ficou sem `Allow-Origin` | integração (Apache): preflight permitido/negado, URL inexistente |
+| 2 | Banco de produção sem a migração 005 | migração nunca aplicada; o código já dependia dela | `health.php` responde 503 listando o que falta; CI confere |
+| 3 | Notificações aos responsáveis nunca gravadas | banco só aceita `Pendente/Enviado/Erro` (`chk_status_notificacao`); o código gravava `pendente/enviada` e o erro ia só para o log | integração + 001 reproduz a restrição de produção |
+| 4 | Cadastro de responsável com gênero "Outro" dava 500 | banco aceita `Masculino/Feminino/Indefinido` | integração |
+| 5 | Dados de outras escolas acessíveis trocando o id | 20 endpoints só conferiam se o id existia (responsáveis com CPF/telefone, notificações, check-ins, biometria, acompanhamento, dashboard com turmas de todas as escolas) | integração: a escola 2 tenta cada operação na escola 1 |
+| 6 | Qualquer pessoa criava conta e via todos os alunos | cadastro aberto + escola padrão 1 | integração: sem código / código errado = 403 |
+| 7 | Códigos de vínculo valendo 2h15 | validade calculada no PHP (XAMPP em Europe/Berlin) e conferida no banco (UTC) | integração: validade = 900 s |
+| 8 | Falta/atraso duplicado no mesmo dia | nenhuma trava (produção tem 2 atrasos do mesmo aluno a 26 s) | integração: 4 envios simultâneos = 1 gravado |
+| 9 | Ocorrência aprovada lançada no dia da aprovação | `NOW()` na aprovação | integração |
+| 10 | Mesmo aparelho não conseguia se vincular de novo (500) | `device_uuid` UNIQUE + INSERT novo | integração |
+| 11 | Contato com a família em dobro / nível oscilando 3-4-3-4 / escalada imediata ao voltar a ter alerta | leitura-e-gravação não atômica; nível antigo nunca zerado | unitário (escalonamento) + integração (3 telas simultâneas = 1 mensagem) |
+| 12 | Build Docker do CI quebrado | imagem sem `unzip`; Composer não extraía pacotes | job Docker do CI |
+| 13 | CI "Aplicar migrações" quebrado | 001/004 não idempotentes | migrações rodadas duas vezes no CI |
+| 14 | Teste unitário 50/51 | teste dependia da data de hoje | "hoje" virou parâmetro |
+| 15 | Datas/horários no dia errado depois das 21h | dias/meses calculados em UTC | unitário (fuso) + integração (22:30 local) |
+| 16 | Faltas consecutivas juntando terça e sexta | regra de "3 dias corridos" | unitário |
+| 17 | Login falhava com email capitalizado pelo celular | comparação sensível a maiúsculas | integração |
+| 18 | Datas/textos inválidos viravam 500 | sem validação | integração (422) |
+
+### Site e app
+
+- **Site**: endereço da API vinha fixo como `http://localhost/...` e
+  ficava salvo no navegador - agora é `NEXT_PUBLIC_API_URL` do deploy e
+  produção nunca usa localhost; sessão vencida não abre mais o painel;
+  página de downloads com link de APK que existia só num repositório
+  pessoal (404) e com "Entrar" para quem já estava logado; horários
+  mostrados 3 h adiantados; Next.js 16.3.5 com alerta crítico atualizado
+  para 16.4.3.
+- **App**: o APK embutia `http://10.0.2.2/...` (endereço do emulador) -
+  era a "dependência da mesma rede"; agora o build de distribuição usa a
+  API pública e falha se o endereço for local. Biometria aceita o PIN do
+  celular como alternativa e explica cada falha. A tela "Cadastre-se"
+  chamava endpoints que nunca existiram e foi retirada. EAS com número de
+  build automático.
+
+### Pendências que dependem de ação humana
+
+1. Aplicar `database/migracao-completa.sql` no Supabase (inclui a 005).
+2. Criar o serviço no Render (o workspace conectado não tinha nenhum) com
+   as variáveis do `render.yaml`.
+3. Na Vercel: `NEXT_PUBLIC_API_URL` com a URL do Render; no Render:
+   `CORS_ORIGENS` com a URL da Vercel e `CADASTRO_CODIGO_ACESSO`.
+4. Tornar o repositório App público (ou definir `NEXT_PUBLIC_APK_URL`),
+   para o link do APK abrir para quem não tem acesso ao GitHub da equipe.
+5. Uma conta de coordenação de produção ainda tem a senha em texto puro:
+   ela vira hash no próximo login; senão, redefina a senha.
+6. Testar em celular físico: vínculo, check-in, ocorrência, biometria
+   (cancelar, sem biometria só com PIN, bloqueio por tentativas).
+7. Biometria facial do desktop: limiar 0,55 ainda não calibrado.

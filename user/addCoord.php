@@ -5,17 +5,47 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 
+/**
+ * Cadastro de uma nova conta de coordenação.
+ *
+ * Exige o código de acesso da escola (variável de ambiente
+ * CADASTRO_CODIGO_ACESSO). Antes o cadastro era aberto: qualquer pessoa
+ * na internet criava uma conta pelo site e, como toda conta nova cai na
+ * escola padrão (tb_coordenacao.id_escola DEFAULT 1), passava a ver
+ * nomes, turmas, faltas e os dados dos responsáveis (CPF, telefone) de
+ * todos os alunos. Sem a variável definida, o cadastro fica desligado -
+ * a escolha segura quando ninguém configurou nada.
+ *
+ * Quem administra o sistema repassa o código só para quem deve ter
+ * acesso; trocar a variável invalida o código antigo na hora.
+ */
+// Variável de ambiente (Render/Docker) ou, no XAMPP, a constante de
+// mesmo nome em config/config.php.
+$codigoConfigurado = getenv('CADASTRO_CODIGO_ACESSO');
+if ($codigoConfigurado === false && defined('CADASTRO_CODIGO_ACESSO')) {
+    $codigoConfigurado = CADASTRO_CODIGO_ACESSO;
+}
+$codigoConfigurado = $codigoConfigurado === false ? '' : trim((string) $codigoConfigurado);
+
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
-$nome  = $dados["nome"] ?? null;
-$email = $dados["email"] ?? null;
-$senha = $dados["senha"] ?? null;
+$nome   = $dados["nome"] ?? null;
+$email  = $dados["email"] ?? null;
+$senha  = $dados["senha"] ?? null;
+$codigo = $dados["codigo_acesso"] ?? null;
+
+if ($codigoConfigurado === '') {
+    enviarErro("O cadastro de novas contas está desativado. Peça acesso à coordenação responsável pelo sistema.", 403);
+}
+if (!is_string($codigo) || !hash_equals($codigoConfigurado, trim($codigo))) {
+    enviarErro("Código de acesso da escola inválido.", 403);
+}
 
 if (!campoPreenchido($nome) || !campoPreenchido($email) || !campoPreenchido($senha)) {
     enviarErro("Preencha nome, email e senha.", 422);
 }
 
-if (!emailValido($email)) {
+if (!emailValido($email) || mb_strlen(trim($email)) > 150) {
     enviarErro("Informe um email válido.", 422);
 }
 
@@ -23,14 +53,21 @@ if (!senhaForte($senha)) {
     enviarErro("A senha deve ter pelo menos 6 caracteres.", 422);
 }
 
+if (mb_strlen(trim($nome)) > 150) {
+    enviarErro("O nome deve ter no máximo 150 caracteres.", 422);
+}
+
 $nome  = trim($nome);
-$email = trim($email);
+// Email sempre em minúsculas: o teclado do celular coloca a primeira
+// letra em maiúscula, e "Coord@escola" e "coord@escola" viravam contas
+// diferentes (ou um login que "não existe").
+$email = mb_strtolower(trim($email));
 
 try {
-    // Checagem prévia: a validação real de unicidade é o índice/constraint
-    // no banco (ver tratamento do SQLSTATE 23505 abaixo); esta consulta
+    // Checagem prévia: a validação real de unicidade é a constraint no
+    // banco (ver tratamento do SQLSTATE 23505 abaixo); esta consulta
     // só existe para devolver uma mensagem amigável no caso comum.
-    $verifica = $conexao->prepare("SELECT 1 FROM tb_coordenacao WHERE email_coordenacao = ?");
+    $verifica = $conexao->prepare("SELECT 1 FROM tb_coordenacao WHERE lower(email_coordenacao) = ?");
     $verifica->bindValue(1, $email);
     $verifica->execute();
 

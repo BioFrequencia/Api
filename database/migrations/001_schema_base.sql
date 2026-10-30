@@ -1,7 +1,15 @@
 -- Schema base já existente em produção (Supabase/PostgreSQL), reproduzido
 -- aqui só para referência e para permitir montar um banco de testes do
--- zero localmente. NÃO rode isso contra o banco de produção - ele já tem
--- essas tabelas. Confirmado via Schema Visualizer do Supabase.
+-- zero localmente. NÃO é preciso rodar isso contra o banco de produção -
+-- ele já tem essas tabelas (rodar não quebra: tudo é idempotente).
+--
+-- Conferido contra o banco de produção em 29/10/2026 (information_schema
+-- e pg_constraint), não só pelo Schema Visualizer: as restrições CHECK e
+-- UNIQUE abaixo existem lá e NÃO existiam nesta reprodução. Por isso os
+-- testes passavam e a produção quebrava - ex.: o código gravava o status
+-- 'pendente' em tb_notificacao e o banco só aceita 'Pendente', 'Enviado'
+-- ou 'Erro'. O banco de testes do CI precisa recusar o mesmo que a
+-- produção recusa.
 
 CREATE TABLE IF NOT EXISTS tb_coordenacao (
     id_coordenacao SERIAL PRIMARY KEY,
@@ -9,10 +17,6 @@ CREATE TABLE IF NOT EXISTS tb_coordenacao (
     email_coordenacao VARCHAR(150) NOT NULL,
     senha_coordenacao VARCHAR(255) NOT NULL
 );
-
--- Pendência apontada na rodada anterior de auditoria: sem esta constraint,
--- a unicidade de email depende só da aplicação.
-ALTER TABLE tb_coordenacao ADD CONSTRAINT uq_email_coordenacao UNIQUE (email_coordenacao);
 
 CREATE TABLE IF NOT EXISTS tb_sala (
     id_sala SERIAL PRIMARY KEY,
@@ -72,3 +76,42 @@ CREATE TABLE IF NOT EXISTS tb_notificacao (
     mensagem TEXT,
     status_notificacao VARCHAR(30)
 );
+
+-- Restrições que existem em produção. Cada uma num bloco que ignora "já
+-- existe", para o arquivo poder rodar de novo sem erro (o CI roda todas
+-- as migrações duas vezes para garantir isso).
+DO $$ BEGIN
+    ALTER TABLE tb_coordenacao ADD CONSTRAINT uq_email_coordenacao UNIQUE (email_coordenacao);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_aluno ADD CONSTRAINT chk_genero_aluno
+        CHECK (genero_aluno IN ('Masculino', 'Feminino', 'Indefinido'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_sala ADD CONSTRAINT chk_periodo_sala
+        CHECK (periodo_sala IN ('Matutino', 'Vespertino', 'Noturno', 'Indefinido'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_responsavel ADD CONSTRAINT chk_genero_responsavel
+        CHECK (genero_responsavel IN ('Masculino', 'Feminino', 'Indefinido'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_responsavel ADD CONSTRAINT tb_responsavel_cpf_responsavel_key UNIQUE (cpf_responsavel);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_responsavel ADD CONSTRAINT tb_responsavel_telefone_responsavel_key UNIQUE (telefone_responsavel);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_responsavel ADD CONSTRAINT tb_responsavel_email_responsavel_key UNIQUE (email_responsavel);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE tb_notificacao ADD CONSTRAINT chk_status_notificacao
+        CHECK (status_notificacao IN ('Enviado', 'Erro', 'Pendente'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

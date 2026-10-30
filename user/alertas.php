@@ -17,14 +17,16 @@ $idSala     = $dados["id_sala"] ?? null;      // filtro de turma (opcional)
 $tipo       = $dados["tipo"] ?? null;         // faltas | frequencia | atrasos (opcional)
 $prioridade = $dados["prioridade"] ?? null;   // alta | media | baixa (opcional)
 
+$idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
+
 try {
-    $todos = buscarAlertas($conexao, escolaDaCoordenacao($conexao, $idCoordenacao));
+    $todos = buscarAlertas($conexao, $idEscola);
 
     // Nível de cada aluno e, no nível máximo, contato com o responsável.
     // Calculado aqui (e não num cron) porque esta é a tela que a
     // coordenação abre todo dia - sem agendador para manter no ar.
     $niveis = calcularNiveis($conexao, $todos);
-    gravarNiveis($conexao, $niveis);
+    gravarNiveis($conexao, $niveis, $idEscola);
 
     $contatos = [];
     foreach ($niveis as $idAluno => $dadosNivel) {
@@ -33,7 +35,7 @@ try {
             $resumo = contatarResponsaveisNivelMaximo(
                 $conexao, (int) $idAluno, $nome, $dadosNivel['motivo'], $dadosNivel['nivel']
             );
-            if ($resumo['enviados'] > 0 || $resumo['na_fila'] > 0) {
+            if ($resumo['enviados'] > 0 || $resumo['na_fila'] > 0 || $resumo['falhas'] > 0) {
                 $contatos[] = ["id_aluno" => (int) $idAluno, "nome_aluno" => $nome] + $resumo;
             }
         }
@@ -48,14 +50,9 @@ try {
     unset($alerta);
 
     if (!empty($idSala)) {
-        // id_sala não vem no retorno de buscarAlertas() (só o nome da
-        // turma), então o filtro por turma é feito pelo nome - suficiente
-        // aqui pois nome_sala já é único no schema atual.
-        $stmt = $conexao->prepare("SELECT nome_sala FROM tb_sala WHERE id_sala = ?");
-        $stmt->bindValue(1, $idSala);
-        $stmt->execute();
-        $nomeSala = $stmt->fetchColumn();
-        $todos = array_values(array_filter($todos, fn($a) => $a['turma'] === $nomeSala));
+        // Pelo id da turma (antes era pelo nome, que se repete entre
+        // escolas e entre períodos - "1A" de manhã e "1A" à tarde).
+        $todos = array_values(array_filter($todos, fn($a) => $a['id_sala'] === (int) $idSala));
     }
     if (!empty($tipo)) {
         $todos = array_values(array_filter($todos, fn($a) => $a['tipo'] === $tipo));
