@@ -60,17 +60,22 @@ vezes seguidas sem erro):
 psql -U seu_usuario -d seu_banco -f database/migracao-completa.sql
 ```
 
-O script já inclui a migração **005** (escopo por escola, fila de
+O script já inclui as migrações **005** (escopo por escola, fila de
 ocorrências do app e níveis de alerta), da qual o código atual depende
-em quase todo endpoint. Em 29/10/2026 o banco de produção **ainda não a
-tinha**. Para saber se falta alguma migração, abra `/health.php`: ele
-responde 503 com `"schema": "desatualizado"` e a lista em `"faltando"`.
+em quase todo endpoint, e **006** (conta do aluno no app, que substituiu
+o código de vínculo). Em 30/10/2026 o banco de produção **ainda não
+tinha nenhuma das duas**. Para saber se falta alguma migração, abra
+`/health.php`: ele responde 503 com `"schema": "desatualizado"` e a
+lista em `"faltando"`.
 
 Alternativamente, os arquivos individuais em `database/migrations/`
 (`001_schema_base.sql` reproduz o schema original de produção, com as
-mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003` e
-`005` são os que faltavam; `004_responsavel_cpf_unique.sql` é opcional).
-Todos podem ser rodados mais de uma vez sem erro.
+mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003`,
+`005` e `006` são os que faltavam; `004_responsavel_cpf_unique.sql` é
+opcional). Todos podem ser rodados mais de uma vez sem erro. As tabelas
+novas já saem com RLS ligado e sem política, como as que existem no
+Supabase: só a API (dona das tabelas) as acessa, e não a API REST
+pública do Supabase.
 
 ## Rodando localmente
 
@@ -112,7 +117,8 @@ Arquitetura e fluxos entre site, app, API e banco: `docs/ARQUITETURA.md`.
 ```
 Authentication/   autenticação (JWT)
 biometria/        cadastro/verificação de biometria facial
-digital/          pareamento e check-in do app do aluno (biometria "digital")
+aluno/            conta do aluno no app: cadastro, login e remoção pela coordenação
+digital/          check-in do app do aluno (biometria "digital") e desconexão do celular
 acompanhamento/   registro de contatos com responsáveis
 user/             coordenação, alunos, salas, faltas/atrasos, alertas, dashboard
 helpers/          validação, respostas padronizadas, cálculo de frequência/alertas

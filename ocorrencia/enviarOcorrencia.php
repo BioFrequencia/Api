@@ -10,8 +10,8 @@ require_once __DIR__ . '/../helpers/dispositivo.php';
  * Envio de ocorrência pelo app do aluno.
  *
  * Fluxo: o aluno confirma a biometria no próprio aparelho (a API nunca
- * vê o dado biométrico), o app descobre de quem é o aparelho pelo
- * vínculo criado em digital/vincularDispositivo.php, o aluno preenche
+ * vê o dado biométrico), a API sabe de quem é o aparelho pelo login do
+ * aluno no app (aluno/entrar.php), o aluno preenche
  * motivo, observação e se o responsável está ciente, e o envio chega
  * aqui ASSINADO com o segredo do dispositivo.
  *

@@ -2,7 +2,7 @@
 /**
  * Testes de integração da API: requisições HTTP de verdade contra a API
  * rodando (php -S no CI, ou o container Docker com Apache) e um
- * PostgreSQL de teste com o schema de produção (migrações 001-005).
+ * PostgreSQL de teste com o schema de produção (migrações 001-006).
  * Cada resultado gravado é conferido direto no banco, não só pela
  * resposta.
  *
@@ -230,7 +230,7 @@ $inicioMesLocal = (new DateTimeImmutable('first day of this month', $fuso))->for
 // ------------------------------------------------------------ preparo
 secao('Preparo (banco limpo)');
 $pdo->exec("
-    TRUNCATE tb_ocorrencia_pendente, tb_checkin_biometrico, tb_dispositivo_aluno, tb_codigo_vinculo,
+    TRUNCATE tb_ocorrencia_pendente, tb_checkin_biometrico, tb_dispositivo_aluno, tb_codigo_vinculo, tb_conta_aluno,
              tb_notificacao, tb_alerta_nivel, tb_alerta_encerrado, tb_acompanhamento, tb_verificacao_facial,
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
              tb_sala, tb_coordenacao RESTART IDENTITY CASCADE
@@ -512,25 +512,66 @@ verificar('dashboard da escola 1 lista 1A e 1B', array_column($r['json']['dados'
 verificar('dashboard da escola 1 tem 6 meses de evolução', count($r['json']['dados']['evolucao_mensal'] ?? []) === 6, $r['texto']);
 
 // ------------------------------------------------------------ app do aluno
-secao('App do aluno: vínculo, check-in e ocorrências');
-$r = post('digital/gerarCodigoVinculo.php', ['id_aluno' => $elisa], $t2);
-verificar('outra escola gerando código de vínculo: 404', $r['status'] === 404, $r['texto']);
-$r = post('digital/gerarCodigoVinculo.php', ['id_aluno' => $elisa], $t1);
-$codigo = $r['json']['dados']['codigo'] ?? '';
-$validade = (int) valor("SELECT EXTRACT(EPOCH FROM expira_em - criado_em)::int FROM tb_codigo_vinculo WHERE codigo = ?", [$codigo]);
-verificar('código vale 15 minutos no relógio do banco (antes valia 2h15)', abs($validade - 900) <= 5, $validade);
+secao('App do aluno: conta e login');
 $uuid = 'aparelho-ci-' . bin2hex(random_bytes(4));
-$r = post('digital/vincularDispositivo.php', ['codigo' => strtolower($codigo), 'device_uuid' => $uuid]);
+$criarConta = fn(array $campos) => post('aluno/criarConta.php', $campos + [
+    'nome' => 'Elisa Teste', 'data_nascimento' => '2010-05-10', 'email' => 'elisa@aluno.test',
+    'senha' => 'Senha@123', 'device_uuid' => $uuid,
+]);
+$entrar = fn(string $email, string $senha, string $aparelho) => post('aluno/entrar.php',
+    ['email' => $email, 'senha' => $senha, 'device_uuid' => $aparelho]);
+
+$r = $criarConta(['nome' => 'Elisa Errada']);
+verificar('criar conta com nome que não é de nenhum aluno: 404', $r['status'] === 404, $r['texto']);
+$r = $criarConta(['data_nascimento' => '2010-05-11']);
+verificar('criar conta com outra data de nascimento: 404', $r['status'] === 404, $r['texto']);
+$r = $criarConta(['senha' => '123']);
+verificar('criar conta com senha curta: 422', $r['status'] === 422, $r['texto']);
+$r = $criarConta(['email' => 'COORD1@escola.test']);
+verificar('conta de aluno com e-mail da coordenação: 409', $r['status'] === 409, $r['texto']);
+$r = $criarConta(['nome' => '  ELISA   teste ', 'email' => ' Elisa@Aluno.TEST ']);
 $segredo = $r['json']['dados']['device_secret'] ?? '';
-verificar('vincular aparelho: 200 e segredo entregue', $r['status'] === 200 && strlen($segredo) === 64, $r['texto']);
-$r = post('digital/vincularDispositivo.php', ['codigo' => $codigo, 'device_uuid' => 'outro-aparelho']);
-verificar('mesmo código de novo: 401', $r['status'] === 401, $r['texto']);
-$codigo2 = post('digital/gerarCodigoVinculo.php', ['id_aluno' => $elisa], $t1)['json']['dados']['codigo'] ?? '';
-$r = post('digital/vincularDispositivo.php', ['codigo' => $codigo2, 'device_uuid' => $uuid]);
+verificar('criar conta (caixa e espaços diferentes): 201, aluno certo e celular conectado', $r['status'] === 201
+    && ($r['json']['dados']['id_aluno'] ?? 0) === $elisa && strlen($segredo) === 64
+    && ($r['json']['dados']['nome_aluno'] ?? '') === 'Elisa Teste' && ($r['json']['dados']['nome_sala'] ?? '') === '1A', $r['texto']);
+$conta = sql("SELECT email_conta, senha_conta FROM tb_conta_aluno WHERE id_aluno = ?", [$elisa])[0] ?? [];
+verificar('conta gravada com e-mail em minúsculas e senha com hash', ($conta['email_conta'] ?? '') === 'elisa@aluno.test'
+    && ($conta['senha_conta'] ?? '') !== 'Senha@123' && password_verify('Senha@123', $conta['senha_conta'] ?? ''), $conta['email_conta'] ?? null);
+$r = $criarConta(['email' => 'outra@aluno.test']);
+verificar('segunda conta para o mesmo aluno: 409', $r['status'] === 409, $r['texto']);
+$r = $criarConta(['nome' => 'Fabio Teste']);
+verificar('mesmo e-mail para outro aluno: 409', $r['status'] === 409, $r['texto']);
+
+$joao = (int) ($novoAluno($t2, $sala2, 'João Pedro da Silva')['json']['dados']['id_aluno'] ?? 0);
+$r = $criarConta(['nome' => 'joao silva', 'email' => 'joao@aluno.test', 'device_uuid' => 'aparelho-joao']);
+verificar('só primeiro e último nome, sem acento: encontra o aluno', $r['status'] === 201 && ($r['json']['dados']['id_aluno'] ?? 0) === $joao, $r['texto']);
+$novoAluno($t2, $sala2, 'Gabi Lima Teste');
+$r = $criarConta(['nome' => 'Gabi Souza Teste', 'email' => 'gabi@aluno.test', 'device_uuid' => 'aparelho-gabi']);
+verificar('primeiro e último nome de dois alunos: 409 pedindo o nome completo', $r['status'] === 409
+    && str_contains($r['json']['mensagem'] ?? '', 'nome completo'), $r['texto']);
+$r = $criarConta(['nome' => 'Gabi Teste', 'email' => 'gabi@aluno.test', 'device_uuid' => 'aparelho-gabi']);
+verificar('nome completo igual desempata', $r['status'] === 201 && ($r['json']['dados']['id_aluno'] ?? 0) === $gabi, $r['texto']);
+
+$r = $entrar('elisa@aluno.test', 'errada', $uuid);
+verificar('login do aluno com senha errada: 401', $r['status'] === 401, $r['texto']);
+$r = $entrar('ninguem@aluno.test', 'Senha@123', $uuid);
+verificar('login com e-mail sem conta: 401', $r['status'] === 401, $r['texto']);
+$r = $entrar('coord1@escola.test', 'Senha@123', $uuid);
+verificar('conta da coordenação no app: 403 explicando', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'coordenação'), $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'elisa@aluno.test', 'senha' => 'Senha@123']);
+verificar('conta de aluno no login do site: 403 mandando para o app', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'aplicativo'), $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'elisa@aluno.test', 'senha' => 'errada']);
+verificar('conta de aluno no site com senha errada: 401 genérico', $r['status'] === 401, $r['texto']);
+$r = $entrar(' Elisa@Aluno.test ', 'Senha@123', $uuid);
 $segredo2 = $r['json']['dados']['device_secret'] ?? '';
-verificar('vincular de novo o MESMO aparelho: 200 (antes: 500 por device_uuid único)', $r['status'] === 200 && $segredo2 !== '' && $segredo2 !== $segredo, $r['texto']);
+verificar('login do aluno: 200 e segredo novo para o mesmo celular', $r['status'] === 200 && strlen($segredo2) === 64
+    && $segredo2 !== $segredo && ($r['json']['dados']['email'] ?? '') === 'elisa@aluno.test', $r['texto']);
+verificar('o mesmo celular continua sendo uma linha só', (int) valor("SELECT count(*) FROM tb_dispositivo_aluno WHERE device_uuid = ?", [$uuid]) === 1);
 $r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo, 'atraso'));
-verificar('segredo antigo deixou de valer: 401', $r['status'] === 401, $r['texto']);
+verificar('segredo do cadastro deixou de valer depois do login: 401 pedindo para entrar de novo', $r['status'] === 401
+    && ($r['json']['dados']['reconectar'] ?? null) === true, $r['texto']);
+
+secao('App do aluno: check-in e ocorrências');
 $r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'atraso'));
 $idCheckin = (int) ($r['json']['dados']['id_checkin'] ?? 0);
 verificar('check-in assinado: 200', $r['status'] === 200 && $idCheckin > 0, $r['texto']);
@@ -578,12 +619,43 @@ $r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrenciaA
 verificar('aprovar atraso de um dia já lançado à mão não cria outro', $r['status'] === 200 && ($r['json']['dados']['ja_existia'] ?? null) === true
     && ($r['json']['dados']['id_registro'] ?? 0) === $idAtraso
     && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$elisa]) === 1, $r['texto']);
-$r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t2);
-verificar('outra escola revogando aparelho: 404', $r['status'] === 404, $r['texto']);
-$r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t1);
-verificar('revogar aparelho: 200', $r['status'] === 200 && ($r['json']['dados']['quantidade'] ?? 0) === 1, $r['texto']);
+secao('App do aluno: celular e conta pela coordenação');
+$r = $entrar('elisa@aluno.test', 'Senha@123', 'aparelho-ci-2-' . bin2hex(random_bytes(4)));
+verificar('login em outro celular: 200', $r['status'] === 200 && ($r['json']['dados']['device_secret'] ?? '') !== '', $r['texto']);
 $r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'presenca'));
-verificar('aparelho revogado: 401', $r['status'] === 401, $r['texto']);
+verificar('o celular anterior foi desconectado (um por aluno): 401 pedindo para entrar de novo', $r['status'] === 401
+    && ($r['json']['dados']['reconectar'] ?? null) === true, $r['texto']);
+$segredo2 = $entrar('elisa@aluno.test', 'Senha@123', $uuid)['json']['dados']['device_secret'] ?? '';
+$r = post('user/historicoAluno.php', ['id_aluno' => $elisa], $t1);
+verificar('página do aluno mostra a conta do app e 1 celular conectado', ($r['json']['dados']['aluno']['email_app'] ?? '') === 'elisa@aluno.test'
+    && ($r['json']['dados']['aluno']['celulares_ativos'] ?? null) === 1, $r['texto']);
+$r = post('user/historicoAluno.php', ['id_aluno' => $ana], $t1);
+verificar('aluno sem conta: email_app nulo', array_key_exists('email_app', $r['json']['dados']['aluno'] ?? [])
+    && $r['json']['dados']['aluno']['email_app'] === null, $r['texto']);
+$r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t2);
+verificar('outra escola desconectando o celular: 404', $r['status'] === 404, $r['texto']);
+$r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t1);
+verificar('desconectar o celular: 200', $r['status'] === 200 && ($r['json']['dados']['quantidade'] ?? 0) === 1, $r['texto']);
+$r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'presenca'));
+verificar('celular desconectado: 401 pedindo para entrar de novo', $r['status'] === 401 && ($r['json']['dados']['reconectar'] ?? null) === true, $r['texto']);
+$r = $entrar('elisa@aluno.test', 'Senha@123', $uuid);
+$segredo2 = $r['json']['dados']['device_secret'] ?? '';
+verificar('depois de desconectado, o aluno entra de novo com a mesma conta', $r['status'] === 200 && $segredo2 !== '', $r['texto']);
+$r = post('aluno/removerConta.php', ['id_aluno' => $elisa], $t2);
+verificar('outra escola removendo a conta do app: 404', $r['status'] === 404, $r['texto']);
+$r = post('aluno/removerConta.php', ['id_aluno' => $elisa]);
+verificar('remover conta sem token: 401', $r['status'] === 401, $r['texto']);
+$r = post('aluno/removerConta.php', ['id_aluno' => $elisa], $t1);
+verificar('remover a conta do app: 200 e celular desconectado', $r['status'] === 200
+    && ($r['json']['dados']['celulares_desconectados'] ?? 0) === 1, $r['texto']);
+$r = $entrar('elisa@aluno.test', 'Senha@123', $uuid);
+verificar('conta removida não entra mais: 401', $r['status'] === 401, $r['texto']);
+$r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'presenca'));
+verificar('celular da conta removida: 401', $r['status'] === 401, $r['texto']);
+$r = post('aluno/removerConta.php', ['id_aluno' => $elisa], $t1);
+verificar('remover de novo: 404 (aluno sem conta)', $r['status'] === 404, $r['texto']);
+$r = $criarConta(['email' => 'elisa.nova@aluno.test']);
+verificar('depois da remoção o aluno cria uma conta nova', $r['status'] === 201 && ($r['json']['dados']['id_aluno'] ?? 0) === $elisa, $r['texto']);
 
 // ------------------------------------------------------------ demais telas
 secao('Acompanhamento, biometria facial e relatório XML');

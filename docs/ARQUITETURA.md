@@ -39,14 +39,24 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
 4. **Faltas e atrasos** (`helpers/registroEvento.php`): no máximo um por
    aluno por dia (fuso da escola), com trava `pg_advisory_xact_lock`.
    Usado pelo lançamento manual e pela aprovação de ocorrências do app.
-5. **Aluno no app**: a coordenação gera um código de 8 caracteres (vale 15
-   min, uso único); o app manda o código + um UUID do aparelho
-   (`digital/vincularDispositivo.php`) e recebe um segredo de 64 hex,
-   guardado no Keystore/Keychain. Cada envio (check-in,
-   ocorrência) confirma a identidade **no aparelho** (biometria ou PIN do
-   celular - nada biométrico vai para a API) e é assinado com
+5. **Aluno no app** (`tb_conta_aluno`, migração 006): o aluno cria a conta
+   no próprio app (`aluno/criarConta.php`) com o nome e a data de
+   nascimento do cadastro feito pela escola, e-mail e senha. A conta só é
+   criada para um aluno que já existe (vale o nome completo ou o primeiro
+   e o último nome, mais a data de nascimento); uma por aluno; e-mail
+   único entre alunos e coordenação. O login (`aluno/entrar.php`) manda
+   e-mail, senha e um UUID do aparelho e recebe um segredo de 64 hex,
+   guardado no Keystore/Keychain - um celular conectado por aluno (entrar
+   em outro desconecta o anterior). Cada envio (check-in, ocorrência)
+   confirma a identidade **no aparelho** (biometria ou PIN do celular -
+   nada biométrico vai para a API) e é assinado com
    HMAC-SHA256(`uuid|tipo|timestamp`). A API aceita a assinatura numa
-   janela de 5 minutos.
+   janela de 5 minutos. A coordenação vê a conta na página do aluno e
+   pode desconectar o celular (`digital/revogarDispositivo.php`) ou
+   remover a conta (`aluno/removerConta.php`). Conta de aluno no login do
+   site, ou de coordenação no app, recebe 403 explicando onde ela entra.
+   Isto substituiu o código de vínculo de 8 caracteres que a coordenação
+   gerava no site.
 6. **Ocorrência do app**: fica pendente (`tb_ocorrencia_pendente`) até a
    coordenação aprovar no site; aprovar lança a falta/atraso no dia do
    envio.

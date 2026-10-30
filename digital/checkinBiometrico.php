@@ -9,9 +9,10 @@ require_once __DIR__ . '/../helpers/dispositivo.php';
 /**
  * Chamado pelo app do aluno depois que a biometria (digital/Face ID) foi
  * confirmada LOCALMENTE no celular - a API nunca vê o template
- * biométrico, só recebe um check-in assinado com o segredo trocado em
- * vincularDispositivo.php. Também sem autenticar() (é o celular do
- * aluno chamando, não a coordenação); a autenticidade vem da assinatura.
+ * biométrico, só recebe um check-in assinado com o segredo que o celular
+ * recebeu no login do aluno (aluno/entrar.php). Também sem autenticar()
+ * (é o celular do aluno chamando, não a coordenação); a autenticidade vem
+ * da assinatura.
  *
  * A verificação de assinatura/janela de tempo é a mesma do envio de
  * ocorrências (helpers/dispositivo.php) - antes este arquivo tinha a
