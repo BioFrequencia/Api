@@ -1,45 +1,13 @@
 <?php
 /**
- * Utilidades para o registro do celular do aluno e a assinatura HMAC dos
- * check-ins biométricos. Ver comentário em tb_dispositivo_aluno
- * (database/migrations/003_biometria.sql) sobre por que device_secret
- * fica em texto puro no banco.
+ * Assinatura HMAC dos check-ins e ocorrências enviados pelo celular do
+ * próprio aluno (fluxo anterior ao app da coordenação). Os aparelhos que
+ * já estavam conectados continuam aceitos; aparelho novo não é mais
+ * registrado - a presença agora vem do app da coordenação
+ * (biometria/identificarFacial.php). Ver comentário em
+ * tb_dispositivo_aluno (database/migrations/003_biometria.sql) sobre por
+ * que device_secret fica em texto puro no banco.
  */
-
-function gerarSegredoDispositivo(): string {
-    return bin2hex(random_bytes(32));
-}
-
-/** device_uuid gerado pelo app (Crypto.randomUUID) - cabe na coluna de 100. */
-function identificadorDispositivoValido($deviceUuid): bool {
-    return campoPreenchido($deviceUuid) && mb_strlen($deviceUuid) <= 100;
-}
-
-/**
- * Liga o celular (device_uuid) ao aluno com um segredo novo. device_uuid
- * é UNIQUE na tabela, inclusive entre linhas inativas: um aparelho que já
- * esteve conectado (reinstalou o app, trocou de conta) reaproveita a
- * própria linha, e o segredo anterior deixa de valer.
- *
- * @return array{id_dispositivo: int, device_secret: string}
- */
-function registrarDispositivo(PDO $conexao, int $idAluno, string $deviceUuid): array {
-    $segredo = gerarSegredoDispositivo();
-    $grava = $conexao->prepare("
-        INSERT INTO tb_dispositivo_aluno (id_aluno, device_uuid, device_secret)
-        VALUES (?, ?, ?)
-        ON CONFLICT (device_uuid) DO UPDATE
-        SET id_aluno = EXCLUDED.id_aluno, device_secret = EXCLUDED.device_secret,
-            ativo = TRUE, criado_em = NOW(), revogado_em = NULL
-        RETURNING id_dispositivo
-    ");
-    $grava->bindValue(1, $idAluno);
-    $grava->bindValue(2, $deviceUuid);
-    $grava->bindValue(3, $segredo);
-    $grava->execute();
-
-    return ["id_dispositivo" => (int) $grava->fetchColumn(), "device_secret" => $segredo];
-}
 
 function assinaturaCheckin(string $deviceUuid, string $tipo, string $timestamp, string $segredo): string {
     return hash_hmac('sha256', "$deviceUuid|$tipo|$timestamp", $segredo);
@@ -106,18 +74,15 @@ function exigirDispositivoAssinado(PDO $conexao, $deviceUuid, $tipo, $timestamp,
         enviarErro("Erro no servidor ao identificar o aparelho.", 500, $erro);
     }
 
-    // "reconectar": o app apaga a conexão salva e volta para o login - nos
-    // dois casos abaixo o aluno resolve sozinho entrando de novo (a
-    // coordenação desconectou o celular, ou ele entrou em outro aparelho).
     if (!$dispositivo) {
         // É esta a resposta de "biometria não corresponde a nenhum aluno
         // cadastrado": o aparelho não está conectado a ninguém.
-        enviarErro("Este celular não está conectado a nenhuma conta de aluno. Entre de novo com seu e-mail e senha.", 401, null, ["reconectar" => true]);
+        enviarErro("Este celular não está conectado a nenhum aluno. Procure a coordenação.", 401);
     }
 
     $esperada = assinaturaCheckin($deviceUuid, $tipo, $timestamp, $dispositivo['device_secret']);
     if (!hash_equals($esperada, strtolower($assinatura))) {
-        enviarErro("Assinatura inválida. Entre de novo com seu e-mail e senha.", 401, null, ["reconectar" => true]);
+        enviarErro("Assinatura inválida.", 401);
     }
 
     $dispositivo['momento_utc'] = $momento->format('Y-m-d H:i:s');

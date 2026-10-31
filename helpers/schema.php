@@ -11,7 +11,7 @@ const OBJETOS_POR_MIGRACAO = [
     '002' => ['tb_acompanhamento', 'tb_alerta_encerrado'],
     '003' => ['tb_biometria_facial', 'tb_verificacao_facial', 'tb_codigo_vinculo', 'tb_dispositivo_aluno', 'tb_checkin_biometrico'],
     '005' => ['tb_escola', 'tb_ocorrencia_pendente', 'tb_alerta_nivel', 'tb_coordenacao.id_escola', 'tb_sala.id_escola', 'tb_notificacao.canal', 'tb_notificacao.nivel_alerta'],
-    '006' => ['tb_conta_aluno'],
+    '006' => ['tb_presenca', 'tb_consentimento_biometria', 'tb_biometria_digital', 'tb_identificacao_biometrica', 'tb_biometria_facial.cifrado'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */

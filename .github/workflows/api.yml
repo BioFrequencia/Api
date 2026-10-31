@@ -26,6 +26,7 @@ concurrency:
 env:
   CORS_ORIGENS: https://site-teste.example,https://site-git-*-equipe-teste.vercel.app
   CADASTRO_CODIGO_ACESSO: codigo-de-acesso-somente-ci
+  BIOMETRIA_CHAVE: 63692d736f6d656e74652d6e616f2d757361722d656d2d70726f647563616f21
   JWT_SECRET_KEY: chave-apenas-para-ci-nao-usar-em-producao
   WHATSAPP_API_URL: http://127.0.0.1:8099/
   WHATSAPP_TOKEN: token-somente-ci
@@ -214,7 +215,7 @@ jobs:
           php -S 127.0.0.1:8099 tests/mock_whatsapp.php > /tmp/mock.log 2>&1 &
           docker run -d --name api --network host \
             -e PORT=8080 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
-            -e CORS_ORIGENS -e CADASTRO_CODIGO_ACESSO -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
+            -e CORS_ORIGENS -e CADASTRO_CODIGO_ACESSO -e BIOMETRIA_CHAVE -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
             biofrequencia-api:ci
           for _ in $(seq 1 40); do
             curl -sf http://127.0.0.1:8080/health.php > /dev/null && break

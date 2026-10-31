@@ -5,13 +5,20 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/senha.php';
-require_once __DIR__ . '/../helpers/contaAluno.php';
 require_once __DIR__ . '/../Authentication/tokenLogin.php';
 
+/**
+ * Login da coordenação - o mesmo no site e no app de biometria.
+ *
+ * "cliente": "app" pede uma sessão de 12 horas: o app fica num tablet da
+ * escola o turno inteiro, e com as 2 horas do site a coordenação teria de
+ * entrar de novo no meio da chegada dos alunos.
+ */
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
 $email = $dados["email"] ?? null;
 $senha = $dados["senha"] ?? null;
+$duracaoSessao = ($dados["cliente"] ?? null) === 'app' ? DURACAO_SESSAO_APP : DURACAO_SESSAO_SITE;
 
 if (!campoPreenchido($email) || !campoPreenchido($senha)) {
     enviarErro("Informe email e senha.", 422);
@@ -23,9 +30,10 @@ try {
     // duas contas que só diferem na caixa (cadastros antigos), vale a
     // que bate exatamente com o que foi digitado.
     $select = $conexao->prepare(
-        "SELECT id_coordenacao, nome_coordenacao, email_coordenacao, senha_coordenacao
-         FROM tb_coordenacao WHERE lower(email_coordenacao) = lower(?)
-         ORDER BY (email_coordenacao = ?) DESC, id_coordenacao
+        "SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.senha_coordenacao, e.nome_escola
+         FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
+         WHERE lower(c.email_coordenacao) = lower(?)
+         ORDER BY (c.email_coordenacao = ?) DESC, c.id_coordenacao
          LIMIT 1"
     );
     $select->bindValue(1, trim($email));
@@ -37,11 +45,6 @@ try {
     $mensagemCredenciaisInvalidas = "Email ou senha incorretos.";
 
     if (!$coordenacao) {
-        // Conta de aluno (criada no app) digitada no site: explica, em vez
-        // de "senha incorreta" - mas só com a senha certa.
-        if (contaDeAlunoConfere($conexao, $email, $senha)) {
-            enviarErro("Esta é uma conta de aluno: ela entra pelo aplicativo BioFrequência, no celular. O site é da coordenação.", 403);
-        }
         enviarErro($mensagemCredenciaisInvalidas, 401);
     }
 
@@ -61,13 +64,15 @@ try {
         $update->execute();
     }
 
-    $token = criarToken($coordenacao['id_coordenacao']);
+    $token = criarToken($coordenacao['id_coordenacao'], $duracaoSessao);
 
     enviarSucesso("Login realizado com sucesso.", [
         "id_coordenacao"    => $coordenacao['id_coordenacao'],
         "nome_coordenacao"  => $coordenacao['nome_coordenacao'],
         "email_coordenacao" => $coordenacao['email_coordenacao'],
+        "nome_escola"       => $coordenacao['nome_escola'],
         "token"             => $token,
+        "expira_em"         => time() + $duracaoSessao,
     ]);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao tentar fazer login.", 500, $erro);

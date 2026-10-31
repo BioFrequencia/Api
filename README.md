@@ -62,8 +62,8 @@ psql -U seu_usuario -d seu_banco -f database/migracao-completa.sql
 
 O script já inclui as migrações **005** (escopo por escola, fila de
 ocorrências do app e níveis de alerta), da qual o código atual depende
-em quase todo endpoint, e **006** (conta do aluno no app, que substituiu
-o código de vínculo). Em 30/10/2026 o banco de produção **ainda não
+em quase todo endpoint, e **006** (presença, consentimento e biometria cifrada do app da
+coordenação). Em 30/10/2026 o banco de produção **ainda não
 tinha nenhuma das duas**. Para saber se falta alguma migração, abra
 `/health.php`: ele responde 503 com `"schema": "desatualizado"` e a
 lista em `"faltando"`.
@@ -117,8 +117,9 @@ Arquitetura e fluxos entre site, app, API e banco: `docs/ARQUITETURA.md`.
 ```
 Authentication/   autenticação (JWT)
 biometria/        cadastro/verificação de biometria facial
-aluno/            conta do aluno no app: cadastro, login e remoção pela coordenação
-digital/          check-in do app do aluno (biometria "digital") e desconexão do celular
+biometria/        app da coordenação: consentimento, cadastro e identificação facial, digital
+presenca/         presenças registradas pelo app (facial, digital ou manual)
+digital/          check-in pelo celular do próprio aluno (fluxo anterior)
 acompanhamento/   registro de contatos com responsáveis
 user/             coordenação, alunos, salas, faltas/atrasos, alertas, dashboard
 helpers/          validação, respostas padronizadas, cálculo de frequência/alertas
@@ -154,6 +155,7 @@ docs/             arquitetura
 | `JWT_SECRET_KEY` | sim | Assina os tokens de login. Use uma string longa e aleatória, diferente em cada ambiente. |
 | `CORS_ORIGENS` | não | Origens liberadas, separadas por vírgula (ex.: `https://biofrequencia.vercel.app`). Barra final e maiúsculas não importam. Um `*` num trecho do host libera os previews da Vercel (`https://site-git-*-equipe.vercel.app`); `https://*.vercel.app` é recusado. Sem ela valem as origens locais de desenvolvimento. |
 | `CADASTRO_CODIGO_ACESSO` | não | Código pedido no cadastro de uma nova conta de coordenação. Sem ele, o cadastro fica desligado. No XAMPP pode ser a constante de mesmo nome em `config/config.php`. |
+| `BIOMETRIA_CHAVE` | para a biometria | Chave que cifra os vetores faciais e as digitais no banco: 64 caracteres hexadecimais (ou o base64 do `generateValue` do Render). Sem ela, os endpoints de biometria respondem 503. **Não troque depois de cadastrar alunos**: a biometria gravada com a chave antiga deixa de abrir e precisa ser refeita. |
 | `PORT` | não | Porta do Apache no container (padrão 8080). O Render define sozinho. |
 | `SMTP_REMETENTE` | não | Remetente dos e-mails de nível máximo de alerta. Sem ela, o aviso fica na fila em vez de ser enviado. |
 | `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | não | Provedor de WhatsApp. Sem eles, a fila guarda um link `wa.me` pronto para a coordenação clicar. |

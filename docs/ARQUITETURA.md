@@ -34,29 +34,51 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    escola de quem chamou (`helpers/escola.php`). O aluno pertence à escola
    pela turma (`tb_aluno.id_sala -> tb_sala.id_escola`). Registro de outra
    escola responde 404.
-3. **Cadastro de coordenação**: exige o código `CADASTRO_CODIGO_ACESSO`;
-   a conta nova cai na escola padrão (`tb_coordenacao.id_escola DEFAULT 1`).
+3. **Cadastro de coordenação**: exige o código `CADASTRO_CODIGO_ACESSO`.
+   Cada coordenação é uma escola independente: a conta nova cria a
+   própria escola (`tb_escola`), e as turmas (`user/addSala.php`) e os
+   alunos dela não aparecem para nenhuma outra conta. As contas que já
+   existiam antes da migração 005 ficam juntas na escola 1.
 4. **Faltas e atrasos** (`helpers/registroEvento.php`): no máximo um por
    aluno por dia (fuso da escola), com trava `pg_advisory_xact_lock`.
    Usado pelo lançamento manual e pela aprovação de ocorrências do app.
-5. **Aluno no app** (`tb_conta_aluno`, migração 006): o aluno cria a conta
-   no próprio app (`aluno/criarConta.php`) com o nome e a data de
-   nascimento do cadastro feito pela escola, e-mail e senha. A conta só é
-   criada para um aluno que já existe (vale o nome completo ou o primeiro
-   e o último nome, mais a data de nascimento); uma por aluno; e-mail
-   único entre alunos e coordenação. O login (`aluno/entrar.php`) manda
-   e-mail, senha e um UUID do aparelho e recebe um segredo de 64 hex,
-   guardado no Keystore/Keychain - um celular conectado por aluno (entrar
-   em outro desconecta o anterior). Cada envio (check-in, ocorrência)
-   confirma a identidade **no aparelho** (biometria ou PIN do celular -
-   nada biométrico vai para a API) e é assinado com
-   HMAC-SHA256(`uuid|tipo|timestamp`). A API aceita a assinatura numa
-   janela de 5 minutos. A coordenação vê a conta na página do aluno e
-   pode desconectar o celular (`digital/revogarDispositivo.php`) ou
-   remover a conta (`aluno/removerConta.php`). Conta de aluno no login do
-   site, ou de coordenação no app, recebe 403 explicando onde ela entra.
-   Isto substituiu o código de vínculo de 8 caracteres que a coordenação
-   gerava no site.
+5. **App de biometria da coordenação** (migração 006): roda nos tablets e
+   celulares da escola, com a mesma conta da coordenação usada no site
+   (`user/selectCoord.php` com `cliente: "app"` dá uma sessão de 12 h) e
+   só enxerga os alunos dessa escola (`biometria/alunos.php`).
+   - **Consentimento** (`biometria/consentimento.php`): sem o nome do
+     responsável que autorizou, a API recusa cadastrar biometria (LGPD,
+     arts. 11 e 14). Revogar apaga a biometria do aluno.
+   - **Facial**: o app tira as fotos e roda o modelo (face-api.js,
+     ResNet-34) **no aparelho**; a foto nunca sai dele, só o vetor de 128
+     números. O cadastro (`biometria/cadastrarBiometriaFacial.php`) guarda
+     até 5 amostras por aluno, **cifradas** com AES-256-GCM
+     (`helpers/criptografia.php`, chave `BIOMETRIA_CHAVE` fora do banco,
+     id do aluno como dado autenticado), e recusa (409) um rosto que já é
+     de outro aluno da escola. A identificação
+     (`biometria/identificarFacial.php`) é 1:N no servidor, só entre os
+     alunos da escola: reconhece quando a menor distância fica abaixo de
+     0,5 e se destaca do segundo aluno mais parecido.
+   - **Presença** (`tb_presenca`): reconhecido, a presença do dia é
+     gravada na hora; a restrição UNIQUE (aluno, dia letivo) impede
+     duplicar mesmo com dois tablets ao mesmo tempo. Sem reconhecimento,
+     a coordenação registra à mão (`presenca/registrar.php`). O site e o
+     app leem em `presenca/listar.php`.
+   - **Digital**: o sensor do próprio celular não serve (o Android só
+     confirma o dono do aparelho e não entrega a digital de ninguém). Está
+     preparada para um leitor USB: templates cifrados
+     (`biometria/cadastrarBiometriaDigital.php`), entregues ao SDK do
+     leitor para a comparação no aparelho
+     (`biometria/templatesDigitais.php`), e presença com `metodo:
+     "digital"`.
+   - Toda tentativa de identificação fica em `tb_identificacao_biometrica`
+     (sem dado biométrico); `biometria/excluirBiometria.php` apaga a
+     biometria a pedido.
+
+   O fluxo anterior - o aluno confirmando a chegada no próprio celular
+   (`digital/checkinBiometrico.php`, assinatura HMAC) - continua aceito
+   para os aparelhos que já estavam conectados, mas nenhum aparelho novo
+   é registrado.
 6. **Ocorrência do app**: fica pendente (`tb_ocorrencia_pendente`) até a
    coordenação aprovar no site; aprovar lança a falta/atraso no dia do
    envio.
