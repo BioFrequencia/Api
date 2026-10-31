@@ -24,6 +24,7 @@ x-variaveis: &variaveis
   JWT_SECRET_KEY: chave-apenas-para-testes-nao-usar-em-producao
   CORS_ORIGENS: https://site-teste.example,https://site-git-*-equipe-teste.vercel.app
   CADASTRO_CODIGO_ACESSO: codigo-de-acesso-somente-teste
+  BIOMETRIA_CHAVE: 7465737465732d736f6d656e74652d6e616f2d757361722d656d2d70726f6421
   WHATSAPP_API_URL: http://whatsapp-falso:8099/
   WHATSAPP_TOKEN: token-somente-teste
 

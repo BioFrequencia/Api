@@ -36,16 +36,18 @@ $limiteInicio = localParaUtc($dataInicio);
 $limiteFim = localParaUtc((new DateTimeImmutable($dataFim))->modify('+1 day')->format('Y-m-d'));
 
 try {
-    // Só o histórico de aluno da própria escola. Junto, a conta do app
-    // (e-mail e desde quando) e quantos celulares estão conectados, para
-    // o painel "App do aluno" do site.
+    // Só o histórico de aluno da própria escola. Junto, a situação da
+    // biometria (consentimento, facial, digitais), para o painel
+    // "Biometria" da página do aluno no site.
     $stmtAluno = $conexao->prepare("
         SELECT al.id_aluno, al.nome_aluno, s.nome_sala,
-               c.email_conta AS email_app, c.criado_em AS conta_app_desde,
-               (SELECT count(*) FROM tb_dispositivo_aluno d WHERE d.id_aluno = al.id_aluno AND d.ativo) AS celulares_ativos
+               c.nome_responsavel AS consentimento_responsavel, c.registrado_em AS consentimento_em,
+               bf.atualizado_em AS facial_atualizada_em, bf.amostras AS facial_amostras,
+               (SELECT count(*) FROM tb_biometria_digital bd WHERE bd.id_aluno = al.id_aluno) AS digitais
         FROM tb_aluno al
         JOIN tb_sala s ON s.id_sala = al.id_sala
-        LEFT JOIN tb_conta_aluno c ON c.id_aluno = al.id_aluno
+        LEFT JOIN tb_consentimento_biometria c ON c.id_aluno = al.id_aluno
+        LEFT JOIN tb_biometria_facial bf ON bf.id_aluno = al.id_aluno
         WHERE al.id_aluno = ? AND s.id_escola = ?
     ");
     $stmtAluno->bindValue(1, $idAluno);

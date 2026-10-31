@@ -42,6 +42,10 @@ services:
       # informar no cadastro. Sem ele, o cadastro pelo site fica desligado.
       - key: CADASTRO_CODIGO_ACESSO
         sync: false
+      # Cifra a biometria no banco. Gerada uma vez; trocar depois de
+      # cadastrar alunos faz a biometria antiga deixar de abrir.
+      - key: BIOMETRIA_CHAVE
+        generateValue: true
       # Opcionais - sem elas o contato de nível máximo fica na fila.
       - key: SMTP_REMETENTE
         sync: false

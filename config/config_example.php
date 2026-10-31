@@ -20,4 +20,8 @@ define("JWT_SECRET_KEY","SUBSTITUA_POR_UMA_CHAVE_ALEATORIA_LONGA");
 // esta constante é a alternativa para quem roda no XAMPP.
 // define("CADASTRO_CODIGO_ACESSO","TROQUE_POR_UM_CODIGO_DA_ESCOLA");
 
+// Chave que cifra a biometria no banco (64 caracteres hexadecimais). Sem
+// ela a biometria fica desligada. Não troque depois de cadastrar alunos.
+// define("BIOMETRIA_CHAVE","GERE_64_CARACTERES_HEXADECIMAIS");
+
 ?>

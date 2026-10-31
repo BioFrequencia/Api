@@ -230,7 +230,8 @@ $inicioMesLocal = (new DateTimeImmutable('first day of this month', $fuso))->for
 // ------------------------------------------------------------ preparo
 secao('Preparo (banco limpo)');
 $pdo->exec("
-    TRUNCATE tb_ocorrencia_pendente, tb_checkin_biometrico, tb_dispositivo_aluno, tb_codigo_vinculo, tb_conta_aluno,
+    TRUNCATE tb_presenca, tb_identificacao_biometrica, tb_biometria_digital, tb_consentimento_biometria,
+             tb_ocorrencia_pendente, tb_checkin_biometrico, tb_dispositivo_aluno, tb_codigo_vinculo,
              tb_notificacao, tb_alerta_nivel, tb_alerta_encerrado, tb_acompanhamento, tb_verificacao_facial,
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
              tb_sala, tb_coordenacao RESTART IDENTITY CASCADE
@@ -289,8 +290,14 @@ verificar('mesmo email com outra caixa: 409', $r['status'] === 409, $r['texto'])
 $r = $cadastrar('coord2@escola.test', $codigoCadastro);
 verificar('segunda conta: 200', $r['status'] === 200, $r['texto']);
 $idCoord1 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord1@escola.test'");
-verificar('conta nova cai na escola padrão (1)', (int) valor("SELECT id_escola FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 1);
-sql("UPDATE tb_coordenacao SET id_escola = ? WHERE email_coordenacao = 'coord2@escola.test'", [$escola2]);
+$escolaDaConta = (int) valor("SELECT id_escola FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]);
+verificar('conta nova ganha escola própria (antes caía na escola 1 e via os alunos das outras)', $escolaDaConta !== 1
+    && valor("SELECT nome_escola FROM tb_escola WHERE id_escola = ?", [$escolaDaConta]) === 'Escola de Coordenação Teste');
+$idCoord2 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord2@escola.test'");
+// Daqui em diante a coordenação 1 usa a escola 1 (a que já existe em
+// produção, com as turmas criadas no preparo) e a 2, a escola vizinha.
+sql("UPDATE tb_coordenacao SET id_escola = 1 WHERE id_coordenacao = ?", [$idCoord1]);
+sql("UPDATE tb_coordenacao SET id_escola = ? WHERE id_coordenacao = ?", [$escola2, $idCoord2]);
 
 $r = post('user/selectCoord.php', ['email' => 'coord1@escola.test', 'senha' => 'errada']);
 verificar('login com senha errada: 401', $r['status'] === 401, $r['texto']);
@@ -511,67 +518,189 @@ $r = post('user/dashboard.php', [], $t1);
 verificar('dashboard da escola 1 lista 1A e 1B', array_column($r['json']['dados']['turmas'] ?? [], 'nome_sala') === ['1A', '1B'], $r['texto']);
 verificar('dashboard da escola 1 tem 6 meses de evolução', count($r['json']['dados']['evolucao_mensal'] ?? []) === 6, $r['texto']);
 
-// ------------------------------------------------------------ app do aluno
-secao('App do aluno: conta e login');
+// ------------------------------------------------------------ escola por coordenação
+secao('Cada coordenação é uma escola: conta nova, turmas e login do app');
+$r = post('user/addCoord.php', ['nome' => 'Coordenação Três', 'email' => 'coord3@escola.test', 'senha' => 'Senha@123',
+    'codigo_acesso' => $codigoCadastro, 'nome_escola' => 'Escola Três']);
+$escola3 = (int) valor("SELECT id_escola FROM tb_coordenacao WHERE email_coordenacao = 'coord3@escola.test'");
+verificar('conta nova cria a própria escola, com o nome informado', $r['status'] === 200 && !in_array($escola3, [0, 1, $escola2], true)
+    && valor("SELECT nome_escola FROM tb_escola WHERE id_escola = ?", [$escola3]) === 'Escola Três', $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'coord3@escola.test', 'senha' => 'Senha@123', 'cliente' => 'app']);
+$t3 = $r['json']['dados']['token'] ?? '';
+$payload = json_decode((string) base64_decode(strtr(explode('.', $t3 . '..')[1], '-_', '+/')), true) ?? [];
+verificar('login informa a escola e, no app, a sessão dura 12 horas', ($r['json']['dados']['nome_escola'] ?? '') === 'Escola Três'
+    && (($payload['exp'] ?? 0) - ($payload['iat'] ?? 0)) === 43200, $r['texto']);
+$r = post('user/listarSalas.php', [], $t3);
+verificar('escola nova começa sem turmas (não vê as da escola 1)', ($r['json']['dados'] ?? null) === [], $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => ' 3º  A ', 'periodo_sala' => 'Matutino'], $t3);
+$sala3 = (int) ($r['json']['dados']['id_sala'] ?? 0);
+verificar('coordenação cadastra a própria turma', $r['status'] === 201 && $sala3 > 0 && ($r['json']['dados']['nome_sala'] ?? '') === '3º A', $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => '3º a', 'periodo_sala' => 'Matutino'], $t3);
+verificar('turma com o mesmo nome na mesma escola: 409', $r['status'] === 409, $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => '3º A', 'periodo_sala' => 'Integral'], $t1);
+verificar('período fora do que o banco aceita: 422', $r['status'] === 422, $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => '3º A', 'periodo_sala' => 'Noturno']);
+verificar('cadastrar turma sem token: 401', $r['status'] === 401, $r['texto']);
+$r = post('user/listarSalas.php', [], $t1);
+verificar('a turma da escola nova não aparece para a escola 1', !in_array($sala3, array_column($r['json']['dados'] ?? [], 'id_sala'), true), $r['texto']);
+$r = $novoAluno($t3, $sala3, 'Tina Três');
+verificar('escola nova cadastra aluno na própria turma', ($r['json']['sucesso'] ?? false) === true, $r['texto']);
+$r = post('user/filtroAluno.php', ['pagina' => 1, 'por_pagina' => 50], $t3);
+verificar('escola nova lista só o próprio aluno', array_column($r['json']['dados']['alunos'] ?? [], 'nome_aluno') === ['Tina Três'], $r['texto']);
+
+// ------------------------------------------------------------ biometria e presença
+secao('Biometria facial cifrada, identificação e presença automática');
+// Vetores de 128 posições como os da face-api.js: cada "pessoa" é um
+// vetor unitário; outra foto da mesma pessoa é o mesmo vetor com uma
+// pequena variação (distância ~0,2); pessoas diferentes ficam a ~1,4.
+$vetor = function (int $semente): array {
+    mt_srand($semente);
+    $v = [];
+    for ($i = 0; $i < 128; $i++) {
+        $v[] = mt_rand(-1000, 1000) / 1000;
+    }
+    $norma = sqrt(array_sum(array_map(fn($x) => $x * $x, $v)));
+    return array_map(fn($x) => $x / $norma, $v);
+};
+$variacao = function (array $base, int $semente): array {
+    mt_srand($semente);
+    return array_map(fn($x) => $x + mt_rand(-1000, 1000) / 1000 * 0.03, $base);
+};
+$rostoAna = $vetor(101);
+$rostoBruno = $vetor(202);
+$amostrasAna = [$variacao($rostoAna, 1), $variacao($rostoAna, 2), $variacao($rostoAna, 3)];
+$cadastrarFacial = fn(int $aluno, array $amostras, string $token) => post('biometria/cadastrarBiometriaFacial.php',
+    ['id_aluno' => $aluno, 'amostras' => $amostras, 'modelo' => 'faceapi-resnet34-128'], $token);
+$identificar = fn(array $rosto, string $token) => post('biometria/identificarFacial.php',
+    ['embedding' => $rosto, 'modelo' => 'faceapi-resnet34-128'], $token);
+
+$r = $cadastrarFacial($ana, $amostrasAna, $t1);
+verificar('cadastrar biometria sem o consentimento do responsável: 409', $r['status'] === 409
+    && ($r['json']['dados']['falta_consentimento'] ?? null) === true, $r['texto']);
+$r = post('biometria/consentimento.php', ['id_aluno' => $ana], $t1);
+verificar('consentimento sem o nome do responsável: 422', $r['status'] === 422, $r['texto']);
+$r = post('biometria/consentimento.php', ['id_aluno' => $ana, 'nome_responsavel' => 'Mãe da Ana'], $t2);
+verificar('outra escola registrando consentimento: 404', $r['status'] === 404, $r['texto']);
+$r = post('biometria/consentimento.php', ['id_aluno' => $ana, 'nome_responsavel' => 'Mãe da Ana'], $t1);
+verificar('registrar o consentimento: 200', $r['status'] === 200, $r['texto']);
+$r = $cadastrarFacial($ana, [], $t1);
+verificar('cadastro sem amostras: 422', $r['status'] === 422, $r['texto']);
+$r = $cadastrarFacial($ana, array_fill(0, 6, $rostoAna), $t1);
+verificar('mais de 5 amostras: 422', $r['status'] === 422, $r['texto']);
+$r = $cadastrarFacial($ana, $amostrasAna, $t1);
+verificar('cadastrar a biometria facial (3 amostras): 200', $r['status'] === 200 && ($r['json']['dados']['amostras'] ?? 0) === 3, $r['texto']);
+$gravado = sql("SELECT embedding, cifrado, amostras FROM tb_biometria_facial WHERE id_aluno = ?", [$ana])[0] ?? [];
+verificar('vetores gravados cifrados (AES-GCM), sem os números em texto', str_starts_with($gravado['embedding'] ?? '', 'gcm1:')
+    && ($gravado['cifrado'] ?? false) === true && (int) ($gravado['amostras'] ?? 0) === 3 && !str_contains($gravado['embedding'] ?? '', '.'));
+
+post('biometria/consentimento.php', ['id_aluno' => $bruno, 'nome_responsavel' => 'Pai do Bruno'], $t1);
+$r = $cadastrarFacial($bruno, [$variacao($rostoAna, 9)], $t1);
+verificar('rosto que já é de outro aluno: 409 dizendo com quem parece (evita vincular à pessoa errada)', $r['status'] === 409
+    && ($r['json']['dados']['id_aluno_parecido'] ?? 0) === $ana && str_contains($r['json']['mensagem'] ?? '', 'Ana Teste'), $r['texto']);
+$r = $cadastrarFacial($bruno, [$variacao($rostoBruno, 4), $variacao($rostoBruno, 5)], $t1);
+verificar('cadastrar o rosto do Bruno: 200', $r['status'] === 200, $r['texto']);
+
+$r = $identificar($variacao($rostoAna, 7), $t1);
+$idPresencaAna = (int) ($r['json']['dados']['presenca']['id_presenca'] ?? 0);
+verificar('identificar: reconhece a Ana e registra a presença', $r['status'] === 200 && ($r['json']['dados']['reconhecido'] ?? null) === true
+    && ($r['json']['dados']['aluno']['id_aluno'] ?? 0) === $ana && ($r['json']['dados']['aluno']['nome_sala'] ?? '') === '1A'
+    && ($r['json']['dados']['presenca']['nova'] ?? null) === true, $r['texto']);
+verificar('presença gravada no dia de hoje da escola, como facial',
+    valor("SELECT dia_letivo::text || '|' || metodo FROM tb_presenca WHERE id_presenca = ?", [$idPresencaAna]) === "$hoje|facial");
+$r = $identificar($variacao($rostoAna, 8), $t1);
+verificar('identificar de novo no mesmo dia: avisa que já estava registrada, sem duplicar', ($r['json']['dados']['presenca']['nova'] ?? null) === false
+    && ($r['json']['dados']['presenca']['id_presenca'] ?? 0) === $idPresencaAna
+    && (int) valor("SELECT count(*) FROM tb_presenca WHERE id_aluno = ?", [$ana]) === 1, $r['texto']);
+$r = $identificar($vetor(303), $t1);
+verificar('rosto desconhecido: não reconhecido e nenhuma presença nova', ($r['json']['dados']['reconhecido'] ?? null) === false
+    && (int) valor("SELECT count(*) FROM tb_presenca") === 1, $r['texto']);
+verificar('as tentativas ficam registradas, sem dado biométrico',
+    (int) valor("SELECT count(*) FROM tb_identificacao_biometrica WHERE id_coordenacao = ?", [$idCoord1]) === 3
+    && (int) valor("SELECT count(*) FROM tb_identificacao_biometrica WHERE NOT reconhecido") === 1);
+$r = $identificar($variacao($rostoAna, 10), $t2);
+verificar('outra escola não reconhece os alunos da escola 1', ($r['json']['dados']['reconhecido'] ?? null) !== true
+    && (int) valor("SELECT count(*) FROM tb_presenca WHERE id_coordenacao = ?", [$idCoord2]) === 0, $r['texto']);
+$respostas = paralelo(array_fill(0, 4, ['biometria/identificarFacial.php', ['embedding' => $variacao($rostoBruno, 11), 'modelo' => 'faceapi-resnet34-128'], $t1]));
+verificar('4 tablets reconhecendo o Bruno ao mesmo tempo: uma presença só',
+    count(array_filter($respostas, fn($x) => ($x['json']['dados']['reconhecido'] ?? null) === true)) === 4
+    && count(array_filter($respostas, fn($x) => ($x['json']['dados']['presenca']['nova'] ?? null) === true)) === 1
+    && (int) valor("SELECT count(*) FROM tb_presenca WHERE id_aluno = ?", [$bruno]) === 1, array_column($respostas, 'texto'));
+
+$r = post('presenca/registrar.php', ['id_aluno' => $carla, 'metodo' => 'manual'], $t1);
+verificar('presença manual (sem biometria): 201', $r['status'] === 201 && ($r['json']['dados']['presenca']['metodo'] ?? '') === 'manual', $r['texto']);
+$r = post('presenca/registrar.php', ['id_aluno' => $carla, 'metodo' => 'manual'], $t1);
+verificar('presença manual repetida: 200 com a já registrada', $r['status'] === 200 && ($r['json']['dados']['presenca']['nova'] ?? null) === false, $r['texto']);
+$r = post('presenca/registrar.php', ['id_aluno' => $carla, 'metodo' => 'facial'], $t1);
+verificar('presença "facial" só pela identificação: 422', $r['status'] === 422, $r['texto']);
+$r = post('presenca/registrar.php', ['id_aluno' => $carla, 'metodo' => 'manual'], $t2);
+verificar('outra escola registrando presença: 404', $r['status'] === 404, $r['texto']);
+
+$r = post('presenca/listar.php', [], $t1);
+verificar('presenças de hoje: 3 presentes (Ana, Bruno, Carla) e 4 ainda não registrados', ($r['json']['dados']['total_alunos'] ?? 0) === 7
+    && count($r['json']['dados']['presentes'] ?? []) === 3 && count($r['json']['dados']['ausentes'] ?? []) === 4, $r['texto']);
+$r = post('presenca/listar.php', ['id_sala' => $sala2], $t1);
+verificar('presenças de turma de outra escola: 404', $r['status'] === 404, $r['texto']);
+$r = post('presenca/listar.php', ['data' => '30/10/2026'], $t1);
+verificar('data fora do formato: 422', $r['status'] === 422, $r['texto']);
+$r = post('presenca/listar.php', ['data' => $ontem], $t1);
+verificar('presenças de ontem: nenhuma', ($r['json']['dados']['presentes'] ?? null) === [], $r['texto']);
+
+$r = post('biometria/alunos.php', [], $t1);
+$porAluno = array_column($r['json']['dados'] ?? [], null, 'id_aluno');
+verificar('lista do app: biometria, consentimento e presença de hoje de cada aluno', count($porAluno) === 7
+    && ($porAluno[$ana]['tem_facial'] ?? null) === true && ($porAluno[$ana]['consentimento_responsavel'] ?? '') === 'Mãe da Ana'
+    && ($porAluno[$ana]['presenca_hoje'] ?? null) !== null && ($porAluno[$diego]['tem_facial'] ?? null) === false, $r['texto']);
+$r = post('biometria/alunos.php', [], $t2);
+verificar('lista do app só com os alunos da própria escola', array_column($r['json']['dados'] ?? [], 'nome_aluno') === ['Zeca Vizinho'], $r['texto']);
+$r = post('biometria/verificarBiometriaFacial.php', ['id_aluno' => $ana, 'embedding' => $variacao($rostoAna, 12)], $t1);
+verificar('verificação 1:1 com o rosto da própria aluna: confere', ($r['json']['dados']['correspondeu'] ?? null) === true, $r['texto']);
+$r = post('biometria/verificarBiometriaFacial.php', ['id_aluno' => $ana, 'embedding' => $rostoBruno], $t1);
+verificar('verificação 1:1 com outro rosto: não confere', ($r['json']['dados']['correspondeu'] ?? null) === false, $r['texto']);
+$r = post('user/historicoAluno.php', ['id_aluno' => $ana], $t1);
+verificar('página do aluno mostra o consentimento e a biometria facial', ($r['json']['dados']['aluno']['consentimento_responsavel'] ?? '') === 'Mãe da Ana'
+    && ($r['json']['dados']['aluno']['facial_amostras'] ?? 0) === 3, $r['texto']);
+
+$r = post('biometria/excluirBiometria.php', ['id_aluno' => $ana, 'tipo' => 'facial'], $t2);
+verificar('outra escola apagando biometria: 404', $r['status'] === 404, $r['texto']);
+$r = post('biometria/excluirBiometria.php', ['id_aluno' => $ana, 'tipo' => 'facial'], $t1);
+verificar('apagar a biometria facial (LGPD): 200', $r['status'] === 200, $r['texto']);
+$r = $identificar($variacao($rostoAna, 13), $t1);
+verificar('depois de apagada, a Ana não é mais reconhecida', ($r['json']['dados']['reconhecido'] ?? null) === false, $r['texto']);
+verificar('as presenças já registradas continuam (são histórico, não biometria)', (int) valor("SELECT count(*) FROM tb_presenca WHERE id_aluno = ?", [$ana]) === 1);
+$r = post('biometria/consentimento.php', ['id_aluno' => $bruno, 'revogar' => true], $t1);
+verificar('revogar o consentimento apaga a biometria do aluno', $r['status'] === 200
+    && (int) valor("SELECT count(*) FROM tb_biometria_facial WHERE id_aluno = ?", [$bruno]) === 0
+    && (int) valor("SELECT count(*) FROM tb_consentimento_biometria WHERE id_aluno = ?", [$bruno]) === 0, $r['texto']);
+
+secao('Biometria digital (preparada para o leitor)');
+$template = base64_encode(random_bytes(400));
+$digital = fn(string $tpl, string $token) => post('biometria/cadastrarBiometriaDigital.php',
+    ['id_aluno' => $diego, 'dedo' => 'indicador direito', 'template' => $tpl, 'formato' => 'ISO 19794-2'], $token);
+$r = $digital($template, $t1);
+verificar('digital sem consentimento: 409', $r['status'] === 409, $r['texto']);
+post('biometria/consentimento.php', ['id_aluno' => $diego, 'nome_responsavel' => 'Mãe do Diego'], $t1);
+$r = $digital('não é base64', $t1);
+verificar('template que não é base64: 422', $r['status'] === 422, $r['texto']);
+$r = $digital($template, $t1);
+verificar('cadastrar digital: 200 e gravada cifrada', $r['status'] === 200
+    && str_starts_with((string) valor("SELECT template FROM tb_biometria_digital WHERE id_aluno = ?", [$diego]), 'gcm1:'), $r['texto']);
+$r = post('biometria/templatesDigitais.php', [], $t1);
+verificar('templates para o SDK do leitor: o mesmo template, só da própria escola', count($r['json']['dados'] ?? []) === 1
+    && ($r['json']['dados'][0]['template'] ?? '') === $template, $r['status']);
+$r = post('biometria/templatesDigitais.php', [], $t2);
+verificar('outra escola não recebe as digitais', ($r['json']['dados'] ?? null) === [], $r['texto']);
+$r = post('presenca/registrar.php', ['id_aluno' => $diego, 'metodo' => 'digital'], $t1);
+verificar('presença pela digital identificada no aparelho: 201', $r['status'] === 201 && ($r['json']['dados']['presenca']['metodo'] ?? '') === 'digital', $r['texto']);
+
+// ------------------------------------------------------------ celular do aluno
+secao('Celular do aluno (fluxo anterior): check-in e ocorrências');
+// Aparelho conectado antes do app da coordenação, como os que existem em
+// produção: continuam aceitos, mas nenhum aparelho novo é registrado.
 $uuid = 'aparelho-ci-' . bin2hex(random_bytes(4));
-$criarConta = fn(array $campos) => post('aluno/criarConta.php', $campos + [
-    'nome' => 'Elisa Teste', 'data_nascimento' => '2010-05-10', 'email' => 'elisa@aluno.test',
-    'senha' => 'Senha@123', 'device_uuid' => $uuid,
-]);
-$entrar = fn(string $email, string $senha, string $aparelho) => post('aluno/entrar.php',
-    ['email' => $email, 'senha' => $senha, 'device_uuid' => $aparelho]);
-
-$r = $criarConta(['nome' => 'Elisa Errada']);
-verificar('criar conta com nome que não é de nenhum aluno: 404', $r['status'] === 404, $r['texto']);
-$r = $criarConta(['data_nascimento' => '2010-05-11']);
-verificar('criar conta com outra data de nascimento: 404', $r['status'] === 404, $r['texto']);
-$r = $criarConta(['senha' => '123']);
-verificar('criar conta com senha curta: 422', $r['status'] === 422, $r['texto']);
-$r = $criarConta(['email' => 'COORD1@escola.test']);
-verificar('conta de aluno com e-mail da coordenação: 409', $r['status'] === 409, $r['texto']);
-$r = $criarConta(['nome' => '  ELISA   teste ', 'email' => ' Elisa@Aluno.TEST ']);
-$segredo = $r['json']['dados']['device_secret'] ?? '';
-verificar('criar conta (caixa e espaços diferentes): 201, aluno certo e celular conectado', $r['status'] === 201
-    && ($r['json']['dados']['id_aluno'] ?? 0) === $elisa && strlen($segredo) === 64
-    && ($r['json']['dados']['nome_aluno'] ?? '') === 'Elisa Teste' && ($r['json']['dados']['nome_sala'] ?? '') === '1A', $r['texto']);
-$conta = sql("SELECT email_conta, senha_conta FROM tb_conta_aluno WHERE id_aluno = ?", [$elisa])[0] ?? [];
-verificar('conta gravada com e-mail em minúsculas e senha com hash', ($conta['email_conta'] ?? '') === 'elisa@aluno.test'
-    && ($conta['senha_conta'] ?? '') !== 'Senha@123' && password_verify('Senha@123', $conta['senha_conta'] ?? ''), $conta['email_conta'] ?? null);
-$r = $criarConta(['email' => 'outra@aluno.test']);
-verificar('segunda conta para o mesmo aluno: 409', $r['status'] === 409, $r['texto']);
-$r = $criarConta(['nome' => 'Fabio Teste']);
-verificar('mesmo e-mail para outro aluno: 409', $r['status'] === 409, $r['texto']);
-
-$joao = (int) ($novoAluno($t2, $sala2, 'João Pedro da Silva')['json']['dados']['id_aluno'] ?? 0);
-$r = $criarConta(['nome' => 'joao silva', 'email' => 'joao@aluno.test', 'device_uuid' => 'aparelho-joao']);
-verificar('só primeiro e último nome, sem acento: encontra o aluno', $r['status'] === 201 && ($r['json']['dados']['id_aluno'] ?? 0) === $joao, $r['texto']);
-$novoAluno($t2, $sala2, 'Gabi Lima Teste');
-$r = $criarConta(['nome' => 'Gabi Souza Teste', 'email' => 'gabi@aluno.test', 'device_uuid' => 'aparelho-gabi']);
-verificar('primeiro e último nome de dois alunos: 409 pedindo o nome completo', $r['status'] === 409
-    && str_contains($r['json']['mensagem'] ?? '', 'nome completo'), $r['texto']);
-$r = $criarConta(['nome' => 'Gabi Teste', 'email' => 'gabi@aluno.test', 'device_uuid' => 'aparelho-gabi']);
-verificar('nome completo igual desempata', $r['status'] === 201 && ($r['json']['dados']['id_aluno'] ?? 0) === $gabi, $r['texto']);
-
-$r = $entrar('elisa@aluno.test', 'errada', $uuid);
-verificar('login do aluno com senha errada: 401', $r['status'] === 401, $r['texto']);
-$r = $entrar('ninguem@aluno.test', 'Senha@123', $uuid);
-verificar('login com e-mail sem conta: 401', $r['status'] === 401, $r['texto']);
-$r = $entrar('coord1@escola.test', 'Senha@123', $uuid);
-verificar('conta da coordenação no app: 403 explicando', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'coordenação'), $r['texto']);
-$r = post('user/selectCoord.php', ['email' => 'elisa@aluno.test', 'senha' => 'Senha@123']);
-verificar('conta de aluno no login do site: 403 mandando para o app', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'aplicativo'), $r['texto']);
-$r = post('user/selectCoord.php', ['email' => 'elisa@aluno.test', 'senha' => 'errada']);
-verificar('conta de aluno no site com senha errada: 401 genérico', $r['status'] === 401, $r['texto']);
-$r = $entrar(' Elisa@Aluno.test ', 'Senha@123', $uuid);
-$segredo2 = $r['json']['dados']['device_secret'] ?? '';
-verificar('login do aluno: 200 e segredo novo para o mesmo celular', $r['status'] === 200 && strlen($segredo2) === 64
-    && $segredo2 !== $segredo && ($r['json']['dados']['email'] ?? '') === 'elisa@aluno.test', $r['texto']);
-verificar('o mesmo celular continua sendo uma linha só', (int) valor("SELECT count(*) FROM tb_dispositivo_aluno WHERE device_uuid = ?", [$uuid]) === 1);
-$r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo, 'atraso'));
-verificar('segredo do cadastro deixou de valer depois do login: 401 pedindo para entrar de novo', $r['status'] === 401
-    && ($r['json']['dados']['reconectar'] ?? null) === true, $r['texto']);
-
-secao('App do aluno: check-in e ocorrências');
+$segredo2 = bin2hex(random_bytes(32));
+sql("INSERT INTO tb_dispositivo_aluno (id_aluno, device_uuid, device_secret) VALUES (?, ?, ?)", [$elisa, $uuid, $segredo2]);
+$r = post('digital/checkinBiometrico.php', assinado($uuid, bin2hex(random_bytes(32)), 'atraso'));
+verificar('assinatura com outro segredo: 401', $r['status'] === 401, $r['texto']);
 $r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'atraso'));
 $idCheckin = (int) ($r['json']['dados']['id_checkin'] ?? 0);
 verificar('check-in assinado: 200', $r['status'] === 200 && $idCheckin > 0, $r['texto']);
@@ -619,43 +748,13 @@ $r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrenciaA
 verificar('aprovar atraso de um dia já lançado à mão não cria outro', $r['status'] === 200 && ($r['json']['dados']['ja_existia'] ?? null) === true
     && ($r['json']['dados']['id_registro'] ?? 0) === $idAtraso
     && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$elisa]) === 1, $r['texto']);
-secao('App do aluno: celular e conta pela coordenação');
-$r = $entrar('elisa@aluno.test', 'Senha@123', 'aparelho-ci-2-' . bin2hex(random_bytes(4)));
-verificar('login em outro celular: 200', $r['status'] === 200 && ($r['json']['dados']['device_secret'] ?? '') !== '', $r['texto']);
-$r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'presenca'));
-verificar('o celular anterior foi desconectado (um por aluno): 401 pedindo para entrar de novo', $r['status'] === 401
-    && ($r['json']['dados']['reconectar'] ?? null) === true, $r['texto']);
-$segredo2 = $entrar('elisa@aluno.test', 'Senha@123', $uuid)['json']['dados']['device_secret'] ?? '';
-$r = post('user/historicoAluno.php', ['id_aluno' => $elisa], $t1);
-verificar('página do aluno mostra a conta do app e 1 celular conectado', ($r['json']['dados']['aluno']['email_app'] ?? '') === 'elisa@aluno.test'
-    && ($r['json']['dados']['aluno']['celulares_ativos'] ?? null) === 1, $r['texto']);
-$r = post('user/historicoAluno.php', ['id_aluno' => $ana], $t1);
-verificar('aluno sem conta: email_app nulo', array_key_exists('email_app', $r['json']['dados']['aluno'] ?? [])
-    && $r['json']['dados']['aluno']['email_app'] === null, $r['texto']);
+secao('Celular do aluno (fluxo anterior): desconectar pela coordenação');
 $r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t2);
 verificar('outra escola desconectando o celular: 404', $r['status'] === 404, $r['texto']);
 $r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t1);
 verificar('desconectar o celular: 200', $r['status'] === 200 && ($r['json']['dados']['quantidade'] ?? 0) === 1, $r['texto']);
 $r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'presenca'));
-verificar('celular desconectado: 401 pedindo para entrar de novo', $r['status'] === 401 && ($r['json']['dados']['reconectar'] ?? null) === true, $r['texto']);
-$r = $entrar('elisa@aluno.test', 'Senha@123', $uuid);
-$segredo2 = $r['json']['dados']['device_secret'] ?? '';
-verificar('depois de desconectado, o aluno entra de novo com a mesma conta', $r['status'] === 200 && $segredo2 !== '', $r['texto']);
-$r = post('aluno/removerConta.php', ['id_aluno' => $elisa], $t2);
-verificar('outra escola removendo a conta do app: 404', $r['status'] === 404, $r['texto']);
-$r = post('aluno/removerConta.php', ['id_aluno' => $elisa]);
-verificar('remover conta sem token: 401', $r['status'] === 401, $r['texto']);
-$r = post('aluno/removerConta.php', ['id_aluno' => $elisa], $t1);
-verificar('remover a conta do app: 200 e celular desconectado', $r['status'] === 200
-    && ($r['json']['dados']['celulares_desconectados'] ?? 0) === 1, $r['texto']);
-$r = $entrar('elisa@aluno.test', 'Senha@123', $uuid);
-verificar('conta removida não entra mais: 401', $r['status'] === 401, $r['texto']);
-$r = post('digital/checkinBiometrico.php', assinado($uuid, $segredo2, 'presenca'));
-verificar('celular da conta removida: 401', $r['status'] === 401, $r['texto']);
-$r = post('aluno/removerConta.php', ['id_aluno' => $elisa], $t1);
-verificar('remover de novo: 404 (aluno sem conta)', $r['status'] === 404, $r['texto']);
-$r = $criarConta(['email' => 'elisa.nova@aluno.test']);
-verificar('depois da remoção o aluno cria uma conta nova', $r['status'] === 201 && ($r['json']['dados']['id_aluno'] ?? 0) === $elisa, $r['texto']);
+verificar('celular desconectado: 401', $r['status'] === 401, $r['texto']);
 
 // ------------------------------------------------------------ demais telas
 secao('Acompanhamento, biometria facial e relatório XML');

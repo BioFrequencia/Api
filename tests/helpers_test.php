@@ -18,7 +18,7 @@ require_once __DIR__ . '/../helpers/notificacao.php';
 require_once __DIR__ . '/../helpers/escalonamento.php';
 require_once __DIR__ . '/../helpers/dispositivo.php';
 require_once __DIR__ . '/../helpers/registroEvento.php';
-require_once __DIR__ . '/../helpers/contaAluno.php';
+require_once __DIR__ . '/../helpers/criptografia.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -229,19 +229,41 @@ afirmar('embeddingValido: array pequeno demais (< 8)', embeddingValido([1, 2, 3]
 afirmar('embeddingValido: não é array', embeddingValido('não é array') === false);
 afirmar('embeddingValido: contém elemento não numérico', embeddingValido([1, 2, 3, 4, 5, 6, 7, 'oito']) === false);
 
-// ---------- conta do aluno no app (helpers/contaAluno.php) ----------
-afirmar('normalizarNome: caixa, acentos e espaços', normalizarNome("  JOÃO  Pédro\tda Conceição ") === 'joao pedro da conceicao');
-afirmar('normalizarNome: ç e ñ', normalizarNome('Açaí Muñoz') === 'acai munoz');
-afirmar('nomesConferem: nome completo igual', nomesConferem('Ana Clara Souza', 'Ana Clara Souza') === true);
-afirmar('nomesConferem: sem acento e com outra caixa', nomesConferem('joao pedro da silva', 'João Pedro da Silva') === true);
-afirmar('nomesConferem: só primeiro e último nome', nomesConferem('João Silva', 'João Pedro da Silva') === true);
-afirmar('nomesConferem: último nome diferente', nomesConferem('João Souza', 'João Pedro da Silva') === false);
-afirmar('nomesConferem: primeiro nome diferente', nomesConferem('Pedro Silva', 'João Pedro da Silva') === false);
-afirmar('nomesConferem: só o primeiro nome não basta', nomesConferem('João', 'João Pedro da Silva') === false);
-afirmar('nomesConferem: vazio não confere', nomesConferem('  ', 'João Silva') === false);
-afirmar('identificadorDispositivoValido: UUID do app', identificadorDispositivoValido('3f2b8c1e-9d4a-4c7e-8b1a-2d5e6f7a8b9c') === true);
-afirmar('identificadorDispositivoValido: vazio', identificadorDispositivoValido('') === false);
-afirmar('identificadorDispositivoValido: maior que a coluna (100)', identificadorDispositivoValido(str_repeat('a', 101)) === false);
+afirmar('embeddingValido: número em texto não vale (o app manda números)', embeddingValido(array_fill(0, 8, '0.5')) === false);
+
+// ---------- amostras e identificação facial (helpers/biometriaFacial.php) ----------
+afirmar('amostrasValidas: 3 amostras de 128', amostrasValidas(array_fill(0, 3, array_fill(0, 128, 0.1))) === true);
+afirmar('amostrasValidas: nenhuma amostra', amostrasValidas([]) === false);
+afirmar('amostrasValidas: mais que o máximo', amostrasValidas(array_fill(0, MAXIMO_AMOSTRAS_FACIAIS + 1, array_fill(0, 128, 0.1))) === false);
+afirmar('amostrasValidas: tamanhos diferentes', amostrasValidas([array_fill(0, 128, 0.1), array_fill(0, 64, 0.1)]) === false);
+afirmar('distanciaEuclidiana: 3-4-5', abs(distanciaEuclidiana([0, 0], [3, 4]) - 5.0) < 1e-9);
+afirmar('distanciaEuclidiana: tamanhos diferentes = infinito', distanciaEuclidiana([1, 2], [1, 2, 3]) === INF);
+
+$cadastros = [10 => [[0.0, 0.0], [0.1, 0.0]], 20 => [[1.0, 1.0]], 30 => [[0.0, 2.0]]];
+$r = identificarRosto([0.05, 0.05], $cadastros, 0.5, 0.06);
+afirmar('identificarRosto: reconhece o aluno mais próximo (menor distância entre as amostras dele)', $r['id_aluno'] === 10 && $r['distancia'] < 0.08);
+$r = identificarRosto([5.0, 5.0], $cadastros, 0.5, 0.06);
+afirmar('identificarRosto: longe de todos = não reconhecido', $r['id_aluno'] === null && $r['distancia'] > 0.5);
+$r = identificarRosto([0.5, 0.5], [10 => [[0.3, 0.3]], 20 => [[0.7, 0.7]]], 0.5, 0.06);
+afirmar('identificarRosto: dois alunos à mesma distância = recusa (não decide pela foto)', $r['id_aluno'] === null);
+$r = identificarRosto([0.0, 0.0], [], 0.5, 0.06);
+afirmar('identificarRosto: sem cadastros = não reconhecido', $r['id_aluno'] === null && $r['distancia'] === null);
+
+// ---------- criptografia da biometria (helpers/criptografia.php) ----------
+$chaveTeste = chaveBiometria(str_repeat('ab', 32));
+afirmar('chaveBiometria: 64 hexadecimais = 32 bytes', is_string($chaveTeste) && strlen($chaveTeste) === 32);
+afirmar('chaveBiometria: base64 de 32 bytes (generateValue do Render)', strlen((string) chaveBiometria(base64_encode(str_repeat('x', 32)))) === 32);
+afirmar('chaveBiometria: curta = desligada', chaveBiometria('abc') === null);
+afirmar('chaveBiometria: vazia = desligada', chaveBiometria('') === null);
+$guardado = cifrarDado('[[0.1,0.2]]', $chaveTeste, 'facial:aluno:7');
+afirmar('cifrarDado: formato gcm1 e sem o texto original', str_starts_with($guardado, 'gcm1:') && !str_contains($guardado, '0.1'));
+afirmar('cifrarDado: duas cifras do mesmo dado são diferentes (IV aleatório)', $guardado !== cifrarDado('[[0.1,0.2]]', $chaveTeste, 'facial:aluno:7'));
+afirmar('decifrarDado: volta ao original', decifrarDado($guardado, $chaveTeste, 'facial:aluno:7') === '[[0.1,0.2]]');
+afirmar('decifrarDado: outro aluno (contexto) não abre', decifrarDado($guardado, $chaveTeste, 'facial:aluno:8') === null);
+afirmar('decifrarDado: outra chave não abre', decifrarDado($guardado, chaveBiometria(str_repeat('cd', 32)), 'facial:aluno:7') === null);
+$adulterado = substr($guardado, 0, -2) . (substr($guardado, -2, 1) === 'A' ? 'B' : 'A') . substr($guardado, -1);
+afirmar('decifrarDado: dado adulterado não abre', decifrarDado($adulterado, $chaveTeste, 'facial:aluno:7') === null);
+afirmar('decifrarDado: texto sem o prefixo não abre', decifrarDado('[[0.1,0.2]]', $chaveTeste, 'facial:aluno:7') === null);
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);
