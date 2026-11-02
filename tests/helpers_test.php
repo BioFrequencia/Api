@@ -19,6 +19,7 @@ require_once __DIR__ . '/../helpers/escalonamento.php';
 require_once __DIR__ . '/../helpers/dispositivo.php';
 require_once __DIR__ . '/../helpers/registroEvento.php';
 require_once __DIR__ . '/../helpers/criptografia.php';
+require_once __DIR__ . '/../helpers/conta.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -264,6 +265,43 @@ afirmar('decifrarDado: outra chave não abre', decifrarDado($guardado, chaveBiom
 $adulterado = substr($guardado, 0, -2) . (substr($guardado, -2, 1) === 'A' ? 'B' : 'A') . substr($guardado, -1);
 afirmar('decifrarDado: dado adulterado não abre', decifrarDado($adulterado, $chaveTeste, 'facial:aluno:7') === null);
 afirmar('decifrarDado: texto sem o prefixo não abre', decifrarDado('[[0.1,0.2]]', $chaveTeste, 'facial:aluno:7') === null);
+
+// ---------- conta: duração da sessão ----------
+afirmar('sessão do site: 2 horas', duracaoDaSessao('site', false) === 2 * 3600);
+afirmar('site com "Lembrar de mim": 30 dias', duracaoDaSessao('site', true) === 30 * 86400);
+afirmar('app: 12 horas, com ou sem lembrar', duracaoDaSessao('app', false) === 12 * 3600 && duracaoDaSessao('app', true) === 12 * 3600);
+
+// ---------- conta: nome do aparelho ----------
+$uaChromeWindows = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+$uaEdge = $uaChromeWindows . ' Edg/130.0.0.0';
+$uaChromeAndroid = 'Mozilla/5.0 (Linux; Android 14; SM-X200) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+$uaSafariIphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+$uaFirefoxLinux = 'Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0';
+afirmar('aparelho: Chrome no Windows', descreverDispositivo($uaChromeWindows, 'site') === 'Chrome no Windows');
+afirmar('aparelho: Edge antes de Chrome', descreverDispositivo($uaEdge, 'site') === 'Edge no Windows');
+afirmar('aparelho: Android antes de Linux', descreverDispositivo($uaChromeAndroid, 'site') === 'Chrome no Android');
+afirmar('aparelho: iPhone antes de macOS', descreverDispositivo($uaSafariIphone, 'site') === 'Safari no iOS');
+afirmar('aparelho: Firefox no Linux', descreverDispositivo($uaFirefoxLinux, 'site') === 'Firefox no Linux');
+afirmar('aparelho: sem User-Agent', descreverDispositivo(null, 'site') === 'Navegador');
+afirmar('aparelho: login do app', descreverDispositivo($uaChromeAndroid, 'app') === 'App BioFrequência (Android)');
+
+// ---------- conta: preferências ----------
+[$prefs, $erro] = lerPreferencias(['tema' => 'escuro', 'volume_sons' => 40], PREFERENCIAS_PADRAO);
+afirmar('preferências: muda só o que veio', $erro === null && $prefs['tema'] === 'escuro' && $prefs['volume_sons'] === 40 && $prefs['sons_ativos'] === true);
+[$prefs, $erro] = lerPreferencias(['campo_estranho' => 1], PREFERENCIAS_PADRAO);
+afirmar('preferências: campo desconhecido é ignorado', $erro === null && $prefs === PREFERENCIAS_PADRAO);
+afirmar('preferências: tema inválido', lerPreferencias(['tema' => 'azul'], PREFERENCIAS_PADRAO)[1] !== null);
+afirmar('preferências: volume acima de 100', lerPreferencias(['volume_sons' => 101], PREFERENCIAS_PADRAO)[1] !== null);
+afirmar('preferências: volume não inteiro', lerPreferencias(['volume_sons' => 50.5], PREFERENCIAS_PADRAO)[1] !== null);
+afirmar('preferências: liga/desliga precisa ser booleano', lerPreferencias(['som_erro' => 'false'], PREFERENCIAS_PADRAO)[1] !== null);
+
+// ---------- conta: chamado de suporte ----------
+[$chamado, $erro] = lerChamado(['categoria' => 'biometria', 'assunto' => '  Rosto não reconhecido ', 'mensagem' => 'O tablet não acha o rosto de nenhum aluno.']);
+afirmar('chamado válido, com espaços aparados', $erro === null && $chamado['assunto'] === 'Rosto não reconhecido');
+afirmar('chamado: categoria desconhecida', lerChamado(['categoria' => 'outra', 'assunto' => 'Assunto', 'mensagem' => 'Mensagem longa o bastante.'])[1] !== null);
+afirmar('chamado: assunto curto demais', lerChamado(['categoria' => 'duvida', 'assunto' => 'Oi', 'mensagem' => 'Mensagem longa o bastante.'])[1] !== null);
+afirmar('chamado: mensagem curta demais', lerChamado(['categoria' => 'duvida', 'assunto' => 'Assunto', 'mensagem' => 'Curta'])[1] !== null);
+afirmar('chamado: mensagem longa demais', lerChamado(['categoria' => 'duvida', 'assunto' => 'Assunto', 'mensagem' => str_repeat('a', 4001)])[1] !== null);
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

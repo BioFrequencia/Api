@@ -5,6 +5,7 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/senha.php';
+require_once __DIR__ . '/../helpers/sessao.php';
 require_once __DIR__ . '/../Authentication/tokenLogin.php';
 
 /**
@@ -12,13 +13,19 @@ require_once __DIR__ . '/../Authentication/tokenLogin.php';
  *
  * "cliente": "app" pede uma sessão de 12 horas: o app fica num tablet da
  * escola o turno inteiro, e com as 2 horas do site a coordenação teria de
- * entrar de novo no meio da chegada dos alunos.
+ * entrar de novo no meio da chegada dos alunos. "lembrar": true ("Lembrar
+ * de mim" no site) pede 30 dias.
+ *
+ * Cada login vira uma sessão (tb_sessao), que aparece em Minha conta >
+ * Dispositivos conectados e pode ser encerrada de lá.
  */
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
 $email = $dados["email"] ?? null;
 $senha = $dados["senha"] ?? null;
-$duracaoSessao = ($dados["cliente"] ?? null) === 'app' ? DURACAO_SESSAO_APP : DURACAO_SESSAO_SITE;
+$cliente = ($dados["cliente"] ?? null) === 'app' ? 'app' : 'site';
+$lembrar = $cliente === 'site' && ($dados["lembrar"] ?? false) === true;
+$duracaoSessao = duracaoDaSessao($cliente, $lembrar);
 
 if (!campoPreenchido($email) || !campoPreenchido($senha)) {
     enviarErro("Informe email e senha.", 422);
@@ -64,7 +71,8 @@ try {
         $update->execute();
     }
 
-    $token = criarToken($coordenacao['id_coordenacao'], $duracaoSessao);
+    $idSessao = criarSessao($conexao, (int) $coordenacao['id_coordenacao'], $cliente, $lembrar, $duracaoSessao, $_SERVER['HTTP_USER_AGENT'] ?? null);
+    $token = criarToken($coordenacao['id_coordenacao'], $duracaoSessao, $idSessao);
 
     enviarSucesso("Login realizado com sucesso.", [
         "id_coordenacao"    => $coordenacao['id_coordenacao'],

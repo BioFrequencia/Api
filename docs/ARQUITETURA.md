@@ -24,10 +24,19 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
 1. **Login da coordenação**: `user/selectCoord.php` confere email (sem
    diferenciar maiúsculas) e senha (`password_verify`; contas antigas em
    texto puro migram no primeiro login) e emite um JWT HS256 de 2 h com o
-   `id_coordenacao` em `sub`. O site guarda o token no `localStorage` e
-   manda `Authorization: Bearer` em toda chamada. Token vencido: o site
-   descobre pelo `exp` ao abrir/voltar à aba ou pelo 401 da API e manda
-   para `/login?motivo=expirada`.
+   `id_coordenacao` em `sub` (30 dias com "Lembrar de mim"; 12 h no app).
+   O site guarda o token no `localStorage` e manda `Authorization:
+   Bearer` em toda chamada. Token vencido: o site descobre pelo `exp` ao
+   abrir/voltar à aba ou pelo 401 da API e manda para
+   `/login?motivo=expirada`.
+
+   **Sessões** (migração 007): cada login vira uma linha de `tb_sessao`
+   (navegador ou app, sem IP) e o id dela vai no token como `sid`.
+   `autenticar()` recusa (401 "Sessão encerrada") o token cuja sessão foi
+   encerrada - em Minha conta > Dispositivos conectados
+   (`conta/sessoes.php`, `conta/encerrarSessao.php`), ao sair
+   (`conta/sair.php`) ou ao trocar a senha (os outros aparelhos caem).
+   Tokens emitidos antes da 007, sem `sid`, valem até vencer.
 2. **Autorização por escola**: todo endpoint autenticado chama
    `escolaDaCoordenacao()` e confere, antes de ler ou gravar, que o
    registro recebido (aluno, responsável, notificação, check-in...) é da
@@ -90,6 +99,19 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    No máximo um contato por aluno a cada 24 h (trava atômica). Toda falta
    lançada também cria uma notificação "Pendente" por responsável, que a
    coordenação marca como enviada depois de avisar.
+8. **Minha conta** (migração 007): `conta/perfil.php` e
+   `conta/atualizarPerfil.php` (nome, e-mail e nome da escola; trocar o
+   e-mail, que é o login, pede a senha atual), `conta/alterarSenha.php`
+   (confere a atual e desconecta os outros aparelhos) e as preferências
+   da conta (`conta/preferencias.php`, `conta/salvarPreferencias.php`:
+   tema e sons), guardadas no banco para valer em qualquer computador.
+   Senha atual errada responde 403, não 401 - o site trata 401 como
+   sessão vencida.
+9. **Suporte** (migração 007): `suporte/abrirChamado.php` (até 10 por dia
+   por conta) e `suporte/listarChamados.php`. A equipe responde direto em
+   `tb_chamado_suporte` (`status`: aberto, em_andamento, respondido,
+   fechado; `resposta`; `respondido_em`), e a coordenação acompanha na
+   tela Suporte do site.
 
 ## Tempo e fuso
 

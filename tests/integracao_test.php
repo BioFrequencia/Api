@@ -2,7 +2,7 @@
 /**
  * Testes de integração da API: requisições HTTP de verdade contra a API
  * rodando (php -S no CI, ou o container Docker com Apache) e um
- * PostgreSQL de teste com o schema de produção (migrações 001-006).
+ * PostgreSQL de teste com o schema de produção (migrações 001-007).
  * Cada resultado gravado é conferido direto no banco, não só pela
  * resposta.
  *
@@ -234,7 +234,7 @@ $pdo->exec("
              tb_ocorrencia_pendente, tb_checkin_biometrico, tb_dispositivo_aluno, tb_codigo_vinculo,
              tb_notificacao, tb_alerta_nivel, tb_alerta_encerrado, tb_acompanhamento, tb_verificacao_facial,
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
-             tb_sala, tb_coordenacao RESTART IDENTITY CASCADE
+             tb_sala, tb_sessao, tb_preferencia_coordenacao, tb_chamado_suporte, tb_coordenacao RESTART IDENTITY CASCADE
 ");
 $pdo->exec("DELETE FROM tb_escola WHERE id_escola <> 1");
 @unlink($logWhatsapp);
@@ -779,6 +779,118 @@ $r = post('relatorio/exportarXml.php', ['relatorio' => 'alunos'], $t1);
 $xml = @simplexml_load_string($r['texto']);
 verificar('relatório XML: documento válido', $xml !== false && str_starts_with($r['h']['content-type'] ?? '', 'application/xml'), [$r['status'], mb_substr($r['texto'], 0, 200)]);
 verificar('relatório XML: só alunos da escola', $xml !== false && count($xml->itens->aluno) === 7 && !str_contains($r['texto'], 'Zeca'), $r['texto']);
+
+// ------------------------------------------------------------ conta
+// No fim de propósito: aqui sessões são encerradas e a senha da
+// coordenação 1 muda - os tokens $t1/$t2 usados acima deixam de valer.
+secao('Conta: dispositivos conectados, perfil, preferências e suporte');
+$sidDe = fn(string $token) => json_decode(base64_decode(strtr(explode('.', $token . '..')[1], '-_', '+/')), true)['sid'] ?? null;
+$uaChrome = 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+$entrar = fn(string $email, string $senha, array $extra = [], array $cabecalhos = []) =>
+    post('user/selectCoord.php', ['email' => $email, 'senha' => $senha] + $extra, null, $cabecalhos);
+$verdadeiro = fn($valor) => in_array($valor, [true, 't', 'true', 1, '1'], true);
+
+verificar('login comum já vem com sessão no token', $sidDe($t1) !== null && (int) valor("SELECT count(*) FROM tb_sessao WHERE id_sessao = ?", [$sidDe($t1)]) === 1);
+$r = $entrar('coord1@escola.test', 'Senha@123', ['lembrar' => true], [$uaChrome]);
+$tLembrar = $r['json']['dados']['token'] ?? '';
+$validade = ($r['json']['dados']['expira_em'] ?? 0) - time();
+verificar('"Lembrar de mim": sessão de 30 dias', $validade > 29 * 86400 && $validade <= 30 * 86400, $r['texto']);
+$linha = sql("SELECT cliente, dispositivo, lembrar FROM tb_sessao WHERE id_sessao = ?", [$sidDe($tLembrar)])[0] ?? [];
+verificar('a sessão guarda o nome do aparelho e o "lembrar"', ($linha['dispositivo'] ?? '') === 'Chrome no Windows' && $verdadeiro($linha['lembrar'] ?? null) && ($linha['cliente'] ?? '') === 'site', $linha);
+$r = $entrar('coord1@escola.test', 'Senha@123', ['cliente' => 'app', 'lembrar' => true]);
+$tApp = $r['json']['dados']['token'] ?? '';
+$validade = ($r['json']['dados']['expira_em'] ?? 0) - time();
+verificar('app: 12 horas (o "lembrar" não vale para o app)', $validade > 11 * 3600 && $validade <= 12 * 3600, $r['texto']);
+verificar('sessão do app identificada como app', valor("SELECT dispositivo FROM tb_sessao WHERE id_sessao = ?", [$sidDe($tApp)]) === 'App BioFrequência (Android)');
+
+$r = post('conta/sessoes.php', [], $tLembrar);
+$lista = $r['json']['dados'] ?? [];
+$ids = array_column($lista, 'id_sessao');
+verificar('dispositivos conectados: lista as sessões da conta', $r['status'] === 200 && in_array($sidDe($t1), $ids, true) && in_array($sidDe($tApp), $ids, true), $r['texto']);
+verificar('dispositivos conectados: marca este aparelho', array_column(array_filter($lista, fn($s) => $s['atual']), 'id_sessao') === [$sidDe($tLembrar)], $lista);
+verificar('dispositivos conectados: nenhuma sessão de outra conta', !in_array($sidDe($t2), $ids, true));
+$r = post('conta/encerrarSessao.php', ['id_sessao' => $sidDe($t2)], $tLembrar);
+verificar('desconectar aparelho de outra conta: 404', $r['status'] === 404, $r['texto']);
+verificar('...e a sessão da outra conta continua valendo', post('user/listarSalas.php', [], $t2)['status'] === 200);
+$r = post('conta/encerrarSessao.php', ['id_sessao' => 'nao-e-um-id'], $tLembrar);
+verificar('desconectar com id malformado: 422', $r['status'] === 422, $r['texto']);
+$r = post('conta/encerrarSessao.php', ['id_sessao' => $sidDe($tApp)], $tLembrar);
+verificar('desconectar o tablet: 200', $r['status'] === 200 && ($r['json']['dados']['era_este'] ?? null) === false, $r['texto']);
+$r = post('biometria/alunos.php', [], $tApp);
+verificar('token do tablet desconectado: 401 "Sessão encerrada"', $r['status'] === 401 && str_contains($r['json']['mensagem'] ?? '', 'encerrada'), $r['texto']);
+$r = post('conta/encerrarSessao.php', ['outras' => true], $tLembrar);
+verificar('desconectar todos os outros: 200', $r['status'] === 200 && ($r['json']['dados']['encerradas'] ?? 0) >= 1, $r['texto']);
+verificar('...o login anterior caiu', post('user/listarSalas.php', [], $t1)['status'] === 401);
+verificar('...e este aparelho continua conectado', post('user/listarSalas.php', [], $tLembrar)['status'] === 200);
+$semSessao = jwtHs256(['iss' => 'biofrequencia-api', 'iat' => time(), 'exp' => time() + 600, 'sub' => $idCoord1], $jwtSecret);
+verificar('token antigo, sem sessão, vale até vencer', post('user/listarSalas.php', [], $semSessao)['status'] === 200);
+$r = post('conta/sair.php', [], $tLembrar);
+verificar('sair: 200 e o token deixa de valer na hora', $r['status'] === 200 && post('user/listarSalas.php', [], $tLembrar)['status'] === 401, $r['texto']);
+verificar('sair: some de dispositivos conectados', $verdadeiro(valor("SELECT encerrada_em IS NOT NULL FROM tb_sessao WHERE id_sessao = ?", [$sidDe($tLembrar)])));
+
+$tConta = $entrar('coord1@escola.test', 'Senha@123')['json']['dados']['token'] ?? '';
+$r = post('conta/perfil.php', [], $tConta);
+verificar('perfil: dados da conta', ($r['json']['dados']['email_coordenacao'] ?? '') === 'coord1@escola.test' && isset($r['json']['dados']['nome_escola']), $r['texto']);
+$perfil = ['nome_coordenacao' => 'Coordenação Central', 'email_coordenacao' => 'coord1@escola.test', 'nome_escola' => 'Escola Estadual Central'];
+$r = post('conta/atualizarPerfil.php', $perfil, $tConta);
+verificar('perfil: nome e escola mudam sem pedir senha', $r['status'] === 200 && ($r['json']['dados']['nome_escola'] ?? '') === 'Escola Estadual Central'
+    && valor("SELECT nome_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'Coordenação Central', $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'nova@escola.test'] + $perfil, $tConta);
+verificar('perfil: trocar o e-mail sem a senha: 403', $r['status'] === 403, $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'nova@escola.test', 'senha_atual' => 'errada'] + $perfil, $tConta);
+verificar('perfil: trocar o e-mail com a senha errada: 403', $r['status'] === 403, $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'COORD2@escola.test', 'senha_atual' => 'Senha@123'] + $perfil, $tConta);
+verificar('perfil: e-mail de outra conta: 409', $r['status'] === 409, $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['email_coordenacao' => ' Nova@Escola.test ', 'senha_atual' => 'Senha@123'] + $perfil, $tConta);
+verificar('perfil: e-mail trocado, gravado em minúsculas', $r['status'] === 200 && valor("SELECT email_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'nova@escola.test', $r['texto']);
+verificar('...e o login passa a ser pelo e-mail novo', $entrar('nova@escola.test', 'Senha@123')['status'] === 200);
+$r = post('conta/atualizarPerfil.php', ['nome_escola' => ''] + $perfil, $tConta);
+verificar('perfil: escola sem nome: 422', $r['status'] === 422, $r['texto']);
+
+$tOutroAparelho = $entrar('nova@escola.test', 'Senha@123')['json']['dados']['token'] ?? '';
+$r = post('conta/alterarSenha.php', ['senha_atual' => 'errada', 'senha_nova' => 'NovaSenha@1'], $tConta);
+verificar('senha: atual errada: 403 (sem derrubar a sessão)', $r['status'] === 403 && post('user/listarSalas.php', [], $tConta)['status'] === 200, $r['texto']);
+$r = post('conta/alterarSenha.php', ['senha_atual' => 'Senha@123', 'senha_nova' => '123'], $tConta);
+verificar('senha: nova curta demais: 422', $r['status'] === 422, $r['texto']);
+$r = post('conta/alterarSenha.php', ['senha_atual' => 'Senha@123', 'senha_nova' => 'Senha@123'], $tConta);
+verificar('senha: igual à atual: 422', $r['status'] === 422, $r['texto']);
+$r = post('conta/alterarSenha.php', ['senha_atual' => 'Senha@123', 'senha_nova' => 'NovaSenha@1'], $tConta);
+verificar('senha: trocada, desconectando os outros aparelhos', $r['status'] === 200 && ($r['json']['dados']['sessoes_encerradas'] ?? 0) >= 1, $r['texto']);
+verificar('...o outro aparelho caiu', post('user/listarSalas.php', [], $tOutroAparelho)['status'] === 401);
+verificar('...este continua conectado', post('user/listarSalas.php', [], $tConta)['status'] === 200);
+verificar('...a senha antiga não entra mais', $entrar('nova@escola.test', 'Senha@123')['status'] === 401);
+verificar('...a nova entra', $entrar('nova@escola.test', 'NovaSenha@1')['status'] === 200);
+
+$tCoord2 = $entrar('coord2@escola.test', 'Senha@123')['json']['dados']['token'] ?? '';
+$r = post('conta/preferencias.php', [], $tConta);
+verificar('preferências: padrão para quem nunca salvou', ($r['json']['dados'] ?? null) === ['tema' => 'sistema', 'sons_ativos' => true, 'volume_sons' => 70,
+    'som_confirmacao' => true, 'som_notificacao' => true, 'som_erro' => true], $r['texto']);
+$r = post('conta/salvarPreferencias.php', ['tema' => 'escuro', 'volume_sons' => 30, 'som_erro' => false], $tConta);
+verificar('preferências: salvar só o que mudou', $r['status'] === 200 && ($r['json']['dados']['tema'] ?? '') === 'escuro' && ($r['json']['dados']['sons_ativos'] ?? null) === true, $r['texto']);
+$r = post('conta/preferencias.php', [], $tConta);
+verificar('preferências: ficam salvas na conta', ($r['json']['dados']['volume_sons'] ?? null) === 30 && ($r['json']['dados']['som_erro'] ?? null) === false, $r['texto']);
+$r = post('conta/salvarPreferencias.php', ['sons_ativos' => false], $tConta);
+verificar('preferências: segunda gravação atualiza a mesma linha', $r['status'] === 200 && ($r['json']['dados']['tema'] ?? '') === 'escuro'
+    && (int) valor("SELECT count(*) FROM tb_preferencia_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 1, $r['texto']);
+$r = post('conta/salvarPreferencias.php', ['volume_sons' => 150], $tConta);
+verificar('preferências: volume fora da faixa: 422', $r['status'] === 422, $r['texto']);
+verificar('preferências: outra conta não é afetada', (post('conta/preferencias.php', [], $tCoord2)['json']['dados']['tema'] ?? '') === 'sistema');
+
+$chamado = ['categoria' => 'biometria', 'assunto' => 'Rosto não reconhecido', 'mensagem' => 'O tablet não acha o rosto de nenhum aluno.'];
+$r = post('suporte/abrirChamado.php', ['categoria' => 'outra'] + $chamado, $tConta);
+verificar('chamado: categoria inválida: 422', $r['status'] === 422, $r['texto']);
+$r = post('suporte/abrirChamado.php', $chamado, $tConta);
+verificar('chamado: aberto (201, status "aberto")', $r['status'] === 201 && ($r['json']['dados']['status'] ?? '') === 'aberto', $r['texto']);
+$idChamado = (int) ($r['json']['dados']['id_chamado'] ?? 0);
+sql("UPDATE tb_chamado_suporte SET status = 'respondido', resposta = 'Atualize o app para a versão 2.0.1.', respondido_em = NOW() WHERE id_chamado = ?", [$idChamado]);
+$r = post('suporte/listarChamados.php', [], $tConta);
+verificar('chamados: a coordenação vê a resposta da equipe', ($r['json']['dados'][0]['resposta'] ?? '') === 'Atualize o app para a versão 2.0.1.', $r['texto']);
+verificar('chamados: outra conta não vê', (post('suporte/listarChamados.php', [], $tCoord2)['json']['dados'] ?? null) === []);
+for ($i = 0; $i < 9; $i++) {
+    sql("INSERT INTO tb_chamado_suporte (id_coordenacao, categoria, assunto, mensagem) VALUES (?, 'duvida', 'Teste', 'Mensagem de teste')", [$idCoord1]);
+}
+$r = post('suporte/abrirChamado.php', $chamado, $tConta);
+verificar('chamados: limite de 10 por dia: 429', $r['status'] === 429, $r['texto']);
 
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);
