@@ -62,7 +62,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Instalar PHP
         uses: shivammathur/setup-php@v2
@@ -157,7 +157,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # PHP no runner só para o provedor falso e o script de testes; a
       # API em si roda dentro do container.
@@ -168,10 +168,10 @@ jobs:
           extensions: pdo, pdo_pgsql, mbstring, json, curl, dom, simplexml
           coverage: none
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false
