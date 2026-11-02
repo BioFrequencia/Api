@@ -62,8 +62,9 @@ psql -U seu_usuario -d seu_banco -f database/migracao-completa.sql
 
 O script já inclui as migrações **005** (escopo por escola, fila de
 ocorrências do app e níveis de alerta), da qual o código atual depende
-em quase todo endpoint, e **006** (presença, consentimento e biometria cifrada do app da
-coordenação). Em 30/10/2026 o banco de produção **ainda não
+em quase todo endpoint, **006** (presença, consentimento e biometria cifrada do app da
+coordenação) e **007** (sessões e dispositivos conectados, preferências
+da conta e chamados de suporte). Em 30/10/2026 o banco de produção **ainda não
 tinha nenhuma das duas**. Para saber se falta alguma migração, abra
 `/health.php`: ele responde 503 com `"schema": "desatualizado"` e a
 lista em `"faltando"`.
@@ -71,7 +72,7 @@ lista em `"faltando"`.
 Alternativamente, os arquivos individuais em `database/migrations/`
 (`001_schema_base.sql` reproduz o schema original de produção, com as
 mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003`,
-`005` e `006` são os que faltavam; `004_responsavel_cpf_unique.sql` é
+`005`, `006` e `007` são os que faltavam; `004_responsavel_cpf_unique.sql` é
 opcional). Todos podem ser rodados mais de uma vez sem erro. As tabelas
 novas já saem com RLS ligado e sem política, como as que existem no
 Supabase: só a API (dona das tabelas) as acessa, e não a API REST
@@ -122,6 +123,8 @@ presenca/         presenças registradas pelo app (facial, digital ou manual)
 digital/          check-in pelo celular do próprio aluno (fluxo anterior)
 acompanhamento/   registro de contatos com responsáveis
 user/             coordenação, alunos, salas, faltas/atrasos, alertas, dashboard
+conta/            minha conta: perfil, senha, preferências, dispositivos conectados
+suporte/          chamados de suporte abertos pela coordenação
 helpers/          validação, respostas padronizadas, cálculo de frequência/alertas
 database/         conexão PDO + migrações SQL
 config/           configuração (config.php é local, não versionado)
