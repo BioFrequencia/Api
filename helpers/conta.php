@@ -46,6 +46,10 @@ function descreverDispositivo(?string $userAgent, string $cliente): string {
         return 'App BioFrequência (Android)';
     }
     $ua = (string) $userAgent;
+    // O software desktop (repositório SoftwareDesktop) se apresenta assim.
+    if (str_contains($ua, 'BioFrequencia-Desktop/')) {
+        return 'Software desktop (Windows)';
+    }
     $navegador = match (true) {
         str_contains($ua, 'Edg/') || str_contains($ua, 'EdgA/') => 'Edge',
         str_contains($ua, 'OPR/') || str_contains($ua, 'Opera') => 'Opera',

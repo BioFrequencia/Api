@@ -425,6 +425,7 @@ afirmar('aparelho: Edge antes de Chrome', descreverDispositivo($uaEdge, 'site') 
 afirmar('aparelho: Android antes de Linux', descreverDispositivo($uaChromeAndroid, 'site') === 'Chrome no Android');
 afirmar('aparelho: iPhone antes de macOS', descreverDispositivo($uaSafariIphone, 'site') === 'Safari no iOS');
 afirmar('aparelho: Firefox no Linux', descreverDispositivo($uaFirefoxLinux, 'site') === 'Firefox no Linux');
+afirmar('aparelho: o software desktop', descreverDispositivo('BioFrequencia-Desktop/2.0.0 (Windows NT 10.0)', 'site') === 'Software desktop (Windows)');
 afirmar('aparelho: sem User-Agent', descreverDispositivo(null, 'site') === 'Navegador');
 afirmar('aparelho: login do app', descreverDispositivo($uaChromeAndroid, 'app') === 'App BioFrequência (Android)');
 
