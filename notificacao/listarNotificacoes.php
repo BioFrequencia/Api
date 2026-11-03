@@ -57,7 +57,7 @@ try {
     $stmt = $conexao->prepare("
         SELECT n.id_notificacao, n.id_aluno, al.nome_aluno, n.id_responsavel, r.nome_responsavel,
                r.telefone_responsavel, r.email_responsavel, n.mensagem, n.status_notificacao,
-               n.data_envio_notificacao, n.canal, n.nivel_alerta
+               n.data_envio_notificacao, n.canal, n.nivel_alerta, n.tipo_aviso
         $origem
         ORDER BY n.id_notificacao DESC
         LIMIT ? OFFSET ?

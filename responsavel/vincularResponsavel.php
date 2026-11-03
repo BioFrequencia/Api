@@ -3,6 +3,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
+require_once __DIR__ . '/../helpers/validacaoResponsavel.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
@@ -19,12 +20,16 @@ $idCoordenacao = autenticar();
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 $idAluno = $dados["id_aluno"] ?? null;
 $idResponsavel = $dados["id_responsavel"] ?? null;
+[$parentesco, $erroParentesco] = lerParentesco($dados["parentesco"] ?? null);
 
 if (!inteiroValido($idAluno)) {
     enviarErro("Informe um aluno válido.", 422);
 }
 if (!inteiroValido($idResponsavel)) {
     enviarErro("Informe um responsável válido.", 422);
+}
+if ($erroParentesco !== null) {
+    enviarErro($erroParentesco, 422);
 }
 
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
@@ -36,12 +41,10 @@ try {
     }
 
     $insert = $conexao->prepare("
-        INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel) VALUES (?, ?)
-        ON CONFLICT (id_aluno, id_responsavel) DO NOTHING
+        INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel, parentesco) VALUES (?, ?, ?)
+        ON CONFLICT (id_aluno, id_responsavel) DO UPDATE SET parentesco = COALESCE(EXCLUDED.parentesco, tb_aluno_responsavel.parentesco)
     ");
-    $insert->bindValue(1, $idAluno);
-    $insert->bindValue(2, $idResponsavel);
-    $insert->execute();
+    $insert->execute([$idAluno, $idResponsavel, $parentesco]);
 
     enviarSucesso("Responsável vinculado ao aluno.");
 } catch (PDOException $erro) {

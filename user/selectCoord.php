@@ -6,6 +6,7 @@ require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/sessao.php';
+require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/tokenLogin.php';
 
 /**
@@ -18,6 +19,11 @@ require_once __DIR__ . '/../Authentication/tokenLogin.php';
  *
  * Cada login vira uma sessão (tb_sessao), que aparece em Minha conta >
  * Dispositivos conectados e pode ser encerrada de lá.
+ *
+ * Só entra conta ativa (migração 008): quem se cadastrou numa escola que
+ * já tem gestão espera a aprovação, e a gestão pode recusar ou desativar
+ * uma conta. A senha é conferida antes, para a mensagem de situação não
+ * revelar a quem não sabe a senha que o email existe.
  */
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -37,7 +43,8 @@ try {
     // duas contas que só diferem na caixa (cadastros antigos), vale a
     // que bate exatamente com o que foi digitado.
     $select = $conexao->prepare(
-        "SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.senha_coordenacao, e.nome_escola
+        "SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.senha_coordenacao, c.papel, c.situacao,
+                e.nome_escola, e.municipio
          FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
          WHERE lower(c.email_coordenacao) = lower(?)
          ORDER BY (c.email_coordenacao = ?) DESC, c.id_coordenacao
@@ -61,6 +68,15 @@ try {
         enviarErro($mensagemCredenciaisInvalidas, 401);
     }
 
+    $situacoes = [
+        'pendente'   => "Sua conta aguarda a aprovação da gestão da {$coordenacao['nome_escola']}. Assim que alguém da gestão aprovar, é só entrar.",
+        'recusado'   => "A gestão da {$coordenacao['nome_escola']} não aprovou o acesso desta conta. Fale com a coordenação da escola.",
+        'desativado' => "Esta conta foi desativada pela gestão da escola. Fale com a coordenação da escola.",
+    ];
+    if (isset($situacoes[$coordenacao['situacao']])) {
+        enviarErro($situacoes[$coordenacao['situacao']], 403, null, ["situacao" => $coordenacao['situacao']]);
+    }
+
     // Conta ainda tinha a senha em texto puro (formato antigo): migra
     // silenciosamente para hash agora que sabemos a senha correta.
     if ($verificacao['precisaAtualizar']) {
@@ -79,6 +95,9 @@ try {
         "nome_coordenacao"  => $coordenacao['nome_coordenacao'],
         "email_coordenacao" => $coordenacao['email_coordenacao'],
         "nome_escola"       => $coordenacao['nome_escola'],
+        "municipio"         => $coordenacao['municipio'],
+        "papel"             => $coordenacao['papel'],
+        "administrador"     => ehAdministrador($coordenacao['email_coordenacao']),
         "token"             => $token,
         "expira_em"         => time() + $duracaoSessao,
     ]);

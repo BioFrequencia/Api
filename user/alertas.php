@@ -5,43 +5,50 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/alertas.php';
 require_once __DIR__ . '/../helpers/escalonamento.php';
-require_once __DIR__ . '/../helpers/contatoResponsavel.php';
+require_once __DIR__ . '/../helpers/avisos.php';
 require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
+/**
+ * Alertas da escola: alunos com muitas entradas atrasadas ou saídas
+ * antecipadas nos últimos dias (helpers/alertas.php).
+ *
+ *   { id_sala?, tipo?: atrasos | saidas, prioridade?: alta | media | baixa }
+ *
+ * Também é o "reforço" dos avisos automáticos: o aviso por limite sai
+ * logo depois de cada registro, mas se naquela hora o aluno ainda não
+ * tinha responsável (ou o provedor estava fora), ele sai aqui - com a
+ * mesma trava de um aviso por intervalo (helpers/avisos.php).
+ */
 $idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
-$idSala     = $dados["id_sala"] ?? null;      // filtro de turma (opcional)
-$tipo       = $dados["tipo"] ?? null;         // faltas | frequencia | atrasos (opcional)
-$prioridade = $dados["prioridade"] ?? null;   // alta | media | baixa (opcional)
+$idSala     = $dados["id_sala"] ?? null;
+$tipo       = $dados["tipo"] ?? null;
+$prioridade = $dados["prioridade"] ?? null;
 
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
 
 try {
-    $todos = buscarAlertas($conexao, $idEscola);
+    $config = configuracaoDaEscola($conexao, $idEscola);
+    $janela = indicadoresDaJanela($conexao, $idEscola, $config);
+    $todos = buscarAlertas($conexao, $idEscola, $config, $janela);
 
-    // Nível de cada aluno e, no nível máximo, contato com o responsável.
-    // Calculado aqui (e não num cron) porque esta é a tela que a
-    // coordenação abre todo dia - sem agendador para manter no ar.
+    // Nível de cada aluno (há quanto tempo a situação dura), para a tela.
     $niveis = calcularNiveis($conexao, $todos);
     gravarNiveis($conexao, $niveis, $idEscola);
 
-    $contatos = [];
-    foreach ($niveis as $idAluno => $dadosNivel) {
-        if ($dadosNivel['nivel'] >= 4) {
-            $nome = $dadosNivel['alertas'][0]['nome_aluno'];
-            $resumo = contatarResponsaveisNivelMaximo(
-                $conexao, (int) $idAluno, $nome, $dadosNivel['motivo'], $dadosNivel['nivel']
-            );
-            if ($resumo['enviados'] > 0 || $resumo['na_fila'] > 0 || $resumo['falhas'] > 0) {
-                $contatos[] = ["id_aluno" => (int) $idAluno, "nome_aluno" => $nome] + $resumo;
+    $avisos = [];
+    foreach (array_unique(array_column($todos, 'id_aluno')) as $idAluno) {
+        $resumo = avisarSeAtingiuLimite($conexao, $idEscola, (int) $idAluno, $config, $janela['alunos'][$idAluno]);
+        foreach ($resumo as $tipoAviso => $r) {
+            if (($r['enviados'] ?? 0) + ($r['na_fila'] ?? 0) + ($r['falhas'] ?? 0) > 0) {
+                $avisos[] = ["id_aluno" => (int) $idAluno, "nome_aluno" => $janela['alunos'][$idAluno]['nome_aluno'], "tipo" => $tipoAviso] + $r;
             }
         }
     }
 
-    // Enriquece cada alerta com o nível do aluno, para a tela mostrar.
     foreach ($todos as &$alerta) {
         $dadosNivel = $niveis[(int) $alerta['id_aluno']] ?? null;
         $alerta['nivel'] = $dadosNivel['nivel'] ?? 0;
@@ -50,8 +57,6 @@ try {
     unset($alerta);
 
     if (!empty($idSala)) {
-        // Pelo id da turma (antes era pelo nome, que se repete entre
-        // escolas e entre períodos - "1A" de manhã e "1A" à tarde).
         $todos = array_values(array_filter($todos, fn($a) => $a['id_sala'] === (int) $idSala));
     }
     if (!empty($tipo)) {
@@ -62,9 +67,11 @@ try {
     }
 
     enviarSucesso("Alertas carregados com sucesso.", [
-        "alertas"  => $todos,
-        "total"    => count($todos),
-        "contatos" => $contatos,
+        "alertas"    => $todos,
+        "total"      => count($todos),
+        "avisos"     => $avisos,
+        "limite"     => $config['limite_alerta_percentual'],
+        "janela"     => ["inicio" => $janela['inicio'], "fim" => $janela['fim'], "dias" => $config['janela_alerta_dias'], "dias_letivos" => $janela['dias_letivos']],
     ]);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao carregar os alertas.", 500, $erro);

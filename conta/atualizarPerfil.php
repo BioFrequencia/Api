@@ -11,10 +11,13 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
 /**
  * Atualiza os dados da conta. Trocar o e-mail - que é o login - pede a
  * senha atual: quem pegou o computador destravado não consegue tomar a
- * conta trocando o e-mail. O nome da escola vale para todas as contas
- * da mesma escola.
+ * conta trocando o e-mail.
  *
- *   { nome_coordenacao, email_coordenacao, nome_escola, senha_atual? }
+ *   { nome_coordenacao, email_coordenacao, nome_escola?, senha_atual? }
+ *
+ * O nome da escola vale para todas as contas dela (migração 008): só a
+ * gestão muda, e só de escola fora do catálogo - o nome de uma escola do
+ * catálogo é o oficial da Secretaria da Educação.
  */
 $idCoordenacao = (int) autenticar();
 
@@ -31,16 +34,28 @@ if ($nome === '' || mb_strlen($nome) > 150) {
 if (!emailValido($email) || mb_strlen($email) > 150) {
     enviarErro("Informe um e-mail válido.", 422);
 }
-if ($nomeEscola === '' || mb_strlen($nomeEscola) > 150) {
-    enviarErro("Informe o nome da escola (até 150 caracteres).", 422);
+if (mb_strlen($nomeEscola) > 150) {
+    enviarErro("O nome da escola deve ter até 150 caracteres.", 422);
 }
 
 try {
-    $stmt = $conexao->prepare("SELECT email_coordenacao, senha_coordenacao, id_escola FROM tb_coordenacao WHERE id_coordenacao = ?");
+    $stmt = $conexao->prepare("
+        SELECT c.email_coordenacao, c.senha_coordenacao, c.id_escola, c.papel, e.nome_escola, e.codigo_cie
+        FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
+        WHERE c.id_coordenacao = ?
+    ");
     $stmt->execute([$idCoordenacao]);
     $conta = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$conta) {
         enviarErro("Conta de coordenação não encontrada.", 404);
+    }
+
+    $mudarEscola = $nomeEscola !== '' && $nomeEscola !== $conta['nome_escola'];
+    if ($mudarEscola && $conta['codigo_cie'] !== null) {
+        enviarErro("O nome desta escola é o oficial do catálogo da Secretaria da Educação e não muda por aqui.", 409);
+    }
+    if ($mudarEscola && $conta['papel'] !== 'gestor') {
+        enviarErro("Só a gestão da escola pode mudar o nome da escola.", 403);
     }
 
     if (mb_strtolower($conta['email_coordenacao']) !== $email) {
@@ -58,8 +73,10 @@ try {
     $conexao->beginTransaction();
     $conexao->prepare("UPDATE tb_coordenacao SET nome_coordenacao = ?, email_coordenacao = ? WHERE id_coordenacao = ?")
         ->execute([$nome, $email, $idCoordenacao]);
-    $conexao->prepare("UPDATE tb_escola SET nome_escola = ? WHERE id_escola = ?")
-        ->execute([$nomeEscola, $conta['id_escola']]);
+    if ($mudarEscola) {
+        $conexao->prepare("UPDATE tb_escola SET nome_escola = ? WHERE id_escola = ?")
+            ->execute([$nomeEscola, $conta['id_escola']]);
+    }
     $conexao->commit();
 
     enviarSucesso("Dados da conta salvos.", perfilDaCoordenacao($conexao, $idCoordenacao));

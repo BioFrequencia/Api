@@ -47,3 +47,5 @@ RedirectMatch 404 /\.git
 RedirectMatch 404 /vendor/
 RedirectMatch 404 /tests/
 RedirectMatch 404 /database/migrations/
+RedirectMatch 404 /database/dados/
+RedirectMatch 404 /database/importarEscolas\.php

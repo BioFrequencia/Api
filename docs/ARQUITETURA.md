@@ -43,14 +43,31 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    escola de quem chamou (`helpers/escola.php`). O aluno pertence à escola
    pela turma (`tb_aluno.id_sala -> tb_sala.id_escola`). Registro de outra
    escola responde 404.
-3. **Cadastro de coordenação**: exige o código `CADASTRO_CODIGO_ACESSO`.
-   Cada coordenação é uma escola independente: a conta nova cria a
-   própria escola (`tb_escola`), e as turmas (`user/addSala.php`) e os
-   alunos dela não aparecem para nenhuma outra conta. As contas que já
-   existiam antes da migração 005 ficam juntas na escola 1.
-4. **Faltas e atrasos** (`helpers/registroEvento.php`): no máximo um por
-   aluno por dia (fuso da escola), com trava `pg_advisory_xact_lock`.
-   Usado pelo lançamento manual e pela aprovação de ocorrências do app.
+3. **Escolas e cadastro de coordenação** (migração 008): `tb_escola` tem o
+   catálogo das 5.795 escolas estaduais de São Paulo (dados abertos da
+   SEDUC, `database/dados/escolas-sp.csv`), importado pelo
+   `docker-entrypoint.sh` sempre que a versão do arquivo muda
+   (`database/importarEscolas.php`, nunca apaga nada). O cadastro
+   (`user/addCoord.php`) exige o código `CADASTRO_CODIGO_ACESSO` e a escola
+   escolhida na busca do catálogo (`escola/buscar.php`, pública), ou cria
+   uma escola fora dele. Cada conta é de uma escola: a primeira vira
+   **gestora** (`tb_coordenacao.papel`); as próximas ficam **pendentes**
+   (`situacao`) até a gestão aprovar em Escola > Equipe
+   (`escola/atualizarMembro.php`). Conta pendente, recusada ou desativada
+   não entra, e quem é desativado perde as sessões na hora. A escola
+   nunca fica sem gestão ativa (`helpers/equipe.php`).
+4. **Entradas atrasadas e saídas antecipadas** (`helpers/registroEvento.php`,
+   `user/marcarAtraso.php`, `user/marcarSaida.php`): o objetivo do
+   sistema. Só num dia de aula e dentro do horário da turma
+   (`helpers/calendario.php`): fins de semana, feriados nacionais e de SP
+   e os dias "sem aula" do calendário da escola são recusados (422, com o
+   motivo), assim como uma entrada atrasada fora do período da turma (o
+   aluno da manhã às 17h) ou dentro da tolerância. No máximo um registro
+   de cada tipo por aluno por dia (trava `pg_advisory_xact_lock`). Faltas
+   não são mais registradas: ficam na Sala do Futuro
+   (`user/marcarFalta.php` responde 410; `tb_falta` guarda as antigas).
+   A presença registrada pelo app depois da tolerância já vira a entrada
+   atrasada (`origem = 'presenca'`), se a escola deixar a opção ligada.
 5. **App de biometria da coordenação** (migração 006): roda nos tablets e
    celulares da escola, com a mesma conta da coordenação usada no site
    (`user/selectCoord.php` com `cliente: "app"` dá uma sessão de 12 h) e
@@ -88,30 +105,46 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    (`digital/checkinBiometrico.php`, assinatura HMAC) - continua aceito
    para os aparelhos que já estavam conectados, mas nenhum aparelho novo
    é registrado.
-6. **Ocorrência do app**: fica pendente (`tb_ocorrencia_pendente`) até a
-   coordenação aprovar no site; aprovar lança a falta/atraso no dia do
-   envio.
-7. **Alertas e mensagens**: `user/alertas.php` calcula os alertas
-   (frequência do mês, faltas consecutivas, atrasos da semana), grava o
-   nível de cada aluno (0-4, `tb_alerta_nivel`) e, no nível 4, contata os
-   responsáveis (`helpers/contatoResponsavel.php`): WhatsApp/e-mail se o
-   provedor estiver configurado, senão fica na fila com um link `wa.me`.
-   No máximo um contato por aluno a cada 24 h (trava atômica). Toda falta
-   lançada também cria uma notificação "Pendente" por responsável, que a
-   coordenação marca como enviada depois de avisar.
+6. **Ocorrência do celular do aluno** (fluxo anterior): fica pendente
+   (`tb_ocorrencia_pendente`) até a coordenação decidir; aprovar lança a
+   entrada atrasada no dia do envio, com as mesmas regras. Ocorrência de
+   falta só pode ser rejeitada.
+7. **Indicadores, alertas e avisos** (`helpers/indicadores.php`,
+   `helpers/alertas.php`, `helpers/avisos.php`): toda porcentagem tem
+   denominador real - os dias de aula que já passaram, de cada aluno, e
+   as ocorrências contadas por dia em dia letivo. Pontualidade = dias de
+   aula sem entrada atrasada; sem dia de aula no período, o valor é
+   `null`, nunca 100%. O alerta é por aluno e tipo na janela da escola
+   (padrão 30 dias): metade do limite = baixa, o limite (padrão 20%, com
+   pelo menos 3 ocorrências) = média, o dobro = alta. Ao passar do
+   limite, os responsáveis recebem o aviso pelo canal preferido de cada
+   um (WhatsApp, e-mail ou os dois) - logo depois do registro e de novo
+   ao abrir os alertas, no máximo um a cada 7 dias por aluno e tipo
+   (`tb_aviso_limite`, trava tomada antes do envio). Sem provedor, a
+   mensagem fica em Notificações com o link `wa.me`. O aviso a cada
+   registro existe, desligado por padrão. Limite, mínimo, janela,
+   intervalo, tolerância e as opções ficam em `tb_configuracao_escola`
+   (Escola > Avisos, só a gestão).
 8. **Minha conta** (migração 007): `conta/perfil.php` e
-   `conta/atualizarPerfil.php` (nome, e-mail e nome da escola; trocar o
-   e-mail, que é o login, pede a senha atual), `conta/alterarSenha.php`
+   `conta/atualizarPerfil.php` (nome e e-mail - trocar o e-mail, que é o
+   login, pede a senha atual; o nome da escola só muda pela gestão e só
+   fora do catálogo), `conta/alterarSenha.php`
    (confere a atual e desconecta os outros aparelhos) e as preferências
    da conta (`conta/preferencias.php`, `conta/salvarPreferencias.php`:
    tema e sons), guardadas no banco para valer em qualquer computador.
    Senha atual errada responde 403, não 401 - o site trata 401 como
    sessão vencida.
 9. **Suporte** (migração 007): `suporte/abrirChamado.php` (até 10 por dia
-   por conta) e `suporte/listarChamados.php`. A equipe responde direto em
-   `tb_chamado_suporte` (`status`: aberto, em_andamento, respondido,
-   fechado; `resposta`; `respondido_em`), e a coordenação acompanha na
-   tela Suporte do site.
+   por conta) e `suporte/listarChamados.php`. A equipe do sistema responde
+   na tela `/admin` do site (`admin/chamados.php`,
+   `admin/responderChamado.php`), e a coordenação acompanha em Suporte.
+10. **Administração** (migração 008): a equipe do sistema são as contas
+   com o e-mail em `ADMIN_EMAILS`. `admin/*` (resumo, escolas, contas,
+   chamados, reimportar o catálogo) responde 404 para qualquer outra
+   conta. A gestão de cada escola tem a tela Escola: dados do catálogo,
+   horário das turmas (`escola/salvarTurma.php`), calendário
+   (`escola/adicionarCalendario.php`), avisos
+   (`escola/salvarConfiguracao.php`) e equipe.
 
 ## Tempo e fuso
 

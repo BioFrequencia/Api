@@ -21,9 +21,11 @@ require_once __DIR__ . '/alertas.php';
  *   4  Crítico      - alta persistindo há 7+ dias, ou mais de um tipo de
  *                     alerta alto ao mesmo tempo
  *
- * Só o nível 4 dispara contato automático com o responsável. Abaixo
- * disso o sistema sinaliza e a coordenação decide - a mesma regra que
- * vale para o resto do sistema.
+ * O nível é informativo (mostra há quanto tempo a situação dura). O
+ * contato automático com o responsável não depende mais dele: sai quando
+ * o aluno passa do limite de ocorrências da escola (helpers/avisos.php),
+ * que a gestão configura e a família entende ("5 entradas atrasadas em
+ * 18 dias de aula").
  */
 
 const NIVEL_ROTULOS = [
@@ -76,7 +78,8 @@ function calcularNivelAluno(array $alertasDoAluno, ?array $anterior, ?int $agora
     $motivos = [];
 
     // Mais de um alerta de prioridade alta ao mesmo tempo (ex.:
-    // frequência baixa E faltas consecutivas) já é o caso crítico.
+    // muitas entradas atrasadas E muitas saídas antecipadas) já é o caso
+    // crítico.
     if ($altos >= 2) {
         $nivel = 4;
         $motivos[] = "$altos alertas de prioridade alta ao mesmo tempo";

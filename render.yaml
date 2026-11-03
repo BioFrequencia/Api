@@ -46,10 +46,22 @@ services:
       # cadastrar alunos faz a biometria antiga deixar de abrir.
       - key: BIOMETRIA_CHAVE
         generateValue: true
-      # Opcionais - sem elas o contato de nível máximo fica na fila.
-      - key: SMTP_REMETENTE
+      # E-mails da equipe do sistema (tela /admin), separados por vírgula.
+      - key: ADMIN_EMAILS
         sync: false
+      # Opcionais - sem elas os avisos aos responsáveis ficam na fila de
+      # Notificações, com o link do WhatsApp pronto.
       - key: WHATSAPP_API_URL
         sync: false
       - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_TEMPLATE
+        sync: false
+      - key: EMAIL_API_URL
+        sync: false
+      - key: EMAIL_API_TOKEN
+        sync: false
+      - key: EMAIL_REMETENTE
+        sync: false
+      - key: SMTP_REMETENTE
         sync: false

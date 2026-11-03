@@ -18,6 +18,8 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  *   { id_aluno, metodo }
  *
  * Uma presença por aluno por dia: repetir devolve a já registrada.
+ * Presença nova depois da tolerância da escola também registra a entrada
+ * atrasada ("entrada" na resposta).
  */
 $idCoordenacao = autenticar();
 
@@ -33,13 +35,18 @@ if (!in_array($metodo, ['manual', 'digital'], true)) {
 }
 
 $idAluno = (int) $idAluno;
-exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
+$idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
+exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
 
 try {
     $presenca = registrarPresenca($conexao, $idAluno, $idCoordenacao, $metodo);
+    // Presença nova depois da tolerância vira entrada atrasada (helpers/presenca.php).
+    $entrada = $presenca['nova']
+        ? conferirEntradaDaPresenca($conexao, $idAluno, (int) $idCoordenacao, $idEscola, $presenca['registrada_em'], $metodo)
+        : null;
     enviarSucesso(
-        $presenca['nova'] ? "Presença registrada." : "A presença deste aluno já estava registrada hoje.",
-        ["aluno" => dadosDoAluno($conexao, $idAluno), "presenca" => $presenca],
+        $presenca['nova'] ? mensagemDaPresenca($entrada) : "A presença deste aluno já estava registrada hoje.",
+        ["aluno" => dadosDoAluno($conexao, $idAluno), "presenca" => $presenca, "entrada" => $entrada],
         $presenca['nova'] ? 201 : 200
     );
 } catch (PDOException $erro) {

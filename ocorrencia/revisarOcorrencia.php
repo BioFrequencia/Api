@@ -5,22 +5,23 @@ require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/escola.php';
-require_once __DIR__ . '/../helpers/notificacao.php';
 require_once __DIR__ . '/../helpers/registroEvento.php';
+require_once __DIR__ . '/../helpers/avisos.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
  * Decisão da coordenação sobre uma ocorrência enviada pelo app.
  *
- * Aprovar cria a falta ou o atraso de verdade (em tb_falta/tb_atraso,
- * exatamente as mesmas tabelas do lançamento manual pelo site) e gera as
- * notificações aos responsáveis, igual ao fluxo manual. Rejeitar só
- * registra a decisão - o pedido não é apagado, para o histórico do caso
- * continuar completo.
+ * Aprovar cria a entrada atrasada de verdade (em tb_atraso, a mesma
+ * tabela do lançamento manual pelo site, com as mesmas regras de dia e
+ * horário) e dispara os avisos aos responsáveis, igual ao fluxo manual.
+ * Ocorrência de falta só pode ser rejeitada: faltas não são mais
+ * registradas. Rejeitar só registra a decisão - o pedido não é apagado,
+ * para o histórico do caso continuar completo.
  *
- * Aprovação e criação da falta acontecem na mesma transação: sem isso,
- * uma falha no meio deixaria a ocorrência marcada como aprovada sem a
- * falta correspondente existir.
+ * Aprovação e criação do registro acontecem na mesma transação: sem
+ * isso, uma falha no meio deixaria a ocorrência marcada como aprovada sem
+ * o registro correspondente existir.
  */
 $idCoordenacao = autenticar();
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
@@ -80,6 +81,14 @@ try {
         ]);
     }
 
+    // Faltas não são mais registradas (a frequência fica na Sala do
+    // Futuro): uma ocorrência de falta, do fluxo anterior, só pode ser
+    // rejeitada. O atraso segue as mesmas regras do lançamento manual.
+    if ($ocorrencia['tipo'] === 'falta') {
+        enviarErro("Faltas não são mais registradas pelo BioFrequência (ficam na Sala do Futuro): rejeite esta ocorrência.", 422);
+    }
+    exigirHorarioDoRegistro($conexao, 'atraso', (int) $ocorrencia['id_aluno'], $idEscola, $ocorrencia['criado_em']);
+
     $conexao->beginTransaction();
 
     // A falta/atraso é do dia em que o aluno ENVIOU, não do dia em que a
@@ -95,15 +104,15 @@ try {
         $ocorrencia['criado_em'],
         $ocorrencia['motivo'],
         $ocorrencia['observacao'],
-        $justificado
+        $justificado,
+        ['origem' => 'ocorrencia']
     );
     $idCriado = $registro['id'];
 
-    $colunaCriada = $ocorrencia['tipo'] === 'falta' ? 'id_falta_criada' : 'id_atraso_criado';
     $upd = $conexao->prepare("
         UPDATE tb_ocorrencia_pendente
         SET status = 'aprovado', revisado_em = NOW(),
-            id_coordenacao_revisao = ?, observacao_revisao = ?, $colunaCriada = ?
+            id_coordenacao_revisao = ?, observacao_revisao = ?, id_atraso_criado = ?
         WHERE id_ocorrencia = ? AND status = 'pendente'
     ");
     $upd->bindValue(1, $idCoordenacao);
@@ -120,7 +129,6 @@ try {
 
     $conexao->commit();
 
-    $dataLocal = date('d/m/Y', strtotime(dataNaEscola($registro['data'])));
     if ($registro['ja_existia']) {
         // Os responsáveis já foram avisados quando o dia foi lançado.
         enviarSucesso("Ocorrência aprovada. Este dia já estava lançado; nenhuma duplicata foi criada.", [
@@ -132,14 +140,11 @@ try {
         ]);
     }
 
-    // Mesmas notificações do lançamento manual (helpers/notificacao.php),
-    // fora da transação de propósito: falhar ao enfileirar um aviso não
-    // pode desfazer a falta que já foi gravada.
-    $rotulo = $ocorrencia['tipo'] === 'falta' ? 'Falta registrada' : 'Atraso registrado';
-    $mensagem = "$rotulo em $dataLocal"
-        . ($ocorrencia['motivo'] ? ". Motivo: {$ocorrencia['motivo']}" : ".")
-        . " (enviado pelo aplicativo e aprovado pela coordenação)";
-    criarNotificacoesParaEvento($conexao, (int) $ocorrencia['id_aluno'], $mensagem);
+    // Mesmos avisos do lançamento manual (helpers/avisos.php), fora da
+    // transação de propósito: falhar ao avisar não pode desfazer o
+    // registro que já foi gravado.
+    $nomeAluno = (string) (turmaDoAluno($conexao, (int) $ocorrencia['id_aluno'])['nome_aluno'] ?? '');
+    avisosDepoisDoRegistro($conexao, $idEscola, (int) $ocorrencia['id_aluno'], $nomeAluno, 'atraso', $registro['data'], $ocorrencia['motivo']);
 
     enviarSucesso("Ocorrência aprovada e lançada.", [
         "id_ocorrencia" => (int) $idOcorrencia,

@@ -4,25 +4,28 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/escola.php';
 
 /**
  * Cadastro de uma nova conta de coordenação.
  *
- * Exige o código de acesso da escola (variável de ambiente
- * CADASTRO_CODIGO_ACESSO). Antes o cadastro era aberto: qualquer pessoa
- * na internet criava uma conta pelo site e, como toda conta nova cai na
- * escola padrão (tb_coordenacao.id_escola DEFAULT 1), passava a ver
- * nomes, turmas, faltas e os dados dos responsáveis (CPF, telefone) de
- * todos os alunos. Sem a variável definida, o cadastro fica desligado -
- * a escolha segura quando ninguém configurou nada.
+ *   { nome, email, senha, codigo_acesso, id_escola }        escola do catálogo
+ *   { nome, email, senha, codigo_acesso, nome_escola, municipio? }
+ *                                                           escola fora do catálogo
  *
- * Quem administra o sistema repassa o código só para quem deve ter
- * acesso; trocar a variável invalida o código antigo na hora.
+ * Exige o código de acesso (variável de ambiente CADASTRO_CODIGO_ACESSO).
+ * Sem a variável, o cadastro fica desligado - a escolha segura quando
+ * ninguém configurou nada. Quem administra o sistema repassa o código só
+ * para quem deve ter acesso; trocar a variável invalida o antigo na hora.
  *
- * Cada coordenação é uma escola independente: a conta nova ganha uma
- * escola própria (nome_escola, ou "Escola de <nome>"), com turmas e
- * alunos que nenhuma outra conta enxerga. Antes toda conta nova caía na
- * escola padrão (id 1) e via os alunos das outras.
+ * Uma escola por conta (migração 008). A escola vem do catálogo oficial
+ * (escola/buscar.php) ou, se não estiver nele (escola municipal,
+ * particular), é criada com o nome informado.
+ *   - Escola sem gestão ativa: a conta entra ativa, como gestora.
+ *   - Escola que já tem gestão: a conta entra "pendente" e só acessa
+ *     depois que a gestão aprovar. Sem isso, o código de acesso bastava
+ *     para ver os alunos e os telefones dos responsáveis de qualquer
+ *     escola.
  */
 // Variável de ambiente (Render/Docker) ou, no XAMPP, a constante de
 // mesmo nome em config/config.php.
@@ -38,7 +41,9 @@ $nome   = $dados["nome"] ?? null;
 $email  = $dados["email"] ?? null;
 $senha  = $dados["senha"] ?? null;
 $codigo = $dados["codigo_acesso"] ?? null;
+$idEscola = $dados["id_escola"] ?? null;
 $nomeEscola = $dados["nome_escola"] ?? null;
+$municipio = $dados["municipio"] ?? null;
 
 if ($codigoConfigurado === '') {
     enviarErro("O cadastro de novas contas está desativado. Peça acesso à coordenação responsável pelo sistema.", 403);
@@ -62,12 +67,17 @@ if (!senhaForte($senha)) {
 if (mb_strlen(trim($nome)) > 150) {
     enviarErro("O nome deve ter no máximo 150 caracteres.", 422);
 }
+if ($idEscola !== null && !inteiroValido($idEscola)) {
+    enviarErro("Escola inválida.", 422);
+}
 if ($nomeEscola !== null && (!is_string($nomeEscola) || mb_strlen(trim($nomeEscola)) > 150)) {
     enviarErro("O nome da escola deve ter no máximo 150 caracteres.", 422);
 }
+if ($municipio !== null && (!is_string($municipio) || mb_strlen(trim($municipio)) > 60)) {
+    enviarErro("O município deve ter no máximo 60 caracteres.", 422);
+}
 
 $nome  = trim($nome);
-$nomeEscola = campoPreenchido($nomeEscola) ? trim($nomeEscola) : mb_substr("Escola de $nome", 0, 150);
 // Email sempre em minúsculas: o teclado do celular coloca a primeira
 // letra em maiúscula, e "Coord@escola" e "coord@escola" viravam contas
 // diferentes (ou um login que "não existe").
@@ -89,21 +99,46 @@ try {
 
     $conexao->beginTransaction();
 
-    $escola = $conexao->prepare("INSERT INTO tb_escola (nome_escola) VALUES (?) RETURNING id_escola");
-    $escola->bindValue(1, $nomeEscola);
-    $escola->execute();
-    $idEscola = (int) $escola->fetchColumn();
+    if ($idEscola !== null) {
+        $escola = $conexao->prepare("SELECT id_escola, nome_escola FROM tb_escola WHERE id_escola = ? AND codigo_cie IS NOT NULL");
+        $escola->execute([(int) $idEscola]);
+        $linhaEscola = $escola->fetch(PDO::FETCH_ASSOC);
+        if (!$linhaEscola) {
+            $conexao->rollBack();
+            enviarErro("Escola não encontrada no catálogo. Busque de novo pelo nome ou pelo município.", 404);
+        }
+        $idEscola = (int) $linhaEscola['id_escola'];
+        $nomeEscola = $linhaEscola['nome_escola'];
+        // Dois primeiros cadastros da mesma escola ao mesmo tempo: a trava
+        // faz o segundo enxergar o primeiro (e entrar como pendente).
+        $conexao->prepare("SELECT pg_advisory_xact_lock(7401, ?)")->execute([$idEscola]);
+        $gestora = !escolaTemGestor($conexao, $idEscola);
+    } else {
+        $nomeEscola = campoPreenchido($nomeEscola) ? trim($nomeEscola) : mb_substr("Escola de $nome", 0, 150);
+        $escola = $conexao->prepare("INSERT INTO tb_escola (nome_escola, municipio) VALUES (?, ?) RETURNING id_escola");
+        $escola->execute([$nomeEscola, campoPreenchido($municipio) ? mb_strtoupper(trim($municipio)) : null]);
+        $idEscola = (int) $escola->fetchColumn();
+        $gestora = true;
+    }
 
-    $insert = $conexao->prepare("INSERT INTO tb_coordenacao(nome_coordenacao,email_coordenacao,senha_coordenacao,id_escola) VALUES(?,?,?,?)");
-    $insert->bindValue(1, $nome);
-    $insert->bindValue(2, $email);
-    $insert->bindValue(3, $senhaHash);
-    $insert->bindValue(4, $idEscola);
-    $insert->execute();
+    $insert = $conexao->prepare("
+        INSERT INTO tb_coordenacao (nome_coordenacao, email_coordenacao, senha_coordenacao, id_escola, papel, situacao)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ");
+    $insert->execute([$nome, $email, $senhaHash, $idEscola, $gestora ? 'gestor' : 'coordenador', $gestora ? 'ativo' : 'pendente']);
 
     $conexao->commit();
 
-    enviarSucesso("Usuário cadastrado com sucesso.", ["nome_escola" => $nomeEscola]);
+    enviarSucesso(
+        $gestora
+            ? "Conta criada. Você é a gestão da $nomeEscola no BioFrequência."
+            : "Conta criada. A $nomeEscola já usa o BioFrequência: a gestão da escola precisa aprovar o seu acesso.",
+        [
+            "nome_escola" => $nomeEscola,
+            "papel"       => $gestora ? 'gestor' : 'coordenador',
+            "situacao"    => $gestora ? 'ativo' : 'pendente',
+        ]
+    );
 } catch (PDOException $erro) {
     if ($conexao->inTransaction()) {
         $conexao->rollBack();
@@ -113,5 +148,5 @@ try {
         // Corrida entre a checagem acima e o insert, ou constraint de unicidade no banco.
         enviarErro("Este email já está cadastrado.", 409, $erro);
     }
-    enviarErro("Erro no servidor ao cadastrar. Tente novamente mais tarde.", 500, $erro);
+    enviarErro("Erro no servidor ao cadastrar. Tente novamente em instantes.", 500, $erro);
 }

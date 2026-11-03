@@ -40,6 +40,8 @@ $cpf = $dados["cpf_responsavel"] ?? null;
 $telefone = $dados["telefone_responsavel"] ?? null;
 $email = $dados["email_responsavel"] ?? null;
 $genero = normalizarGeneroResponsavel($dados["genero_responsavel"] ?? null);
+$canal = $dados["canal_preferido"] ?? 'whatsapp';
+[$parentesco, $erroParentesco] = lerParentesco($dados["parentesco"] ?? null);
 
 if (!inteiroValido($idAluno)) {
     enviarErro("Informe um aluno válido.", 422);
@@ -58,6 +60,15 @@ if (campoPreenchido($email) && (!emailValido($email) || mb_strlen(trim($email)) 
 }
 if ($genero === null) {
     enviarErro("Informe um gênero válido.", 422);
+}
+if (!in_array($canal, CANAIS_RESPONSAVEL, true)) {
+    enviarErro("Canal inválido: use whatsapp, email ou ambos.", 422);
+}
+if ($erroParentesco !== null) {
+    enviarErro($erroParentesco, 422);
+}
+if ($canal !== 'whatsapp' && !campoPreenchido($email)) {
+    enviarErro("Para receber os avisos por email, informe o email do responsável.", 422);
 }
 
 $nome = trim($nome);
@@ -94,14 +105,15 @@ try {
         $idResponsavel = (int) $existente['id_responsavel'];
         $grava = $conexao->prepare("
             UPDATE tb_responsavel
-            SET id_aluno = ?, nome_responsavel = ?, telefone_responsavel = ?, email_responsavel = ?, genero_responsavel = ?
+            SET id_aluno = ?, nome_responsavel = ?, telefone_responsavel = ?, email_responsavel = ?, genero_responsavel = ?,
+                canal_preferido = ?
             WHERE id_responsavel = ?
         ");
-        $grava->execute([$idAluno, $nome, $telefoneDigitos, $email, $genero, $idResponsavel]);
+        $grava->execute([$idAluno, $nome, $telefoneDigitos, $email, $genero, $canal, $idResponsavel]);
     } else {
         $grava = $conexao->prepare("
-            INSERT INTO tb_responsavel (id_aluno, nome_responsavel, cpf_responsavel, telefone_responsavel, email_responsavel, genero_responsavel)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO tb_responsavel (id_aluno, nome_responsavel, cpf_responsavel, telefone_responsavel, email_responsavel, genero_responsavel, canal_preferido)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING id_responsavel
         ");
         $grava->bindValue(1, $idAluno);
@@ -110,14 +122,13 @@ try {
         $grava->bindValue(4, $telefoneDigitos);
         $grava->bindValue(5, $email, $email === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
         $grava->bindValue(6, $genero);
+        $grava->bindValue(7, $canal);
         $grava->execute();
         $idResponsavel = (int) $grava->fetchColumn();
     }
 
-    $vinculo = $conexao->prepare("INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel) VALUES (?, ?)");
-    $vinculo->bindValue(1, $idAluno);
-    $vinculo->bindValue(2, $idResponsavel);
-    $vinculo->execute();
+    $vinculo = $conexao->prepare("INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel, parentesco) VALUES (?, ?, ?)");
+    $vinculo->execute([$idAluno, $idResponsavel, $parentesco]);
 
     $conexao->commit();
 

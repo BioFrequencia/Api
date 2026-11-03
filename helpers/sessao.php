@@ -48,10 +48,13 @@ function criarSessao(PDO $conexao, int $idCoordenacao, string $cliente, bool $le
  * cada atualização é uma escrita no banco.
  */
 function sessaoAtiva(PDO $conexao, string $idSessao, int $idCoordenacao): bool {
+    // A conta também precisa continuar ativa (migração 008): a gestão ou a
+    // equipe do sistema pode desativar alguém que já estava logado.
     $stmt = $conexao->prepare("
-        SELECT ultimo_acesso < NOW() - INTERVAL '5 minutes' AS desatualizada
-        FROM tb_sessao
-        WHERE id_sessao = ? AND id_coordenacao = ? AND encerrada_em IS NULL AND expira_em > NOW()
+        SELECT s.ultimo_acesso < NOW() - INTERVAL '5 minutes' AS desatualizada
+        FROM tb_sessao s
+        JOIN tb_coordenacao c ON c.id_coordenacao = s.id_coordenacao AND c.situacao = 'ativo'
+        WHERE s.id_sessao = ? AND s.id_coordenacao = ? AND s.encerrada_em IS NULL AND s.expira_em > NOW()
     ");
     $stmt->execute([$idSessao, $idCoordenacao]);
     $linha = $stmt->fetch(PDO::FETCH_ASSOC);

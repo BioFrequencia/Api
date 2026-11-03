@@ -1,102 +1,32 @@
 <?php
-require_once __DIR__ . '/frequencia.php';
-require_once __DIR__ . '/tempo.php';
+require_once __DIR__ . '/indicadores.php';
 
 /**
- * Monta a lista de alertas (alunos que precisam de atenção) a partir de
- * faltas/atrasos reais. Compartilhada entre user/alertas.php,
- * user/dashboard.php e relatorio/exportarXml.php.
+ * Lista de alertas (alunos que precisam de atenção), compartilhada entre
+ * user/alertas.php, user/dashboard.php e relatorio/exportarXml.php.
  *
- * Critérios usados (não havia nenhuma regra de negócio formalmente
- * especificada para isso - são os limiares mais diretos derivados da
- * tela de protótipo fornecida; ajustar se a coordenação pedagógica
- * definir outros):
- *  - tipo "frequencia": calcularStatusFrequencia() = "Em risco"
- *    (frequência < 85%) -> prioridade alta; "Atenção" (85-89%) -> média.
- *  - tipo "faltas": faltas consecutivas (calcularFaltasConsecutivas) >= 5
- *    -> alta; >= 3 -> média.
- *  - tipo "atrasos": dias com atraso nos últimos 7 dias >= 4 -> média;
- *    >= 2 -> baixa.
- * Um aluno pode gerar mais de um alerta ao mesmo tempo (ex.: frequência
- * baixa E muitos atrasos) - cada um vira uma linha separada, como na
- * tela de protótipo (cada card é um alerta, não um aluno).
+ * Um alerta por aluno e por tipo - "atrasos" (entradas atrasadas) ou
+ * "saidas" (saídas antecipadas) - quando a taxa dele na janela da escola
+ * (padrão: últimos 30 dias) chega à faixa de helpers/indicadores.php:
+ *   baixa - metade do limite (padrão 10% dos dias de aula, 2 ocorrências);
+ *   media - o limite (padrão 20%, pelo menos 3): o responsável é avisado;
+ *   alta  - o dobro do limite.
  *
- * Contagem por DIA, no fuso da escola: duas faltas lançadas para o
- * mesmo aluno no mesmo dia (clique duplo, ou lançamento manual + envio
- * do app aprovado) são um dia de ausência, não dois. Produção já tinha
- * dois atrasos do mesmo aluno com 26 segundos de diferença.
+ * Os alertas por falta e por "frequência" saíram junto com as faltas: o
+ * BioFrequência registra entradas e saídas fora do horário; a frequência
+ * fica na Sala do Futuro.
  *
- * "Encerrar" um alerta (tb_alerta_encerrado) é por ALUNO, não por tipo:
- * simplificação deliberada para não multiplicar tabelas. Encerrar
- * suprime os alertas do aluno pelo resto do dia corrente; a comparação é
- * por DATA (não timestamp completo) de propósito - um novo evento no dia
- * seguinte (ou depois) faz o alerta correspondente reaparecer sozinho,
- * sem precisar de nenhuma ação manual.
+ * "Encerrar" um alerta (tb_alerta_encerrado) é por ALUNO: suprime os
+ * alertas dele até aparecer uma ocorrência num dia depois do encerramento
+ * (comparação por DATA, no fuso da escola).
  */
-function buscarAlertas(PDO $conexao, int $idEscola): array {
-    $inicioMes = inicioDoMesUtc();
-    $seteDiasAtras = inicioDoDiaUtc(7);
-    $sessentaDiasAtras = inicioDoDiaUtc(60);
-    $hoje = hojeNaEscola();
-    $diaFalta = sqlDataNaEscola('f.dta_falta');
-    $diaAtraso = sqlDataNaEscola('t.dta_atraso');
+function buscarAlertas(PDO $conexao, int $idEscola, ?array $config = null, ?array $janela = null): array {
+    $config = $config ?? configuracaoDaEscola($conexao, $idEscola);
+    $janela = $janela ?? indicadoresDaJanela($conexao, $idEscola, $config);
 
-    $stmt = $conexao->prepare("
-        SELECT al.id_aluno, al.nome_aluno, s.id_sala, s.nome_sala,
-               COALESCE(f.dias_falta, 0) AS qtd_faltas
-        FROM tb_aluno al
-        JOIN tb_sala s ON s.id_sala = al.id_sala
-        LEFT JOIN (
-            SELECT f.id_aluno, COUNT(DISTINCT $diaFalta) AS dias_falta
-            FROM tb_falta f
-            WHERE f.dta_falta >= ?
-            GROUP BY f.id_aluno
-        ) f ON f.id_aluno = al.id_aluno
-        WHERE s.id_escola = ?
-    ");
-    $stmt->execute([$inicioMes, $idEscola]);
-    $alunos = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // Datas de falta (para calcular consecutivas) e atrasos recentes,
-    // buscados à parte, uma query cada para a escola inteira de uma vez -
-    // evita N+1 (uma query por aluno). Restritas à escola: antes liam as
-    // faltas de todas as escolas a cada abertura da tela.
-    $datasFaltaPorAluno = [];
-    $stmtFaltas = $conexao->prepare("
-        SELECT DISTINCT f.id_aluno, $diaFalta AS d
-        FROM tb_falta f
-        JOIN tb_aluno a ON a.id_aluno = f.id_aluno
-        JOIN tb_sala  s ON s.id_sala  = a.id_sala
-        WHERE s.id_escola = ? AND f.dta_falta >= ?
-        ORDER BY f.id_aluno, d DESC
-    ");
-    $stmtFaltas->execute([$idEscola, $sessentaDiasAtras]);
-    foreach ($stmtFaltas->fetchAll(PDO::FETCH_ASSOC) as $linha) {
-        $datasFaltaPorAluno[(int) $linha['id_aluno']][] = $linha['d'];
-    }
-
-    $atrasosRecentesPorAluno = [];
-    $stmtAtrasos = $conexao->prepare("
-        SELECT t.id_aluno, COUNT(DISTINCT $diaAtraso) AS qtd, MAX($diaAtraso) AS ultimo
-        FROM tb_atraso t
-        JOIN tb_aluno a ON a.id_aluno = t.id_aluno
-        JOIN tb_sala  s ON s.id_sala  = a.id_sala
-        WHERE s.id_escola = ? AND t.dta_atraso >= ?
-        GROUP BY t.id_aluno
-    ");
-    $stmtAtrasos->execute([$idEscola, $seteDiasAtras]);
-    foreach ($stmtAtrasos->fetchAll(PDO::FETCH_ASSOC) as $linha) {
-        $atrasosRecentesPorAluno[(int) $linha['id_aluno']] = $linha;
-    }
-
-    // Normalizado para data (sem hora), no fuso da escola: "encerrar" um
-    // alerta suprime até o FIM do dia em que foi encerrado - comparar
-    // timestamp completo com uma data quebraria a comparação de string
-    // sempre que os dois caíssem no mesmo dia (bug real encontrado em
-    // teste numa rodada anterior).
     $encerrados = [];
     $stmtEncerrados = $conexao->prepare("
-        SELECT e.id_aluno, " . sqlDataNaEscola('e.encerrado_em') . " AS encerrado_em
+        SELECT e.id_aluno, " . sqlDataNaEscola('e.encerrado_em') . "::text AS encerrado_em
         FROM tb_alerta_encerrado e
         JOIN tb_aluno a ON a.id_aluno = e.id_aluno
         JOIN tb_sala  s ON s.id_sala  = a.id_sala
@@ -107,66 +37,53 @@ function buscarAlertas(PDO $conexao, int $idEscola): array {
         $encerrados[(int) $linha['id_aluno']] = $linha['encerrado_em'];
     }
 
+    $tipos = [
+        'atrasos' => ['prefixo' => 'atr', 'singular' => 'entrada atrasada', 'plural' => 'entradas atrasadas', 'ultimo' => 'ultimo_atraso'],
+        'saidas'  => ['prefixo' => 'sai', 'singular' => 'saída antecipada', 'plural' => 'saídas antecipadas', 'ultimo' => 'ultima_saida'],
+    ];
+
     $alertas = [];
-    foreach ($alunos as $aluno) {
-        $idAluno = (int) $aluno['id_aluno'];
-        $qtdFaltas = (int) $aluno['qtd_faltas'];
-        $frequencia = calcularFrequencia($qtdFaltas);
-        $status = calcularStatusFrequencia($frequencia);
+    foreach ($janela['alunos'] as $idAluno => $indicador) {
         $encerradoEm = $encerrados[$idAluno] ?? null;
-        $datasFalta = $datasFaltaPorAluno[$idAluno] ?? [];
-        $base = [
-            "id_aluno"   => $idAluno,
-            "nome_aluno" => $aluno['nome_aluno'],
-            "id_sala"    => (int) $aluno['id_sala'],
-            "turma"      => $aluno['nome_sala'],
-            "frequencia" => $frequencia,
-        ];
-
-        if ($status === 'Em risco' || $status === 'Atenção') {
-            $ultimaReferencia = $datasFalta[0] ?? $hoje;
-            if ($encerradoEm === null || $encerradoEm < $ultimaReferencia) {
-                $alertas[] = ["id_alerta" => "freq-$idAluno"] + $base + [
-                    "tipo"           => "frequencia",
-                    "prioridade"     => $status === 'Em risco' ? 'alta' : 'media',
-                    "motivo"         => "Frequência em {$frequencia}%, classificada como \"$status\".",
-                    "dta_referencia" => $ultimaReferencia,
-                ];
+        foreach ($tipos as $tipo => $t) {
+            $prioridade = $indicador["prioridade_$tipo"];
+            if ($prioridade === null) {
+                continue;
             }
-        }
-
-        $consecutivas = calcularFaltasConsecutivas($datasFalta, $hoje);
-        if ($consecutivas >= 3) {
-            $ultimaReferencia = $datasFalta[0];
-            if ($encerradoEm === null || $encerradoEm < $ultimaReferencia) {
-                $alertas[] = ["id_alerta" => "falt-$idAluno"] + $base + [
-                    "tipo"           => "faltas",
-                    "prioridade"     => $consecutivas >= 5 ? 'alta' : 'media',
-                    "motivo"         => "$consecutivas faltas consecutivas registradas.",
-                    "dta_referencia" => $ultimaReferencia,
-                ];
+            $referencia = $indicador[$t['ultimo']];
+            if ($encerradoEm !== null && $encerradoEm >= $referencia) {
+                continue;
             }
-        }
-
-        $atrasoInfo = $atrasosRecentesPorAluno[$idAluno] ?? null;
-        if ($atrasoInfo !== null && (int) $atrasoInfo['qtd'] >= 2) {
-            $qtdAtrasos = (int) $atrasoInfo['qtd'];
-            $ultimaReferencia = $atrasoInfo['ultimo'];
-            if ($encerradoEm === null || $encerradoEm < $ultimaReferencia) {
-                $alertas[] = ["id_alerta" => "atr-$idAluno"] + $base + [
-                    "tipo"           => "atrasos",
-                    "prioridade"     => $qtdAtrasos >= 4 ? 'media' : 'baixa',
-                    "motivo"         => "Atrasos em $qtdAtrasos dias nos últimos 7 dias.",
-                    "dta_referencia" => $ultimaReferencia,
-                ];
-            }
+            $ocorrencias = $indicador[$tipo];
+            $alertas[] = [
+                "id_alerta"      => "{$t['prefixo']}-$idAluno",
+                "id_aluno"       => $idAluno,
+                "nome_aluno"     => $indicador['nome_aluno'],
+                "id_sala"        => $indicador['id_sala'],
+                "turma"          => $indicador['nome_sala'],
+                "tipo"           => $tipo,
+                "prioridade"     => $prioridade,
+                "ocorrencias"    => $ocorrencias,
+                "dias_letivos"   => $indicador['dias_letivos'],
+                "taxa"           => $indicador["taxa_$tipo"],
+                "motivo"         => sprintf(
+                    '%d %s em %d dias de aula (%s%%) nos últimos %d dias. Limite da escola: %d%%.',
+                    $ocorrencias,
+                    $ocorrencias === 1 ? $t['singular'] : $t['plural'],
+                    $indicador['dias_letivos'],
+                    numeroBr($indicador["taxa_$tipo"]),
+                    $config['janela_alerta_dias'],
+                    $config['limite_alerta_percentual']
+                ),
+                "dta_referencia" => $referencia,
+            ];
         }
     }
 
     $pesoPrioridade = ['alta' => 0, 'media' => 1, 'baixa' => 2];
     usort($alertas, function ($a, $b) use ($pesoPrioridade) {
         $peso = $pesoPrioridade[$a['prioridade']] <=> $pesoPrioridade[$b['prioridade']];
-        return $peso !== 0 ? $peso : ($a['frequencia'] <=> $b['frequencia']);
+        return $peso !== 0 ? $peso : (($b['taxa'] ?? 0) <=> ($a['taxa'] ?? 0));
     });
 
     return $alertas;
