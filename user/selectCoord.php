@@ -20,10 +20,11 @@ require_once __DIR__ . '/../Authentication/tokenLogin.php';
  * Cada login vira uma sessão (tb_sessao), que aparece em Minha conta >
  * Dispositivos conectados e pode ser encerrada de lá.
  *
- * Só entra conta ativa (migração 008): quem se cadastrou numa escola que
- * já tem gestão espera a aprovação, e a gestão pode recusar ou desativar
- * uma conta. A senha é conferida antes, para a mensagem de situação não
- * revelar a quem não sabe a senha que o email existe.
+ * Só entra conta com o e-mail confirmado (migração 009) e ativa (008):
+ * a conta nova espera a aprovação da gestão da escola ou da equipe do
+ * sistema, e a gestão pode recusar ou desativar uma conta. A senha é
+ * conferida antes, para a mensagem de situação não revelar a quem não
+ * sabe a senha que o email existe.
  */
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -44,7 +45,7 @@ try {
     // que bate exatamente com o que foi digitado.
     $select = $conexao->prepare(
         "SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.senha_coordenacao, c.papel, c.situacao,
-                e.nome_escola, e.municipio
+                c.id_escola, c.email_verificado_em IS NOT NULL AS email_confirmado, e.nome_escola, e.municipio
          FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
          WHERE lower(c.email_coordenacao) = lower(?)
          ORDER BY (c.email_coordenacao = ?) DESC, c.id_coordenacao
@@ -68,8 +69,18 @@ try {
         enviarErro($mensagemCredenciaisInvalidas, 401);
     }
 
+    if (!valorBooleano($coordenacao['email_confirmado'])) {
+        enviarErro(
+            "Confirme o seu e-mail para entrar: abra o link que enviamos para {$coordenacao['email_coordenacao']} (confira também o spam). Se ele não chegou, peça outro em \"Reenviar o link\".",
+            403, null, ["situacao" => "email_nao_confirmado"]
+        );
+    }
+
+    $aprovaGestao = escolaTemGestor($conexao, (int) $coordenacao['id_escola'], (int) $coordenacao['id_coordenacao']);
     $situacoes = [
-        'pendente'   => "Sua conta aguarda a aprovação da gestão da {$coordenacao['nome_escola']}. Assim que alguém da gestão aprovar, é só entrar.",
+        'pendente'   => $aprovaGestao
+            ? "Sua conta aguarda a aprovação da gestão da {$coordenacao['nome_escola']}. Você recebe um e-mail quando ela aprovar."
+            : "Sua conta aguarda a aprovação da equipe do BioFrequência. Você recebe um e-mail quando ela for aprovada.",
         'recusado'   => "A gestão da {$coordenacao['nome_escola']} não aprovou o acesso desta conta. Fale com a coordenação da escola.",
         'desativado' => "Esta conta foi desativada pela gestão da escola. Fale com a coordenação da escola.",
     ];

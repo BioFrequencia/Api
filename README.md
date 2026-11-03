@@ -113,10 +113,10 @@ lá as variáveis usadas. Para rodar na sua máquina, com um Postgres de
 teste e a API no ar:
 
 ```bash
-php -S 127.0.0.1:8099 tests/mock_whatsapp.php &   # provedor de WhatsApp falso
+php -S 127.0.0.1:8099 tests/mock_provedores.php &   # WhatsApp e e-mail falsos
 BANCO_DE_TESTE=1 API_URL=http://127.0.0.1:8080 DB_NAME=biofrequencia_teste \
-  JWT_SECRET_KEY=... CADASTRO_CODIGO_ACESSO=... CORS_ORIGENS=https://site-teste.example \
-  php tests/integracao_test.php
+  JWT_SECRET_KEY=... SITE_URL=https://site-teste.example CORS_ORIGENS=https://site-teste.example \
+  EMAIL_API_TOKEN=... php tests/integracao_test.php
 ```
 
 Arquitetura e fluxos entre site, app, API e banco: `docs/ARQUITETURA.md`.
@@ -134,7 +134,8 @@ user/             coordenação, alunos, turmas, entradas atrasadas e saídas an
 registro/         registros do dia (entradas atrasadas e saídas) e remoção pela gestão
 escola/           busca no catálogo de escolas, configuração, horários, calendário e equipe da escola
 admin/            painel da equipe do sistema (ADMIN_EMAILS): escolas, contas, chamados, catálogo
-conta/            minha conta: perfil, senha, preferências, dispositivos conectados
+conta/            minha conta: perfil, senha, preferências, dispositivos conectados,
+                  confirmação do e-mail (link do cadastro e da troca de e-mail)
 suporte/          chamados de suporte abertos pela coordenação
 helpers/          validação, respostas, calendário escolar, indicadores, alertas e avisos
 database/         conexão PDO, migrações SQL e o catálogo de escolas (dados/escolas-sp.csv)
@@ -168,13 +169,13 @@ docs/             arquitetura
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | sim | Conexão com o PostgreSQL. No Docker, o entrypoint gera `config/config.php` a partir delas. |
 | `JWT_SECRET_KEY` | sim | Assina os tokens de login. Use uma string longa e aleatória, diferente em cada ambiente. |
 | `CORS_ORIGENS` | não | Origens liberadas, separadas por vírgula (ex.: `https://biofrequencia.vercel.app`). Barra final e maiúsculas não importam. Um `*` num trecho do host libera os previews da Vercel (`https://site-git-*-equipe.vercel.app`); `https://*.vercel.app` é recusado. Sem ela valem as origens locais de desenvolvimento. |
-| `CADASTRO_CODIGO_ACESSO` | não | Código pedido no cadastro de uma nova conta de coordenação. Sem ele, o cadastro fica desligado. No XAMPP pode ser a constante de mesmo nome em `config/config.php`. |
+| `SITE_URL` | não | Endereço do site nos links dos e-mails (confirmar o e-mail, aprovar contas, entrar). Sem ela, vale a primeira origem fixa de `CORS_ORIGENS`. |
 | `BIOMETRIA_CHAVE` | para a biometria | Chave que cifra os vetores faciais e as digitais no banco: 64 caracteres hexadecimais (ou o base64 do `generateValue` do Render). Sem ela, os endpoints de biometria respondem 503. **Não troque depois de cadastrar alunos**: a biometria gravada com a chave antiga deixa de abrir e precisa ser refeita. |
 | `PORT` | não | Porta do Apache no container (padrão 8080). O Render define sozinho. |
-| `ADMIN_EMAILS` | não | E-mails da equipe do sistema (tela `/admin` do site: escolas, contas, chamados de suporte), separados por vírgula. Sem ela, ninguém vê a área de administração. |
+| `ADMIN_EMAILS` | não | E-mails da equipe do sistema (tela `/admin` do site: escolas, contas, chamados de suporte), separados por vírgula. É ela quem aprova as contas novas de escolas que ainda não usam o sistema. Sem ela, ninguém vê a área de administração. |
 | `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | não | Provedor de WhatsApp dos avisos aos responsáveis (formato da Meta Cloud API). Sem eles, a fila de Notificações guarda um link `wa.me` pronto para a coordenação clicar. |
 | `WHATSAPP_TEMPLATE`, `WHATSAPP_TEMPLATE_IDIOMA` | não | Modelo aprovado pela Meta, com uma variável (`{{1}}`) que recebe a mensagem, e o idioma (padrão `pt_BR`). Fora da janela de 24 h a Meta só entrega modelos. |
-| `EMAIL_API_URL`, `EMAIL_API_TOKEN`, `EMAIL_REMETENTE` | não | E-mail dos avisos por HTTP, no formato da API do Resend (`{from, to[], subject, text}` com token Bearer). O Render não tem servidor de e-mail, então `mail()` não entrega nada lá. |
+| `EMAIL_API_URL`, `EMAIL_API_TOKEN`, `EMAIL_REMETENTE` | para o cadastro | E-mail por HTTP, no formato da API do Resend (`{from, to[], subject, text, html}` com token Bearer): o link de confirmação de quem se cadastra, os avisos de aprovação e os avisos por e-mail aos responsáveis. O Render não tem servidor de e-mail, então `mail()` não entrega nada lá. Sem provedor, a equipe do sistema confirma o e-mail das contas novas à mão em `/admin`. |
 | `SMTP_REMETENTE` | não | Alternativa ao e-mail por HTTP: remetente para o `mail()` do PHP, num servidor com sendmail. |
 
 ## Docker
@@ -189,11 +190,11 @@ docker compose logs -f api
 docker compose down              # os dados ficam no volume "dados"
 ```
 
-Testes de integração no Docker, iguais aos do CI (banco descartável e um
-provedor de WhatsApp falso - nenhuma mensagem real sai):
+Testes de integração no Docker, iguais aos do CI (banco descartável e
+provedores falsos de WhatsApp e e-mail - nenhuma mensagem real sai):
 
 ```bash
-docker compose -f docker-compose.teste.yml up -d --build --wait api whatsapp-falso
+docker compose -f docker-compose.teste.yml up -d --build --wait api provedores-falsos
 docker compose -f docker-compose.teste.yml run --rm testes
 docker compose -f docker-compose.teste.yml down -v
 ```

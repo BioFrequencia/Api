@@ -4,53 +4,40 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
-require_once __DIR__ . '/../helpers/escola.php';
+require_once __DIR__ . '/../helpers/sessao.php';
+require_once __DIR__ . '/../helpers/emailConta.php';
 
 /**
- * Cadastro de uma nova conta de coordenação.
+ * Cadastro de uma nova conta de coordenação. Aberto: o código de acesso
+ * saiu na migração 009.
  *
- *   { nome, email, senha, codigo_acesso, id_escola }        escola do catálogo
- *   { nome, email, senha, codigo_acesso, nome_escola, municipio? }
- *                                                           escola fora do catálogo
+ *   { nome, email, senha, id_escola }                   escola do catálogo
+ *   { nome, email, senha, nome_escola, municipio? }     escola fora do catálogo
  *
- * Exige o código de acesso (variável de ambiente CADASTRO_CODIGO_ACESSO).
- * Sem a variável, o cadastro fica desligado - a escolha segura quando
- * ninguém configurou nada. Quem administra o sistema repassa o código só
- * para quem deve ter acesso; trocar a variável invalida o antigo na hora.
+ * A conta nasce "pendente", com o e-mail por confirmar. Até entrar:
+ *   1. a pessoa abre o link que chega por e-mail (conta/confirmarEmail.php);
+ *   2. quem aprova libera o acesso: a gestão da escola, se ela já usa o
+ *      BioFrequência, ou a equipe do sistema (tela /admin). A primeira
+ *      conta aprovada de uma escola vira a gestão dela.
+ * Assim ninguém vê os alunos e os telefones dos responsáveis de uma
+ * escola sem que alguém de confiança tenha liberado.
  *
- * Uma escola por conta (migração 008). A escola vem do catálogo oficial
+ * Uma escola por conta (migração 008): do catálogo oficial
  * (escola/buscar.php) ou, se não estiver nele (escola municipal,
- * particular), é criada com o nome informado.
- *   - Escola sem gestão ativa: a conta entra ativa, como gestora.
- *   - Escola que já tem gestão: a conta entra "pendente" e só acessa
- *     depois que a gestão aprovar. Sem isso, o código de acesso bastava
- *     para ver os alunos e os telefones dos responsáveis de qualquer
- *     escola.
+ * particular), criada com o nome informado.
+ *
+ * E-mail já cadastrado, nunca confirmado e com o link vencido: o cadastro
+ * novo toma o lugar do antigo - senão um erro de digitação, ou alguém
+ * usando o e-mail de outra pessoa, prenderia o endereço para sempre.
  */
-// Variável de ambiente (Render/Docker) ou, no XAMPP, a constante de
-// mesmo nome em config/config.php.
-$codigoConfigurado = getenv('CADASTRO_CODIGO_ACESSO');
-if ($codigoConfigurado === false && defined('CADASTRO_CODIGO_ACESSO')) {
-    $codigoConfigurado = CADASTRO_CODIGO_ACESSO;
-}
-$codigoConfigurado = $codigoConfigurado === false ? '' : trim((string) $codigoConfigurado);
-
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
 $nome   = $dados["nome"] ?? null;
 $email  = $dados["email"] ?? null;
 $senha  = $dados["senha"] ?? null;
-$codigo = $dados["codigo_acesso"] ?? null;
 $idEscola = $dados["id_escola"] ?? null;
 $nomeEscola = $dados["nome_escola"] ?? null;
 $municipio = $dados["municipio"] ?? null;
-
-if ($codigoConfigurado === '') {
-    enviarErro("O cadastro de novas contas está desativado. Peça acesso à coordenação responsável pelo sistema.", 403);
-}
-if (!is_string($codigo) || !hash_equals($codigoConfigurado, trim($codigo))) {
-    enviarErro("Código de acesso da escola inválido.", 403);
-}
 
 if (!campoPreenchido($nome) || !campoPreenchido($email) || !campoPreenchido($senha)) {
     enviarErro("Preencha nome, email e senha.", 422);
@@ -87,12 +74,35 @@ try {
     // Checagem prévia: a validação real de unicidade é a constraint no
     // banco (ver tratamento do SQLSTATE 23505 abaixo); esta consulta
     // só existe para devolver uma mensagem amigável no caso comum.
-    $verifica = $conexao->prepare("SELECT 1 FROM tb_coordenacao WHERE lower(email_coordenacao) = ?");
-    $verifica->bindValue(1, $email);
-    $verifica->execute();
+    $verifica = $conexao->prepare("
+        SELECT c.id_coordenacao, c.email_verificado_em IS NOT NULL AS confirmado,
+               EXISTS (
+                   SELECT 1 FROM tb_verificacao_email v
+                   WHERE v.id_coordenacao = c.id_coordenacao AND v.usado_em IS NULL AND v.expira_em > NOW()
+               ) AS link_valido
+        FROM tb_coordenacao c WHERE lower(c.email_coordenacao) = ?
+    ");
+    $verifica->execute([$email]);
+    $existente = $verifica->fetch(PDO::FETCH_ASSOC);
 
-    if ($verifica->fetch()) {
-        enviarErro("Este email já está cadastrado.", 409);
+    $substituir = null;
+    if ($existente) {
+        if (valorBooleano($existente['confirmado'])) {
+            enviarErro("Este email já está cadastrado.", 409);
+        }
+        if (valorBooleano($existente['link_valido'])) {
+            enviarErro("Este email já foi cadastrado e aguarda a confirmação: abra o link que enviamos (confira também o spam) ou peça outro em \"Reenviar o link\".", 409);
+        }
+        $substituir = (int) $existente['id_coordenacao'];
+    }
+
+    if ($substituir === null) {
+        $recentes = (int) $conexao->query("
+            SELECT COUNT(*) FROM tb_coordenacao WHERE email_verificado_em IS NULL AND criado_em > NOW() - INTERVAL '1 hour'
+        ")->fetchColumn();
+        if ($recentes >= CADASTROS_POR_HORA) {
+            enviarErro("Muitos cadastros ao mesmo tempo agora. Tente de novo em alguns minutos.", 429);
+        }
     }
 
     $senhaHash = password_hash($senha, PASSWORD_DEFAULT);
@@ -109,36 +119,52 @@ try {
         }
         $idEscola = (int) $linhaEscola['id_escola'];
         $nomeEscola = $linhaEscola['nome_escola'];
-        // Dois primeiros cadastros da mesma escola ao mesmo tempo: a trava
-        // faz o segundo enxergar o primeiro (e entrar como pendente).
-        $conexao->prepare("SELECT pg_advisory_xact_lock(7401, ?)")->execute([$idEscola]);
-        $gestora = !escolaTemGestor($conexao, $idEscola);
     } else {
         $nomeEscola = campoPreenchido($nomeEscola) ? trim($nomeEscola) : mb_substr("Escola de $nome", 0, 150);
         $escola = $conexao->prepare("INSERT INTO tb_escola (nome_escola, municipio) VALUES (?, ?) RETURNING id_escola");
         $escola->execute([$nomeEscola, campoPreenchido($municipio) ? mb_strtoupper(trim($municipio)) : null]);
         $idEscola = (int) $escola->fetchColumn();
-        $gestora = true;
     }
 
-    $insert = $conexao->prepare("
-        INSERT INTO tb_coordenacao (nome_coordenacao, email_coordenacao, senha_coordenacao, id_escola, papel, situacao)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ");
-    $insert->execute([$nome, $email, $senhaHash, $idEscola, $gestora ? 'gestor' : 'coordenador', $gestora ? 'ativo' : 'pendente']);
+    // O papel aqui é o previsto; o definitivo sai na aprovação (quem é
+    // aprovado numa escola sem gestão ativa vira a gestão - helpers/equipe.php).
+    $aprovacao = escolaTemGestor($conexao, $idEscola) ? 'gestao' : 'equipe';
+    $papel = $aprovacao === 'gestao' ? 'coordenador' : 'gestor';
+
+    if ($substituir !== null) {
+        $conexao->prepare("
+            UPDATE tb_coordenacao
+            SET nome_coordenacao = ?, email_coordenacao = ?, senha_coordenacao = ?, id_escola = ?, papel = ?,
+                situacao = 'pendente', criado_em = NOW(), aprovado_em = NULL, aprovado_por = NULL
+            WHERE id_coordenacao = ?
+        ")->execute([$nome, $email, $senhaHash, $idEscola, $papel, $substituir]);
+        $idNova = $substituir;
+    } else {
+        $insert = $conexao->prepare("
+            INSERT INTO tb_coordenacao (nome_coordenacao, email_coordenacao, senha_coordenacao, id_escola, papel, situacao)
+            VALUES (?, ?, ?, ?, ?, 'pendente')
+            RETURNING id_coordenacao
+        ");
+        $insert->execute([$nome, $email, $senhaHash, $idEscola, $papel]);
+        $idNova = (int) $insert->fetchColumn();
+    }
 
     $conexao->commit();
 
-    enviarSucesso(
-        $gestora
-            ? "Conta criada. Você é a gestão da $nomeEscola no BioFrequência."
-            : "Conta criada. A $nomeEscola já usa o BioFrequência: a gestão da escola precisa aprovar o seu acesso.",
-        [
-            "nome_escola" => $nomeEscola,
-            "papel"       => $gestora ? 'gestor' : 'coordenador',
-            "situacao"    => $gestora ? 'ativo' : 'pendente',
-        ]
-    );
+    $envio = enviarLinkDeConfirmacao($conexao, [
+        'id_coordenacao'   => $idNova,
+        'nome_coordenacao' => $nome,
+        'nome_escola'      => $nomeEscola,
+    ], $email, 'cadastro');
+
+    enviarSucesso(mensagemDoCadastro($email, $nomeEscola, $aprovacao, $envio), [
+        "nome_escola"      => $nomeEscola,
+        "papel"            => $papel,
+        "situacao"         => 'pendente',
+        "email_verificado" => false,
+        "email_enviado"    => $envio === ENVIO_OK,
+        "aprovacao"        => $aprovacao,
+    ]);
 } catch (PDOException $erro) {
     if ($conexao->inTransaction()) {
         $conexao->rollBack();

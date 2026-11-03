@@ -6,12 +6,16 @@ require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/perfil.php';
+require_once __DIR__ . '/../helpers/emailConta.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
  * Atualiza os dados da conta. Trocar o e-mail - que é o login - pede a
- * senha atual: quem pegou o computador destravado não consegue tomar a
- * conta trocando o e-mail.
+ * senha atual (quem pegou o computador destravado não toma a conta) e só
+ * vale depois de confirmado pelo link enviado ao endereço novo
+ * (conta/confirmarEmail.php, migração 009): sem isso, dava para entrar
+ * com um e-mail de outra pessoa - inclusive um da equipe do sistema
+ * (ADMIN_EMAILS) que ainda não tivesse conta.
  *
  *   { nome_coordenacao, email_coordenacao, nome_escola?, senha_atual? }
  *
@@ -40,7 +44,8 @@ if (mb_strlen($nomeEscola) > 150) {
 
 try {
     $stmt = $conexao->prepare("
-        SELECT c.email_coordenacao, c.senha_coordenacao, c.id_escola, c.papel, e.nome_escola, e.codigo_cie
+        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.senha_coordenacao, c.id_escola, c.papel,
+               e.nome_escola, e.codigo_cie
         FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
         WHERE c.id_coordenacao = ?
     ");
@@ -58,7 +63,8 @@ try {
         enviarErro("Só a gestão da escola pode mudar o nome da escola.", 403);
     }
 
-    if (mb_strtolower($conta['email_coordenacao']) !== $email) {
+    $trocarEmail = mb_strtolower($conta['email_coordenacao']) !== $email;
+    if ($trocarEmail) {
         // 403 e não 401: o site trata 401 como sessão vencida e sairia da conta.
         if (!is_string($senhaAtual) || !verificarSenhaComMigracao($senhaAtual, $conta['senha_coordenacao'])['valida']) {
             enviarErro("Para trocar o e-mail, confirme a senha atual.", 403);
@@ -68,17 +74,34 @@ try {
         if ($existe->fetch()) {
             enviarErro("Já existe uma conta com este e-mail.", 409);
         }
+        if (!emailConfigurado()) {
+            enviarErro("O envio de e-mails ainda não foi configurado no sistema, e o e-mail novo precisa ser confirmado por um link. Fale com a equipe do BioFrequência.", 503);
+        }
+        $espera = motivoParaEsperarLink($conexao, $idCoordenacao);
+        if ($espera !== null) {
+            enviarErro($espera, 429);
+        }
     }
 
     $conexao->beginTransaction();
-    $conexao->prepare("UPDATE tb_coordenacao SET nome_coordenacao = ?, email_coordenacao = ? WHERE id_coordenacao = ?")
-        ->execute([$nome, $email, $idCoordenacao]);
+    $conexao->prepare("UPDATE tb_coordenacao SET nome_coordenacao = ? WHERE id_coordenacao = ?")
+        ->execute([$nome, $idCoordenacao]);
     if ($mudarEscola) {
         $conexao->prepare("UPDATE tb_escola SET nome_escola = ? WHERE id_escola = ?")
             ->execute([$nomeEscola, $conta['id_escola']]);
     }
     $conexao->commit();
 
+    if ($trocarEmail) {
+        $envio = enviarLinkDeConfirmacao($conexao, ['nome_coordenacao' => $nome] + $conta, $email, 'troca_email');
+        if ($envio !== ENVIO_OK) {
+            enviarErro("Os outros dados foram salvos, mas não conseguimos enviar o link para o e-mail novo. Tente de novo em alguns minutos.", 502);
+        }
+        enviarSucesso(
+            "Enviamos um link para $email. O e-mail de login muda quando você abrir o link (até lá, continue entrando com o atual).",
+            perfilDaCoordenacao($conexao, $idCoordenacao)
+        );
+    }
     enviarSucesso("Dados da conta salvos.", perfilDaCoordenacao($conexao, $idCoordenacao));
 } catch (PDOException $erro) {
     if ($conexao->inTransaction()) {

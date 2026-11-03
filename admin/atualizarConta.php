@@ -11,8 +11,14 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * A equipe do sistema decide sobre qualquer conta:
  *
  *   { id_coordenacao, acao: aprovar | recusar | desativar | reativar |
- *                           tornar_gestor | tornar_coordenador | mover_escola,
+ *                           tornar_gestor | tornar_coordenador | mover_escola |
+ *                           confirmar_email,
  *     id_escola? (para mover_escola) }
+ *
+ * confirmar_email: a equipe confirma o e-mail no lugar da pessoa, quando o
+ * link não tem como chegar (o envio de e-mails ainda não foi configurado,
+ * por exemplo). Só a equipe do sistema faz isso, depois de conferir com a
+ * pessoa que o endereço é dela.
  *
  * mover_escola: a conta passa para outra escola (ex.: escolheu a escola
  * errada no cadastro) - como gestora se a escola nova não tiver gestão,
@@ -27,7 +33,7 @@ $acao = $dados['acao'] ?? null;
 if (!inteiroValido($dados['id_coordenacao'] ?? null)) {
     enviarErro("Informe a conta.", 422);
 }
-if (!in_array($acao, [...ACOES_EQUIPE, 'mover_escola'], true)) {
+if (!in_array($acao, [...ACOES_EQUIPE, 'mover_escola', 'confirmar_email'], true)) {
     enviarErro("Ação inválida.", 422);
 }
 
@@ -37,7 +43,13 @@ try {
         enviarErro("Conta não encontrada.", 404);
     }
 
-    if ($acao === 'mover_escola') {
+    if ($acao === 'confirmar_email') {
+        if ($membro['email_verificado']) {
+            enviarErro("O e-mail desta conta já está confirmado.", 409);
+        }
+        $conexao->prepare("UPDATE tb_coordenacao SET email_verificado_em = NOW() WHERE id_coordenacao = ?")
+            ->execute([$membro['id_coordenacao']]);
+    } elseif ($acao === 'mover_escola') {
         if (!inteiroValido($dados['id_escola'] ?? null)) {
             enviarErro("Informe a escola de destino.", 422);
         }

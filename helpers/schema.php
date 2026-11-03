@@ -17,6 +17,7 @@ const OBJETOS_POR_MIGRACAO = [
               'tb_escola.codigo_cie', 'tb_coordenacao.papel', 'tb_coordenacao.situacao', 'tb_sala.horario_inicio',
               'tb_atraso.origem', 'tb_responsavel.canal_preferido', 'tb_aluno_responsavel.parentesco', 'tb_aluno.criado_em',
               'tb_notificacao.tipo_aviso'],
+    '009' => ['tb_verificacao_email', 'tb_coordenacao.email_verificado_em'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */
