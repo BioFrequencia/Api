@@ -55,6 +55,20 @@ function normalizarGeneroResponsavel($genero): ?string {
     return in_array($genero, GENEROS_RESPONSAVEL, true) ? $genero : null;
 }
 
+/** Por onde o responsável prefere receber os avisos (migração 008). */
+const CANAIS_RESPONSAVEL = ['whatsapp', 'email', 'ambos'];
+
+/** Parentesco é texto livre curto ("Mãe", "Avó", "Responsável legal"); vazio vira null. */
+function lerParentesco($valor): array {
+    if ($valor === null || (is_string($valor) && trim($valor) === '')) {
+        return [null, null];
+    }
+    if (!is_string($valor) || mb_strlen(trim($valor)) > 30) {
+        return [null, "O parentesco deve ter no máximo 30 caracteres."];
+    }
+    return [trim($valor), null];
+}
+
 /**
  * Mensagem para uma violação de unicidade (SQLSTATE 23505) ao gravar um
  * responsável, a partir do nome da restrição que aparece na mensagem do

@@ -2,7 +2,7 @@
 /**
  * Testes de integração da API: requisições HTTP de verdade contra a API
  * rodando (php -S no CI, ou o container Docker com Apache) e um
- * PostgreSQL de teste com o schema de produção (migrações 001-007).
+ * PostgreSQL de teste com o schema de produção (migrações 001-008).
  * Cada resultado gravado é conferido direto no banco, não só pela
  * resposta.
  *
@@ -26,6 +26,11 @@
  *
  * Rodar: php tests/integracao_test.php
  */
+
+// Feriados e dias letivos pelas mesmas regras da API (helpers/calendario.php,
+// testada à parte em tests/helpers_test.php): no CI o teste roda na raiz do
+// repositório; no Docker, ao lado do código da imagem.
+require_once is_file(__DIR__ . '/../helpers/calendario.php') ? __DIR__ . '/../helpers/calendario.php' : '/var/www/html/helpers/calendario.php';
 
 $api = rtrim(getenv('API_URL') ?: 'http://127.0.0.1:8080', '/');
 $dbHost = getenv('DB_HOST') ?: '127.0.0.1';
@@ -227,6 +232,25 @@ $hoje = (new DateTimeImmutable('today', $fuso))->format('Y-m-d');
 $ontem = (new DateTimeImmutable('today', $fuso))->modify('-1 day')->format('Y-m-d');
 $inicioMesLocal = (new DateTimeImmutable('first day of this month', $fuso))->format('Y-m-d');
 
+// Dias de referência no fuso da escola, pelo calendário padrão: os últimos
+// dias letivos ANTES de hoje (registros com horário de aula que já passou,
+// para o teste não depender da hora em que roda), o último sábado e o
+// último feriado num dia útil.
+$diasLetivos = [];
+for ($dia = (new DateTimeImmutable('today', $fuso))->modify('-1 day'); count($diasLetivos) < 6; $dia = $dia->modify('-1 day')) {
+    if (situacaoDoDia($dia->format('Y-m-d'))['letivo']) {
+        $diasLetivos[] = $dia->format('Y-m-d');
+    }
+}
+[$d1, $d2, $d3, $d4, $d5] = $diasLetivos;
+$sabado = (new DateTimeImmutable('last saturday', $fuso))->format('Y-m-d');
+$feriado = null;
+for ($dia = (new DateTimeImmutable('today', $fuso))->modify('-1 day'); $feriado === null; $dia = $dia->modify('-1 day')) {
+    if ((int) $dia->format('N') <= 5 && !situacaoDoDia($dia->format('Y-m-d'))['letivo']) {
+        $feriado = $dia->format('Y-m-d');
+    }
+}
+
 // ------------------------------------------------------------ preparo
 secao('Preparo (banco limpo)');
 $pdo->exec("
@@ -234,9 +258,12 @@ $pdo->exec("
              tb_ocorrencia_pendente, tb_checkin_biometrico, tb_dispositivo_aluno, tb_codigo_vinculo,
              tb_notificacao, tb_alerta_nivel, tb_alerta_encerrado, tb_acompanhamento, tb_verificacao_facial,
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
-             tb_sala, tb_sessao, tb_preferencia_coordenacao, tb_chamado_suporte, tb_coordenacao RESTART IDENTITY CASCADE
+             tb_sala, tb_sessao, tb_preferencia_coordenacao, tb_chamado_suporte, tb_coordenacao,
+             tb_saida_antecipada, tb_aviso_limite, tb_calendario_escola, tb_configuracao_escola, tb_catalogo_escolas
+             RESTART IDENTITY CASCADE
 ");
 $pdo->exec("DELETE FROM tb_escola WHERE id_escola <> 1");
+$pdo->exec("UPDATE tb_escola SET codigo_cie = NULL WHERE id_escola = 1");
 @unlink($logWhatsapp);
 $escola2 = (int) valor("INSERT INTO tb_escola (nome_escola) VALUES ('Escola Vizinha') RETURNING id_escola");
 $sala1 = (int) valor("INSERT INTO tb_sala (nome_sala, periodo_sala, id_escola) VALUES ('1A', 'Matutino', 1) RETURNING id_sala");
@@ -343,80 +370,128 @@ verificar('escola 2 lista só o próprio aluno', array_column($r['json']['dados'
 $r = post('user/filtroAluno.php', ['pagina' => 1, 'por_pagina' => 50], $t1);
 verificar('escola 1 lista os próprios 7 alunos', ($r['json']['dados']['total_registros'] ?? 0) === 7, $r['texto']);
 
-// ------------------------------------------------------------ faltas e atrasos
-secao('Faltas e atrasos');
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'motivo_falta' => 'Consulta'], $t1);
-verificar('lançar falta: 200', $r['status'] === 200, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'motivo_falta' => 'Consulta'], $t1);
-verificar('segunda falta no mesmo dia: 409', $r['status'] === 409, $r['texto']);
-verificar('uma falta só no banco', (int) valor("SELECT count(*) FROM tb_falta WHERE id_aluno = ?", [$ana]) === 1);
-$r = post('user/marcarAtraso.php', ['id_aluno' => $ana], $t1);
-verificar('lançar atraso: 200', $r['status'] === 200, $r['texto']);
-$r = post('user/marcarAtraso.php', ['id_aluno' => $ana], $t1);
-verificar('segundo atraso no mesmo dia: 409', $r['status'] === 409, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'dta_falta' => $ontem], $t1);
-verificar('falta com data informada (ontem): 200', $r['status'] === 200, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'dta_falta' => "$ontem 21:30"], $t1);
-verificar('21:30 de ontem é o mesmo dia de ontem (fuso da escola): 409', $r['status'] === 409, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'dta_falta' => '2099-01-01'], $t1);
-verificar('data no futuro: 422', $r['status'] === 422, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'dta_falta' => 'ontem'], $t1);
-verificar('data em formato inválido: 422 (antes virava 500)', $r['status'] === 422, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana, 'motivo_falta' => str_repeat('x', 151)], $t1);
-verificar('motivo com mais de 150 caracteres: 422 (antes virava 500)', $r['status'] === 422, $r['texto']);
-$r = post('user/marcarFalta.php', ['id_aluno' => $ana], $t2);
-verificar('outra escola lançando falta no aluno: 404', $r['status'] === 404, $r['texto']);
+// ------------------------------------------------------------ entradas e saídas
+secao('Entradas atrasadas e saídas antecipadas');
+// A turma 1A é do período da manhã: padrão das 07:00 às 12:20, com 10
+// minutos de tolerância. Os horários são de dias letivos que já passaram,
+// para o teste não depender da hora em que roda.
+$atraso = fn(int $aluno, ?string $quando, string $token, array $extra = []) => post('user/marcarAtraso.php', ['id_aluno' => $aluno] + ($quando === null ? [] : ['dta_atraso' => $quando]) + $extra, $token);
+$saida = fn(int $aluno, ?string $quando, string $token, array $extra = []) => post('user/marcarSaida.php', ['id_aluno' => $aluno] + ($quando === null ? [] : ['dta_saida' => $quando]) + $extra, $token);
 
-$corrida = paralelo(array_fill(0, 4, ['user/marcarFalta.php', ['id_aluno' => $bruno], $t1]));
+$r = $atraso($ana, "$d1 07:30", $t1, ['motivo_atraso' => 'Ônibus']);
+verificar('entrada atrasada às 07:30 de um dia de aula: 200', $r['status'] === 200 && ($r['json']['dados']['id_atraso'] ?? 0) > 0, $r['texto']);
+verificar('origem gravada: lançada pela coordenação', valor("SELECT origem FROM tb_atraso WHERE id_atraso = ?", [$r['json']['dados']['id_atraso'] ?? 0]) === 'manual');
+$r = $atraso($ana, "$d1 08:15", $t1);
+verificar('segunda entrada atrasada no mesmo dia: 409', $r['status'] === 409, $r['texto']);
+$r = $atraso($bruno, "$d1 17:00", $t1);
+verificar('entrada atrasada às 17h de aluno da manhã: 422 com o horário da turma (caso de produção)', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', '07:00 às 12:20'), $r['texto']);
+$r = $atraso($bruno, "$sabado 08:00", $t1);
+verificar('entrada atrasada num sábado: 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'sábado'), $r['texto']);
+$r = $atraso($bruno, "$feriado 08:00", $t1);
+verificar('entrada atrasada num feriado: 422 com o nome do feriado', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'feriado'), $r['texto']);
+$r = $atraso($bruno, "$d1 07:08", $t1);
+verificar('chegada dentro da tolerância (07:08): 422, não é atraso', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'tolerância'), $r['texto']);
+$r = $atraso($bruno, $d1, $t1);
+verificar('só a data, sem o horário: 422 pedindo o horário', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'horário'), $r['texto']);
+$r = $atraso($bruno, '2099-01-05 08:00', $t1);
+verificar('data no futuro: 422', $r['status'] === 422, $r['texto']);
+$r = $atraso($bruno, 'ontem', $t1);
+verificar('data em formato inválido: 422 (antes virava 500)', $r['status'] === 422, $r['texto']);
+$r = $atraso($bruno, "$d1 07:30", $t1, ['motivo_atraso' => str_repeat('x', 151)]);
+verificar('motivo com mais de 150 caracteres: 422', $r['status'] === 422, $r['texto']);
+$r = $atraso($ana, "$d2 07:30", $t2);
+verificar('outra escola registrando no aluno: 404', $r['status'] === 404, $r['texto']);
+$r = post('user/marcarFalta.php', ['id_aluno' => $ana], $t1);
+verificar('faltas não são mais registradas: 410 explicando a Sala do Futuro', $r['status'] === 410
+    && str_contains($r['json']['mensagem'] ?? '', 'Sala do Futuro'), $r['texto']);
+
+$corrida = paralelo(array_fill(0, 4, ['user/marcarAtraso.php', ['id_aluno' => $bruno, 'dta_atraso' => "$d1 07:40"], $t1]));
 $statusCorrida = array_column($corrida, 'status');
 sort($statusCorrida);
-verificar('4 lançamentos simultâneos: 1 grava e 3 recebem 409', $statusCorrida === [200, 409, 409, 409], $statusCorrida);
-verificar('lançamentos simultâneos: uma falta só no banco', (int) valor("SELECT count(*) FROM tb_falta WHERE id_aluno = ?", [$bruno]) === 1);
-$r = post('user/marcarFalta.php', ['id_aluno' => $bruno, 'dta_falta' => "$ontem 22:30"], $t1);
-$esperadoUtc = (new DateTimeImmutable("$ontem 22:30", $fuso))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
-verificar('falta às 22:30 locais é gravada em UTC (01:30 do dia seguinte)', $r['status'] === 200
-    && valor("SELECT to_char(dta_falta, 'YYYY-MM-DD HH24:MI:SS') FROM tb_falta WHERE id_falta = ?", [$r['json']['dados']['id_falta'] ?? 0]) === $esperadoUtc, $r['texto']);
+verificar('4 registros simultâneos: 1 grava e 3 recebem 409', $statusCorrida === [200, 409, 409, 409], $statusCorrida);
+verificar('registros simultâneos: uma entrada atrasada só no banco', (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$bruno]) === 1);
+
+$r = $saida($ana, "$d1 10:00", $t1, ['motivo_saida' => 'Consulta', 'retirado_por' => 'Maria (mãe)']);
+verificar('saída antecipada às 10h: 200', $r['status'] === 200 && ($r['json']['dados']['id_saida'] ?? 0) > 0, $r['texto']);
+verificar('quem buscou o aluno fica gravado', valor("SELECT retirado_por FROM tb_saida_antecipada WHERE id_saida = ?", [$r['json']['dados']['id_saida'] ?? 0]) === 'Maria (mãe)');
+$r = $saida($ana, "$d1 11:00", $t1);
+verificar('segunda saída antecipada no mesmo dia: 409', $r['status'] === 409, $r['texto']);
+$r = $saida($bruno, "$d1 12:30", $t1);
+verificar('saída depois do fim da aula: 422 (não é antecipada)', $r['status'] === 422, $r['texto']);
+$r = $saida($bruno, "$d1 07:05", $t1);
+verificar('saída logo depois do início: 200 (a tolerância é só da entrada)', $r['status'] === 200, $r['texto']);
+$r = $saida($bruno, "$sabado 09:00", $t1);
+verificar('saída antecipada num sábado: 422', $r['status'] === 422, $r['texto']);
+$r = $saida($ana, "$d2 10:00", $t1, ['retirado_por' => str_repeat('x', 151)]);
+verificar('nome de quem buscou com mais de 150 caracteres: 422', $r['status'] === 422, $r['texto']);
+
+$r = post('registro/listar.php', ['data' => $d1], $t1);
+verificar('registros do dia: entradas atrasadas e saídas da escola', ($r['json']['dados']['atrasos'] ?? 0) === 2
+    && ($r['json']['dados']['saidas'] ?? 0) === 2 && ($r['json']['dados']['dia']['letivo'] ?? null) === true, $r['texto']);
+$r = post('registro/listar.php', ['data' => $sabado], $t1);
+verificar('registros de um sábado: o dia vem marcado como sem aula', ($r['json']['dados']['dia']['letivo'] ?? null) === false, $r['texto']);
+$r = post('registro/listar.php', ['data' => $d1], $t2);
+verificar('outra escola não vê os registros', ($r['json']['dados']['registros'] ?? null) === [], $r['texto']);
+$r = post('registro/listar.php', ['data' => $d1, 'id_sala' => $sala2], $t1);
+verificar('registros de turma de outra escola: 404', $r['status'] === 404, $r['texto']);
 
 // ------------------------------------------------------------ histórico e contagem
-secao('Histórico e contagem por dia');
-$r = post('user/historicoAluno.php', ['id_aluno' => $ana, 'data_inicio' => $ontem, 'data_fim' => $hoje], $t1);
-verificar('histórico de ontem a hoje: 2 faltas e 1 atraso', count($r['json']['dados']['faltas'] ?? []) === 2 && count($r['json']['dados']['atrasos'] ?? []) === 1, $r['texto']);
-$r = post('user/historicoAluno.php', ['id_aluno' => $bruno, 'data_inicio' => $ontem, 'data_fim' => $ontem], $t1);
-verificar('falta das 22:30 aparece no dia local certo (ontem)', count($r['json']['dados']['faltas'] ?? []) === 1, $r['texto']);
+secao('Histórico, lista de alunos e contagem por dia');
+$r = post('user/historicoAluno.php', ['id_aluno' => $ana, 'data_inicio' => $d2, 'data_fim' => $hoje], $t1);
+verificar('histórico: entradas atrasadas e saídas antecipadas, sem faltas', count($r['json']['dados']['atrasos'] ?? []) === 1
+    && count($r['json']['dados']['saidas'] ?? []) === 1 && !isset($r['json']['dados']['faltas']), $r['texto']);
+verificar('histórico traz o indicador do aluno (janela, dias de aula, limite)', ($r['json']['dados']['indicador']['atrasos'] ?? null) === 1
+    && ($r['json']['dados']['indicador']['limite'] ?? null) === 20 && ($r['json']['dados']['indicador']['janela_dias'] ?? null) === 30, $r['texto']);
+verificar('histórico diz quem registrou', ($r['json']['dados']['atrasos'][0]['registrado_por'] ?? '') === 'Coordenação Teste', $r['texto']);
 $r = post('user/historicoAluno.php', ['id_aluno' => $ana, 'data_inicio' => '2026-13-01'], $t1);
 verificar('período inválido: 422', $r['status'] === 422, $r['texto']);
-$r = post('user/historicoAluno.php', ['id_aluno' => $ana, 'data_inicio' => $hoje, 'data_fim' => $ontem], $t1);
+$r = post('user/historicoAluno.php', ['id_aluno' => $ana, 'data_inicio' => $hoje, 'data_fim' => $d1], $t1);
 verificar('início depois do fim: 422', $r['status'] === 422, $r['texto']);
 $r = post('user/historicoAluno.php', ['id_aluno' => $ana], $t2);
 verificar('histórico de aluno de outra escola: 404', $r['status'] === 404, $r['texto']);
-// Uma linha duplicada inserida direto no banco (como os 2 atrasos com
-// 26 s de diferença que existem em produção) conta como um dia só.
-sql("INSERT INTO tb_falta (id_aluno, id_coordenacao, dta_falta) SELECT id_aluno, id_coordenacao, dta_falta + INTERVAL '1 minute' FROM tb_falta WHERE id_aluno = ? ORDER BY id_falta LIMIT 1", [$ana]);
+// Linha duplicada inserida direto no banco (como os 2 atrasos com 26 s de
+// diferença que existiam em produção) conta como um dia só; registro antigo
+// num sábado não conta em nada.
+sql("INSERT INTO tb_atraso (id_aluno, id_coordenacao, dta_atraso) SELECT id_aluno, id_coordenacao, dta_atraso + INTERVAL '1 minute' FROM tb_atraso WHERE id_aluno = ? ORDER BY id_atraso LIMIT 1", [$ana]);
+sql("INSERT INTO tb_atraso (id_aluno, id_coordenacao, dta_atraso) VALUES (?, ?, ?)", [$ana, $idCoord1, localParaUtcTeste("$sabado 17:51")]);
 $r = post('user/filtroAluno.php', ['busca' => 'Ana Teste', 'pagina' => 1, 'por_pagina' => 10], $t1);
-$esperadas = $ontem >= $inicioMesLocal ? 2 : 1;
-verificar("faltas do mês contam dias distintos ($esperadas), não linhas", ($r['json']['dados']['alunos'][0]['faltas'] ?? null) === $esperadas, $r['texto']);
+$linhaAna = $r['json']['dados']['alunos'][0] ?? [];
+verificar('lista de alunos: entradas atrasadas contam dias de aula distintos (1), não linhas nem sábados', ($linhaAna['atrasos'] ?? null) === 1
+    && ($linhaAna['saidas'] ?? null) === 1, $r['texto']);
+verificar('lista de alunos: taxa sobre os dias de aula e situação', is_numeric($linhaAna['taxa_atrasos'] ?? null)
+    && ($linhaAna['dias_letivos'] ?? 0) > 0 && in_array($linhaAna['status'] ?? '', ['Regular', 'Perto do limite', 'Acima do limite', 'Crítico'], true), $r['texto']);
+$r = post('user/filtroAluno.php', ['status' => 'Crítico', 'pagina' => 1, 'por_pagina' => 50], $t1);
+verificar('filtro por situação', ($r['json']['sucesso'] ?? false) === true && count(array_filter($r['json']['dados']['alunos'] ?? [], fn($a) => $a['status'] !== 'Crítico')) === 0, $r['texto']);
 
 // ------------------------------------------------------------ responsáveis
 secao('Responsáveis');
 $cpfA = gerarCpf(1);
 $cpfB = gerarCpf(2);
 $cpfC = gerarCpf(3);
-$addResp = fn(string $token, int $aluno, string $cpf, string $telefone, string $genero = 'Outro') => post('responsavel/addResponsavel.php', [
+$addResp = fn(string $token, int $aluno, string $cpf, string $telefone, string $genero = 'Outro', array $extra = []) => post('responsavel/addResponsavel.php', $extra + [
     'id_aluno' => $aluno, 'nome_responsavel' => 'Maria Responsável', 'cpf_responsavel' => $cpf,
     'telefone_responsavel' => $telefone, 'email_responsavel' => null, 'genero_responsavel' => $genero,
 ], $token);
-$r = $addResp($t1, $carla, $cpfA, '(11) 99999-0001');
+$r = $addResp($t1, $carla, $cpfA, '(11) 99999-0001', 'Outro', ['parentesco' => 'Mãe']);
 $respA = (int) ($r['json']['dados']['id_responsavel'] ?? 0);
 verificar('cadastrar responsável com gênero "Outro": 200 (antes: 500 pela restrição do banco)', $r['status'] === 200 && $respA > 0, $r['texto']);
-verificar('gênero gravado como "Indefinido" (valor aceito pelo banco)', valor("SELECT genero_responsavel FROM tb_responsavel WHERE id_responsavel = ?", [$respA]) === 'Indefinido');
+verificar('gênero gravado como "Indefinido" e canal padrão WhatsApp', valor("SELECT genero_responsavel || '|' || canal_preferido FROM tb_responsavel WHERE id_responsavel = ?", [$respA]) === 'Indefinido|whatsapp');
+verificar('parentesco gravado no vínculo', valor("SELECT parentesco FROM tb_aluno_responsavel WHERE id_aluno = ? AND id_responsavel = ?", [$carla, $respA]) === 'Mãe');
 $r = $addResp($t1, $carla, '123.456.789-00', '(11) 99999-0009');
 verificar('CPF com dígito verificador errado: 422', $r['status'] === 422, $r['texto']);
+$r = $addResp($t1, $carla, gerarCpf(9), '(11) 99999-0009', 'Feminino', ['canal_preferido' => 'email']);
+verificar('aviso por email sem email cadastrado: 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'email'), $r['texto']);
+$r = $addResp($t1, $carla, gerarCpf(9), '(11) 99999-0009', 'Feminino', ['canal_preferido' => 'sms']);
+verificar('canal desconhecido: 422', $r['status'] === 422, $r['texto']);
 $r = $addResp($t1, $diego, $cpfA, '(11) 99999-0002');
 verificar('mesmo CPF para outro aluno da escola: 409 com o id para vincular', $r['status'] === 409 && ($r['json']['dados']['id_responsavel'] ?? null) === $respA, $r['texto']);
 $r = post('responsavel/buscarResponsavelPorCpf.php', ['cpf_responsavel' => $cpfA], $t1);
-verificar('buscar por CPF na própria escola: encontra', ($r['json']['dados']['id_responsavel'] ?? null) === $respA, $r['texto']);
-$r = post('responsavel/vincularResponsavel.php', ['id_aluno' => $diego, 'id_responsavel' => $respA], $t1);
-verificar('vincular o mesmo responsável a outro aluno (irmãos): 200', $r['status'] === 200, $r['texto']);
+verificar('buscar por CPF na própria escola: encontra, com os alunos que já acompanha', ($r['json']['dados']['id_responsavel'] ?? null) === $respA
+    && array_column($r['json']['dados']['alunos'] ?? [], 'nome_aluno') === ['Carla Teste'], $r['texto']);
+$r = post('responsavel/vincularResponsavel.php', ['id_aluno' => $diego, 'id_responsavel' => $respA, 'parentesco' => 'Mãe'], $t1);
+verificar('vincular o mesmo responsável a outro aluno (irmãos): 200', $r['status'] === 200
+    && valor("SELECT parentesco FROM tb_aluno_responsavel WHERE id_aluno = ? AND id_responsavel = ?", [$diego, $respA]) === 'Mãe', $r['texto']);
 $r = $addResp($t1, $carla, $cpfB, '(11) 99999-0001');
 verificar('telefone já usado por outro responsável: 409 que fala em telefone', $r['status'] === 409 && str_contains($r['json']['mensagem'] ?? '', 'telefone'), $r['texto']);
 $r = post('responsavel/buscarResponsavelPorCpf.php', ['cpf_responsavel' => $cpfA], $t2);
@@ -430,22 +505,57 @@ verificar('outra escola removendo vínculo: 404', $r['status'] === 404, $r['text
 $r = $addResp($t2, $zeca, $cpfA, '(11) 99999-0003');
 verificar('CPF que só existe em outra escola: 409 sem dados pessoais', $r['status'] === 409 && ($r['json']['dados'] ?? null) === null, $r['texto']);
 $r = post('responsavel/listarResponsaveis.php', ['id_aluno' => $carla], $t1);
-verificar('listar responsáveis do aluno: 1', count($r['json']['dados'] ?? []) === 1, $r['texto']);
+verificar('listar responsáveis do aluno: 1, com canal e parentesco', count($r['json']['dados'] ?? []) === 1
+    && ($r['json']['dados'][0]['canal_preferido'] ?? '') === 'whatsapp' && ($r['json']['dados'][0]['parentesco'] ?? '') === 'Mãe', $r['texto']);
 $respC = (int) ($addResp($t1, $fabio, $cpfC, '(11) 99999-0005')['json']['dados']['id_responsavel'] ?? 0);
 $r = post('responsavel/removerVinculo.php', ['id_aluno' => $fabio, 'id_responsavel' => $respC], $t1);
 verificar('remover vínculo: 200', $r['status'] === 200, $r['texto']);
 $r = $addResp($t2, $zeca, $cpfC, '(11) 99999-0006', 'Feminino');
 verificar('CPF sem vínculo nenhum é reaproveitado no novo cadastro', $r['status'] === 200 && ($r['json']['dados']['id_responsavel'] ?? null) === $respC, $r['texto']);
 
-// ------------------------------------------------------------ notificações
-secao('Notificações aos responsáveis');
-$r = post('user/marcarFalta.php', ['id_aluno' => $carla, 'motivo_falta' => 'Doente'], $t1);
-verificar('falta de aluno com responsável: 200', $r['status'] === 200, $r['texto']);
-verificar('notificação criada com o status do banco ("Pendente") - antes era recusada e nunca existia',
-    valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? ORDER BY id_notificacao DESC LIMIT 1", [$carla]) === 'Pendente');
+$r = post('responsavel/listarDaEscola.php', [], $t1);
+$porResponsavel = array_column($r['json']['dados']['responsaveis'] ?? [], null, 'id_responsavel');
+verificar('responsáveis da escola numa chamada só, com os alunos de cada um', count($porResponsavel[$respA]['alunos'] ?? []) === 2
+    && !isset($porResponsavel[$respC]), $r['texto']);
+verificar('alunos sem responsável aparecem à parte', in_array($ana, array_column($r['json']['dados']['sem_responsavel'] ?? [], 'id_aluno'), true)
+    && !in_array($carla, array_column($r['json']['dados']['sem_responsavel'] ?? [], 'id_aluno'), true), $r['texto']);
+$r = post('responsavel/listarDaEscola.php', ['busca' => 'carla'], $t1);
+verificar('busca pelo nome do aluno acha o responsável', array_column($r['json']['dados']['responsaveis'] ?? [], 'id_responsavel') === [$respA], $r['texto']);
+$r = post('responsavel/listarDaEscola.php', [], $t2);
+verificar('outra escola só vê os próprios responsáveis', array_column($r['json']['dados']['responsaveis'] ?? [], 'id_responsavel') === [$respC], $r['texto']);
+$r = post('responsavel/atualizarResponsavel.php', ['id_responsavel' => $respA, 'telefone_responsavel' => '(11) 99999-0001', 'email_responsavel' => 'Maria@Exemplo.test',
+    'canal_preferido' => 'ambos', 'id_aluno' => $diego, 'parentesco' => 'Avó'], $t1);
+verificar('editar responsável: email em minúsculas, canal e parentesco de um vínculo', $r['status'] === 200
+    && valor("SELECT email_responsavel || '|' || canal_preferido FROM tb_responsavel WHERE id_responsavel = ?", [$respA]) === 'maria@exemplo.test|ambos'
+    && valor("SELECT parentesco FROM tb_aluno_responsavel WHERE id_aluno = ? AND id_responsavel = ?", [$diego, $respA]) === 'Avó'
+    && valor("SELECT parentesco FROM tb_aluno_responsavel WHERE id_aluno = ? AND id_responsavel = ?", [$carla, $respA]) === 'Mãe', $r['texto']);
+$r = post('responsavel/atualizarResponsavel.php', ['id_responsavel' => $respA, 'nome_responsavel' => 'Invasora'], $t2);
+verificar('outra escola editando responsável: 404', $r['status'] === 404, $r['texto']);
+$r = post('responsavel/atualizarResponsavel.php', ['id_responsavel' => $respA, 'telefone_responsavel' => '123'], $t1);
+verificar('editar com telefone inválido: 422', $r['status'] === 422, $r['texto']);
+post('responsavel/atualizarResponsavel.php', ['id_responsavel' => $respA, 'canal_preferido' => 'whatsapp'], $t1);
+
+// ------------------------------------------------------------ avisos a cada registro
+secao('Avisos aos responsáveis a cada registro');
+$r = post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => true], $t1);
+verificar('a gestão liga o aviso a cada registro', $r['status'] === 200 && ($r['json']['dados']['aviso_cada_registro'] ?? null) === true, $r['texto']);
+// Carla tem a responsável A (WhatsApp, provedor falso: entrega) e a E
+// (só email, sem provedor de email configurado: fica na fila).
+$respE = (int) ($addResp($t1, $carla, gerarCpf(5), '(11) 97777-0055', 'Feminino', ['email_responsavel' => 'resp.e@exemplo.test', 'canal_preferido' => 'email'])['json']['dados']['id_responsavel'] ?? 0);
+$r = $saida($carla, "$d1 10:30", $t1, ['motivo_saida' => 'Dentista', 'retirado_por' => 'Tia Rosa']);
+verificar('saída com os avisos ligados: a resposta diz o que saiu', $r['status'] === 200
+    && ($r['json']['dados']['avisos']['registro']['enviados'] ?? null) === 1 && ($r['json']['dados']['avisos']['registro']['na_fila'] ?? null) === 1, $r['texto']);
+$enviosCarla = array_values(array_filter(enviosWhatsapp('5511999990001'), fn($e) => str_contains((string) ($e['texto'] ?? ''), 'Carla Teste')));
+verificar('o provedor recebeu a mensagem com data, hora e quem buscou', count($enviosCarla) === 1
+    && str_contains($enviosCarla[0]['texto'], '10:30') && str_contains($enviosCarla[0]['texto'], 'Tia Rosa'), $enviosCarla);
+verificar('WhatsApp registrado como "Enviado" e email como "Pendente" (sem provedor)',
+    valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'whatsapp' AND tipo_aviso = 'registro_saida'", [$carla]) === 'Enviado'
+    && valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'email' AND tipo_aviso = 'registro_saida'", [$carla]) === 'Pendente');
 $r = post('notificacao/listarNotificacoes.php', ['status' => 'pendente'], $t1);
 $idNotificacao = (int) ($r['json']['dados']['notificacoes'][0]['id_notificacao'] ?? 0);
-verificar('listar pendentes: a notificação aparece como "pendente"', $idNotificacao > 0 && ($r['json']['dados']['notificacoes'][0]['status_notificacao'] ?? '') === 'pendente', $r['texto']);
+verificar('listar pendentes: a mensagem por email aparece como "pendente"', $idNotificacao > 0
+    && ($r['json']['dados']['notificacoes'][0]['status_notificacao'] ?? '') === 'pendente'
+    && ($r['json']['dados']['notificacoes'][0]['tipo_aviso'] ?? '') === 'registro_saida', $r['texto']);
 $r = post('notificacao/listarNotificacoes.php', [], $t2);
 verificar('outra escola não vê as notificações', ($r['json']['dados']['total_registros'] ?? -1) === 0, $r['texto']);
 $r = post('notificacao/marcarEnviada.php', ['id_notificacao' => $idNotificacao], $t2);
@@ -459,16 +569,22 @@ $r = post('notificacao/marcarEnviada.php', ['id_notificacao' => $idNotificacao],
 verificar('marcar de novo: 404 (já enviada)', $r['status'] === 404, $r['texto']);
 $r = post('notificacao/listarNotificacoes.php', ['status' => 'lida'], $t1);
 verificar('status desconhecido no filtro: 422', $r['status'] === 422, $r['texto']);
+post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => false], $t1);
+$antes = (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ?", [$carla]);
+$atraso($carla, "$d2 07:45", $t1);
+verificar('com o aviso a cada registro desligado (padrão), nenhuma mensagem nova', (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ?", [$carla]) === $antes);
 
-// ------------------------------------------------------------ alertas e contato automático
-secao('Alertas, escalonamento e contato automático');
-// Diego (responsável A, telefone 11 99999-0001) e Gabi (responsável cujo
-// número simula falha do provedor): 5 faltas em dias úteis seguidos e um
-// nível 3 gravado há 8 dias -> nível 4 -> contato automático.
+// ------------------------------------------------------------ alertas e aviso por limite
+secao('Alertas e aviso automático por limite');
+// Diego (responsável A, WhatsApp 11 99999-0001) e Gabi (responsável cujo
+// número simula falha do provedor): entradas atrasadas nos últimos 5 dias
+// letivos, inseridas direto no banco (como os registros que já existiam).
+// Os dois foram cadastrados hoje: os dias de aula deles contam a partir
+// do primeiro registro, e 5 em 5 dias passa do dobro do limite (alta).
 $respG = (int) ($addResp($t1, $gabi, gerarCpf(4), '(11) 98888-0000')['json']['dados']['id_responsavel'] ?? 0);
 foreach ([$diego, $gabi] as $aluno) {
-    foreach (ultimosDiasUteis(5) as $dia) {
-        sql("INSERT INTO tb_falta (id_aluno, id_coordenacao, dta_falta) VALUES (?, ?, ?)", [$aluno, $idCoord1, localParaUtcTeste("$dia 10:00")]);
+    foreach ([$d1, $d2, $d3, $d4, $d5] as $dia) {
+        sql("INSERT INTO tb_atraso (id_aluno, id_coordenacao, dta_atraso) VALUES (?, ?, ?)", [$aluno, $idCoord1, localParaUtcTeste("$dia 07:30")]);
     }
     sql("INSERT INTO tb_alerta_nivel (id_aluno, nivel, motivo_nivel, atualizado_em) VALUES (?, 3, 'teste', NOW() - INTERVAL '8 days')", [$aluno]);
 }
@@ -477,29 +593,37 @@ sql("INSERT INTO tb_alerta_nivel (id_aluno, nivel, motivo_nivel, atualizado_em) 
 
 $respostas = paralelo(array_fill(0, 3, ['user/alertas.php', [], $t1]));
 verificar('3 aberturas simultâneas da tela de alertas: todas 200', array_column($respostas, 'status') === [200, 200, 200], array_column($respostas, 'texto'));
-$contatosDiego = 0;
+$avisosDiego = 0;
 foreach ($respostas as $resposta) {
-    foreach ($resposta['json']['dados']['contatos'] ?? [] as $contato) {
-        if ($contato['id_aluno'] === $diego) $contatosDiego++;
+    foreach ($resposta['json']['dados']['avisos'] ?? [] as $aviso) {
+        if ($aviso['id_aluno'] === $diego) $avisosDiego++;
     }
 }
-verificar('o contato do Diego aparece em UMA resposta só', $contatosDiego === 1, $contatosDiego);
-verificar('nível 4 gravado para o Diego', (int) valor("SELECT nivel FROM tb_alerta_nivel WHERE id_aluno = ?", [$diego]) === 4);
-verificar('um único WhatsApp registrado para o Diego (sem duplicar)', (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ? AND canal = 'whatsapp'", [$diego]) === 1);
-$envios = enviosWhatsapp('5511999990001');
-verificar('o provedor recebeu exatamente 1 envio para o número, no formato internacional', count($envios) === 1, $envios);
-verificar('envio autenticado com o token do provedor', ($envios[0]['auth'] ?? '') === 'Bearer ' . getenv('WHATSAPP_TOKEN'), $envios);
-verificar('mensagem registrada como "Enviado"', valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'whatsapp'", [$diego]) === 'Enviado');
-verificar('falha do provedor fica registrada como "Erro" (Gabi)', valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'whatsapp'", [$gabi]) === 'Erro');
+verificar('o aviso do Diego aparece em UMA resposta só (trava antes do envio)', $avisosDiego === 1, $avisosDiego);
+$alertaDiego = array_values(array_filter($respostas[0]['json']['dados']['alertas'] ?? [], fn($a) => $a['id_aluno'] === $diego))[0] ?? [];
+verificar('alerta de entradas atrasadas com ocorrências, dias de aula e taxa', ($alertaDiego['tipo'] ?? '') === 'atrasos'
+    && ($alertaDiego['prioridade'] ?? '') === 'alta' && ($alertaDiego['ocorrencias'] ?? 0) === 5 && ($alertaDiego['taxa'] ?? 0) >= 40
+    && str_contains($alertaDiego['motivo'] ?? '', '5 entradas atrasadas'), $alertaDiego);
+verificar('nível 4 gravado para o Diego (alto há mais de 7 dias)', (int) valor("SELECT nivel FROM tb_alerta_nivel WHERE id_aluno = ?", [$diego]) === 4);
+$enviosDiego = array_values(array_filter(enviosWhatsapp('5511999990001'), fn($e) => str_contains((string) ($e['texto'] ?? ''), 'Diego Teste')));
+verificar('o provedor recebeu exatamente 1 aviso para a família do Diego', count($enviosDiego) === 1, $enviosDiego);
+verificar('o aviso fala em entradas atrasadas e dias de aula (não em faltas)', str_contains($enviosDiego[0]['texto'] ?? '', 'entradas atrasadas em')
+    && str_contains($enviosDiego[0]['texto'] ?? '', 'dias de aula') && !str_contains($enviosDiego[0]['texto'] ?? '', 'falta'), $enviosDiego);
+verificar('envio autenticado com o token do provedor', ($enviosDiego[0]['auth'] ?? '') === 'Bearer ' . getenv('WHATSAPP_TOKEN'), $enviosDiego);
+verificar('aviso registrado como "Enviado", do tipo limite',
+    valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND tipo_aviso = 'limite_atrasos'", [$diego]) === 'Enviado');
+verificar('falha do provedor fica registrada como "Erro" (Gabi)',
+    valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND tipo_aviso = 'limite_atrasos'", [$gabi]) === 'Erro');
 verificar('nível antigo do Fábio (sem alerta) foi zerado', (int) valor("SELECT nivel FROM tb_alerta_nivel WHERE id_aluno = ?", [$fabio]) === 0);
 post('user/alertas.php', [], $t1);
-verificar('abrir os alertas de novo no mesmo dia não reenvia', count(enviosWhatsapp('5511999990001')) === 1
-    && (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ? AND canal = 'whatsapp'", [$diego]) === 1);
+verificar('abrir os alertas de novo não reenvia (um aviso por intervalo)', (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ? AND tipo_aviso = 'limite_atrasos'", [$diego]) === 1);
 $r = post('user/alertas.php', ['id_sala' => $sala1], $t1);
 $alertasDiego = array_filter($r['json']['dados']['alertas'] ?? [], fn($a) => $a['id_aluno'] === $diego);
 verificar('filtro por turma (id_sala) mantém os alertas do Diego, com nível 4', count($alertasDiego) > 0 && reset($alertasDiego)['nivel'] === 4, $r['texto']);
 $r = post('user/alertas.php', ['id_sala' => $sala1b], $t1);
 verificar('filtro por outra turma não traz o Diego', count(array_filter($r['json']['dados']['alertas'] ?? [], fn($a) => $a['id_aluno'] === $diego)) === 0, $r['texto']);
+$r = post('user/alertas.php', ['tipo' => 'saidas'], $t1);
+verificar('filtro por tipo: saídas antecipadas', count(array_filter($r['json']['dados']['alertas'] ?? [], fn($a) => $a['tipo'] !== 'saidas')) === 0, $r['texto']);
 $r = post('user/alertas.php', [], $t2);
 verificar('outra escola não vê os alertas', ($r['json']['dados']['total'] ?? -1) === 0, $r['texto']);
 $r = post('user/encerrarAlerta.php', ['id_aluno' => $diego], $t2);
@@ -507,46 +631,269 @@ verificar('outra escola encerrando alerta: 404', $r['status'] === 404, $r['texto
 $r = post('user/encerrarAlerta.php', ['id_aluno' => $diego], $t1);
 verificar('encerrar alerta: 200', $r['status'] === 200, $r['texto']);
 $r = post('user/alertas.php', [], $t1);
-verificar('alerta encerrado some da lista no mesmo dia', count(array_filter($r['json']['dados']['alertas'] ?? [], fn($a) => $a['id_aluno'] === $diego)) === 0, $r['texto']);
+verificar('alerta encerrado some da lista', count(array_filter($r['json']['dados']['alertas'] ?? [], fn($a) => $a['id_aluno'] === $diego)) === 0, $r['texto']);
 
 // ------------------------------------------------------------ dashboard
 secao('Dashboard');
 $r = post('user/dashboard.php', [], $t2);
 verificar('dashboard da escola 2 lista só a turma dela', array_column($r['json']['dados']['turmas'] ?? [], 'nome_sala') === ['2A'], $r['texto']);
-verificar('dashboard da escola 2 não soma faltas/atrasos da escola 1', ($r['json']['dados']['frequencia_geral'] ?? null) == 100 && ($r['json']['dados']['atrasos_mes'] ?? null) === 0, $r['texto']);
+verificar('escola 2 sem nenhum registro: evolução vazia (nada de meses inventados) e 0 atrasos',
+    ($r['json']['dados']['evolucao_mensal'] ?? null) === [] && ($r['json']['dados']['atrasos_mes'] ?? null) === 0, $r['texto']);
 $r = post('user/dashboard.php', [], $t1);
-verificar('dashboard da escola 1 lista 1A e 1B', array_column($r['json']['dados']['turmas'] ?? [], 'nome_sala') === ['1A', '1B'], $r['texto']);
-verificar('dashboard da escola 1 tem 6 meses de evolução', count($r['json']['dados']['evolucao_mensal'] ?? []) === 6, $r['texto']);
+$painel = $r['json']['dados'] ?? [];
+verificar('dashboard da escola 1 lista 1A e 1B', array_column($painel['turmas'] ?? [], 'nome_sala') === ['1A', '1B'], $r['texto']);
+verificar('evolução: no máximo 6 meses, terminando no mês atual', count($painel['evolucao_mensal'] ?? []) >= 1 && count($painel['evolucao_mensal']) <= 6
+    && end($painel['evolucao_mensal'])['mes'] === $inicioMesLocal, $r['texto']);
+$pontualidadeEsperada = ($painel['aluno_dias_mes'] ?? 0) > 0
+    ? round(100 - round(100 * min($painel['atrasos_mes'], $painel['aluno_dias_mes']) / $painel['aluno_dias_mes'], 1), 1) : null;
+verificar('pontualidade = dias de aula sem entrada atrasada / dias de aula dos alunos (null sem dia de aula)',
+    array_key_exists('pontualidade', $painel) && $painel['pontualidade'] == $pontualidadeEsperada, [$painel['pontualidade'] ?? '?', $pontualidadeEsperada]);
+verificar('registro antigo num sábado não entra nas contas, mas é informado', ($painel['fora_do_calendario'] ?? 0) >= ($sabado >= (new DateTimeImmutable('first day of -5 months', $fuso))->format('Y-m-01') ? 1 : 0), $r['texto']);
+verificar('alunos acima do limite e famílias avisadas no mês', ($painel['alunos_acima_limite'] ?? 0) >= 1 && ($painel['responsaveis_avisados_mes'] ?? 0) >= 2, $r['texto']);
+verificar('o limite da escola vem junto (para o gráfico e o texto)', ($painel['limite_alerta'] ?? null) === 20, $r['texto']);
 
-// ------------------------------------------------------------ escola por coordenação
-secao('Cada coordenação é uma escola: conta nova, turmas e login do app');
-$r = post('user/addCoord.php', ['nome' => 'Coordenação Três', 'email' => 'coord3@escola.test', 'senha' => 'Senha@123',
-    'codigo_acesso' => $codigoCadastro, 'nome_escola' => 'Escola Três']);
-$escola3 = (int) valor("SELECT id_escola FROM tb_coordenacao WHERE email_coordenacao = 'coord3@escola.test'");
-verificar('conta nova cria a própria escola, com o nome informado', $r['status'] === 200 && !in_array($escola3, [0, 1, $escola2], true)
-    && valor("SELECT nome_escola FROM tb_escola WHERE id_escola = ?", [$escola3]) === 'Escola Três', $r['texto']);
+// ------------------------------------------------------------ catálogo e equipe
+secao('Catálogo de escolas, cadastro pela escola e aprovação da gestão');
+$novaConta = fn(string $email, array $escola) => post('user/addCoord.php',
+    ['nome' => 'Coordenação ' . strtok($email, '@'), 'email' => $email, 'senha' => 'Senha@123', 'codigo_acesso' => $codigoCadastro] + $escola);
+// A equipe do sistema é quem está em ADMIN_EMAILS (variável de ambiente).
+$r = $novaConta('admin@escola.test', ['nome_escola' => 'Equipe BioFrequência']);
+verificar('conta da equipe do sistema criada', $r['status'] === 200, $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'admin@escola.test', 'senha' => 'Senha@123']);
+$tAdmin = $r['json']['dados']['token'] ?? '';
+verificar('login informa que a conta é da equipe do sistema', ($r['json']['dados']['administrador'] ?? null) === true, $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'coord1@escola.test', 'senha' => 'Senha@123']);
+verificar('login de conta comum: papel na escola e sem acesso de equipe', ($r['json']['dados']['papel'] ?? '') === 'gestor'
+    && ($r['json']['dados']['administrador'] ?? null) === false, $r['texto']);
+$r = post('admin/importarCatalogo.php', [], $t1);
+verificar('conta comum na área da equipe: 404 (a área nem aparece)', $r['status'] === 404, $r['texto']);
+$r = post('admin/importarCatalogo.php', [], $tAdmin);
+verificar('a equipe importa o catálogo da SEDUC: 5.795 escolas', $r['status'] === 200 && ($r['json']['dados']['total'] ?? 0) === 5795, $r['texto']);
+verificar('a escola 1 (cadastrada à mão) foi reconhecida pelo nome e ganhou o código CIE, sem duplicar',
+    (int) valor("SELECT codigo_cie FROM tb_escola WHERE id_escola = 1") === 11808 && (int) valor("SELECT count(*) FROM tb_escola WHERE codigo_cie = 11808") === 1);
+verificar('turmas e alunos da escola 1 continuam nela', (int) valor("SELECT count(*) FROM tb_sala WHERE id_escola = 1") === 2);
+$r = post('admin/importarCatalogo.php', [], $tAdmin);
+verificar('importar de novo atualiza, sem duplicar', ($r['json']['dados']['inseridas'] ?? -1) === 0
+    && (int) valor("SELECT count(*) FROM tb_escola WHERE codigo_cie IS NOT NULL") === 5795, $r['texto']);
+
+$r = post('escola/buscar.php', ['busca' => 'maria nilde']);
+verificar('busca pública no catálogo (sem login): acha a escola 1, que já tem gestão', ($r['json']['dados']['escolas'][0]['id_escola'] ?? 0) === 1
+    && ($r['json']['dados']['escolas'][0]['tem_gestao'] ?? null) === true, $r['texto']);
+$r = post('escola/buscar.php', ['busca' => 'São Bernardo  mascellani']);
+verificar('busca sem acento, juntando município e nome', in_array(1, array_column($r['json']['dados']['escolas'] ?? [], 'id_escola'), true), $r['texto']);
+$r = post('escola/buscar.php', ['busca' => '11808']);
+verificar('busca pelo código CIE', array_column($r['json']['dados']['escolas'] ?? [], 'codigo_cie') === [11808], $r['texto']);
+$r = post('escola/buscar.php', ['busca' => 'ab']);
+verificar('busca com menos de 3 letras: 422', $r['status'] === 422, $r['texto']);
+$r = post('escola/buscar.php', ['busca' => 'Escola Vizinha']);
+verificar('escola criada à mão por outra conta não aparece na busca', ($r['json']['dados']['escolas'] ?? null) === [], $r['texto']);
+
+$escolaHelen = post('escola/buscar.php', ['busca' => '30806'])['json']['dados']['escolas'][0] ?? [];
+$idHelen = (int) ($escolaHelen['id_escola'] ?? 0);
+verificar('escola do catálogo ainda sem ninguém, com o nome de exibição', $idHelen > 0 && ($escolaHelen['tem_gestao'] ?? null) === false
+    && ($escolaHelen['nome_escola'] ?? '') === 'E.E. Helen Keller', $escolaHelen);
+$r = $novaConta('coord3@escola.test', ['id_escola' => $idHelen]);
+verificar('primeira conta da escola: ativa e gestora', $r['status'] === 200 && ($r['json']['dados']['papel'] ?? '') === 'gestor'
+    && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
+$r = $novaConta('coord4@escola.test', ['id_escola' => $idHelen]);
+verificar('segunda conta da mesma escola: pendente, aguardando a gestão', ($r['json']['dados']['situacao'] ?? '') === 'pendente'
+    && ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
+$r = $novaConta('coord5@escola.test', ['id_escola' => 999999]);
+verificar('escola que não existe no catálogo: 404', $r['status'] === 404, $r['texto']);
+$r = $novaConta('coord5@escola.test', ['id_escola' => $escola2]);
+verificar('escola criada à mão não pode ser escolhida no cadastro: 404', $r['status'] === 404, $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'errada']);
+verificar('conta pendente com senha errada: 401 (não revela a situação)', $r['status'] === 401, $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123']);
+verificar('conta pendente não entra: 403 explicando a aprovação', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'aprovação'), $r['texto']);
 $r = post('user/selectCoord.php', ['email' => 'coord3@escola.test', 'senha' => 'Senha@123', 'cliente' => 'app']);
 $t3 = $r['json']['dados']['token'] ?? '';
 $payload = json_decode((string) base64_decode(strtr(explode('.', $t3 . '..')[1], '-_', '+/')), true) ?? [];
-verificar('login informa a escola e, no app, a sessão dura 12 horas', ($r['json']['dados']['nome_escola'] ?? '') === 'Escola Três'
-    && (($payload['exp'] ?? 0) - ($payload['iat'] ?? 0)) === 43200, $r['texto']);
+verificar('login da gestora: escola do catálogo, papel e, no app, sessão de 12 horas', ($r['json']['dados']['nome_escola'] ?? '') === 'E.E. Helen Keller'
+    && ($r['json']['dados']['papel'] ?? '') === 'gestor' && (($payload['exp'] ?? 0) - ($payload['iat'] ?? 0)) === 43200, $r['texto']);
+$idCoord3 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord3@escola.test'");
+$idCoord4 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord4@escola.test'");
+$r = post('escola/equipe.php', [], $t3);
+verificar('a gestão vê quem aguarda aprovação', ($r['json']['dados']['pendentes'] ?? 0) === 1, $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' => 'aprovar'], $t1);
+verificar('gestão de outra escola não aprova: 404', $r['status'] === 404, $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' => 'aprovar'], $t3);
+verificar('a gestão aprova a conta pendente', $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123']);
+$t4 = $r['json']['dados']['token'] ?? '';
+verificar('depois de aprovada, a conta entra como coordenadora', $r['status'] === 200 && ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
+$r = post('escola/salvarConfiguracao.php', ['tolerancia_minutos' => 5], $t4);
+verificar('coordenador(a) não altera a configuração da escola: 403', $r['status'] === 403, $r['texto']);
+$r = post('escola/equipe.php', [], $t4);
+verificar('coordenador(a) vê só a equipe ativa, sem os emails', count($r['json']['dados']['equipe'] ?? []) === 2
+    && !isset($r['json']['dados']['equipe'][0]['email_coordenacao']), $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord3, 'acao' => 'tornar_coordenador'], $t3);
+verificar('a única gestora não pode deixar de ser gestora: 409', $r['status'] === 409, $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' => 'desativar'], $t3);
+verificar('a gestão desativa uma conta', $r['status'] === 200, $r['texto']);
+$r = post('user/listarSalas.php', [], $t4);
+verificar('a conta desativada perde a sessão na hora: 401', $r['status'] === 401, $r['texto']);
+$r = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123']);
+verificar('conta desativada não entra: 403', $r['status'] === 403, $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' => 'reativar'], $t3);
+verificar('a gestão reativa a conta', $r['status'] === 200, $r['texto']);
+$t4 = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123'])['json']['dados']['token'] ?? '';
+$r = $novaConta('coord6@escola.test', ['nome_escola' => 'Escola Municipal Seis', 'municipio' => 'Santo André']);
+verificar('escola fora do catálogo: a conta cria a escola (com o município) e vira gestora', ($r['json']['dados']['papel'] ?? '') === 'gestor'
+    && valor("SELECT municipio FROM tb_escola WHERE nome_escola = 'Escola Municipal Seis'") === 'SANTO ANDRÉ', $r['texto']);
+
+// ------------------------------------------------------------ configuração da escola
+secao('Escola: horários das turmas, tolerância, calendário e aviso por limite');
 $r = post('user/listarSalas.php', [], $t3);
 verificar('escola nova começa sem turmas (não vê as da escola 1)', ($r['json']['dados'] ?? null) === [], $r['texto']);
 $r = post('user/addSala.php', ['nome_sala' => ' 3º  A ', 'periodo_sala' => 'Matutino'], $t3);
 $sala3 = (int) ($r['json']['dados']['id_sala'] ?? 0);
-verificar('coordenação cadastra a própria turma', $r['status'] === 201 && $sala3 > 0 && ($r['json']['dados']['nome_sala'] ?? '') === '3º A', $r['texto']);
+verificar('a coordenação cadastra a turma, com o horário padrão do período', $r['status'] === 201 && ($r['json']['dados']['nome_sala'] ?? '') === '3º A'
+    && ($r['json']['dados']['horario'] ?? []) === ['inicio' => '07:00', 'fim' => '12:20'], $r['texto']);
 $r = post('user/addSala.php', ['nome_sala' => '3º a', 'periodo_sala' => 'Matutino'], $t3);
 verificar('turma com o mesmo nome na mesma escola: 409', $r['status'] === 409, $r['texto']);
-$r = post('user/addSala.php', ['nome_sala' => '3º A', 'periodo_sala' => 'Integral'], $t1);
+$r = post('user/addSala.php', ['nome_sala' => '3º N', 'periodo_sala' => 'Noturno', 'horario_inicio' => '19:00', 'horario_fim' => '18:00'], $t3);
+verificar('fim da aula antes do início: 422', $r['status'] === 422, $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => '3º N', 'periodo_sala' => 'Madrugada'], $t3);
 verificar('período fora do que o banco aceita: 422', $r['status'] === 422, $r['texto']);
-$r = post('user/addSala.php', ['nome_sala' => '3º A', 'periodo_sala' => 'Noturno']);
+$r = post('user/addSala.php', ['nome_sala' => '3º N', 'periodo_sala' => 'Noturno'], $t3);
+$sala3n = (int) ($r['json']['dados']['id_sala'] ?? 0);
+verificar('turma do noturno (padrão das 19:00 às 23:00)', ($r['json']['dados']['horario'] ?? []) === ['inicio' => '19:00', 'fim' => '23:00'], $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => '3º I', 'periodo_sala' => 'Integral', 'horario_inicio' => '00:00', 'horario_fim' => '23:59'], $t3);
+$sala3i = (int) ($r['json']['dados']['id_sala'] ?? 0);
+verificar('período Integral (PEI), com horário próprio', $r['status'] === 201 && $sala3i > 0, $r['texto']);
+$r = post('user/addSala.php', ['nome_sala' => '3º X', 'periodo_sala' => 'Noturno']);
 verificar('cadastrar turma sem token: 401', $r['status'] === 401, $r['texto']);
 $r = post('user/listarSalas.php', [], $t1);
-verificar('a turma da escola nova não aparece para a escola 1', !in_array($sala3, array_column($r['json']['dados'] ?? [], 'id_sala'), true), $r['texto']);
-$r = $novoAluno($t3, $sala3, 'Tina Três');
-verificar('escola nova cadastra aluno na própria turma', ($r['json']['sucesso'] ?? false) === true, $r['texto']);
+verificar('as turmas da escola nova não aparecem para a escola 1', !in_array($sala3, array_column($r['json']['dados'] ?? [], 'id_sala'), true), $r['texto']);
+$tina = (int) ($novoAluno($t3, $sala3, 'Tina Três')['json']['dados']['id_aluno'] ?? 0);
+$nico = (int) ($novoAluno($t3, $sala3n, 'Nico Noite')['json']['dados']['id_aluno'] ?? 0);
+$ivo = (int) ($novoAluno($t3, $sala3i, 'Ivo Integral')['json']['dados']['id_aluno'] ?? 0);
 $r = post('user/filtroAluno.php', ['pagina' => 1, 'por_pagina' => 50], $t3);
-verificar('escola nova lista só o próprio aluno', array_column($r['json']['dados']['alunos'] ?? [], 'nome_aluno') === ['Tina Três'], $r['texto']);
+verificar('escola nova lista só os próprios alunos', array_column($r['json']['dados']['alunos'] ?? [], 'nome_aluno') === ['Ivo Integral', 'Nico Noite', 'Tina Três'], $r['texto']);
+
+$r = $atraso($nico, "$d1 22:30", $t3);
+$esperadoUtc = (new DateTimeImmutable("$d1 22:30", $fuso))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+verificar('entrada atrasada às 22:30 no noturno é gravada em UTC (01:30 do dia seguinte)', $r['status'] === 200
+    && valor("SELECT to_char(dta_atraso, 'YYYY-MM-DD HH24:MI:SS') FROM tb_atraso WHERE id_atraso = ?", [$r['json']['dados']['id_atraso'] ?? 0]) === $esperadoUtc, $r['texto']);
+$r = post('user/historicoAluno.php', ['id_aluno' => $nico, 'data_inicio' => $d1, 'data_fim' => $d1], $t3);
+verificar('...e aparece no dia local certo', count($r['json']['dados']['atrasos'] ?? []) === 1, $r['texto']);
+$r = $atraso($nico, "$d2 08:00", $t3);
+verificar('aluno do noturno com "entrada atrasada" de manhã: 422', $r['status'] === 422, $r['texto']);
+
+$r = post('escola/salvarTurma.php', ['id_sala' => $sala3, 'horario_inicio' => '07:30', 'horario_fim' => '12:50'], $t3);
+verificar('a gestão muda o horário da turma', $r['status'] === 200 && ($r['json']['dados']['horario'] ?? []) === ['inicio' => '07:30', 'fim' => '12:50'], $r['texto']);
+$r = $atraso($tina, "$d1 07:35", $t3);
+verificar('com o horário novo (07:30), 07:35 está na tolerância: 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', '07:40'), $r['texto']);
+$r = post('escola/salvarConfiguracao.php', ['tolerancia_minutos' => 0], $t3);
+verificar('a gestão zera a tolerância', ($r['json']['dados']['tolerancia_minutos'] ?? null) === 0, $r['texto']);
+$r = $atraso($tina, "$d1 07:35", $t3);
+verificar('sem tolerância, 07:35 já é entrada atrasada', $r['status'] === 200, $r['texto']);
+$r = post('escola/salvarConfiguracao.php', ['tolerancia_minutos' => 61], $t3);
+verificar('tolerância acima de 60 minutos: 422', $r['status'] === 422, $r['texto']);
+$r = post('escola/salvarTurma.php', ['id_sala' => $sala1, 'horario_inicio' => '08:00'], $t3);
+verificar('a gestão não mexe em turma de outra escola: 404', $r['status'] === 404, $r['texto']);
+$r = post('escola/salvarTurma.php', ['id_sala' => $sala3, 'horario_inicio' => '08:00'], $t4);
+verificar('coordenador(a) não muda horário de turma: 403', $r['status'] === 403, $r['texto']);
+
+$r = post('escola/adicionarCalendario.php', ['data_inicio' => $d2, 'tipo' => 'sem_aula', 'descricao' => 'Conselho de classe'], $t3);
+$idConselho = (int) ($r['json']['dados']['id_calendario'] ?? 0);
+verificar('a gestão marca um dia sem aula', $r['status'] === 201 && $idConselho > 0, $r['texto']);
+$r = $atraso($tina, "$d2 08:00", $t3);
+verificar('no dia sem aula da escola não há entrada atrasada: 422 com o motivo', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', 'Conselho de classe'), $r['texto']);
+$r = post('escola/adicionarCalendario.php', ['data_inicio' => $sabado, 'tipo' => 'aula_extra', 'descricao' => 'Sábado letivo'], $t3);
+verificar('a gestão marca um sábado letivo', $r['status'] === 201, $r['texto']);
+$r = $atraso($tina, "$sabado 08:00", $t3);
+verificar('no sábado letivo a entrada atrasada é aceita', $r['status'] === 200, $r['texto']);
+$r = post('escola/adicionarCalendario.php', ['data_inicio' => $d2, 'tipo' => 'feriado', 'descricao' => 'x'], $t3);
+verificar('tipo de dia desconhecido: 422', $r['status'] === 422, $r['texto']);
+$r = post('escola/adicionarCalendario.php', ['data_inicio' => $d1, 'data_fim' => $d2, 'tipo' => 'sem_aula', 'descricao' => 'x'], $t3);
+verificar('data final antes da inicial: 422', $r['status'] === 422, $r['texto']);
+$r = post('escola/adicionarCalendario.php', ['data_inicio' => $d2, 'tipo' => 'sem_aula', 'descricao' => 'x'], $t4);
+verificar('coordenador(a) não mexe no calendário: 403', $r['status'] === 403, $r['texto']);
+$r = post('escola/configuracao.php', ['ano' => (int) substr($d2, 0, 4)], $t3);
+verificar('tela da escola: dados do catálogo, turmas com horário, feriados e calendário',
+    (int) ($r['json']['dados']['escola']['codigo_cie'] ?? 0) === 30806 && count($r['json']['dados']['turmas'] ?? []) === 3
+    && count($r['json']['dados']['feriados'] ?? []) >= 13 && in_array($idConselho, array_column($r['json']['dados']['calendario'] ?? [], 'id_calendario'), true)
+    && ($r['json']['dados']['pode_editar'] ?? null) === true, $r['texto']);
+$r = post('escola/configuracao.php', [], $t4);
+verificar('coordenador(a) vê a tela da escola, sem poder editar', ($r['json']['dados']['pode_editar'] ?? null) === false, $r['texto']);
+$r = post('escola/removerCalendario.php', ['id_calendario' => $idConselho], $t1);
+verificar('outra escola removendo período do calendário: 404', $r['status'] === 404, $r['texto']);
+$r = post('escola/removerCalendario.php', ['id_calendario' => $idConselho], $t3);
+verificar('a gestão remove o período', $r['status'] === 200, $r['texto']);
+
+// Aviso por limite logo depois do registro, sem ninguém abrir a tela de
+// alertas: a 3ª entrada atrasada da Tina passa do limite.
+$addResp($t3, $tina, gerarCpf(7), '(11) 97777-0001', 'Feminino');
+$r = $atraso($tina, "$d3 08:00", $t3);
+verificar('3ª entrada atrasada passa do limite: o aviso sai na hora', ($r['json']['dados']['avisos']['limite']['atrasos']['enviados'] ?? 0) === 1, $r['texto']);
+verificar('o provedor recebeu o aviso da Tina', count(array_filter(enviosWhatsapp('5511977770001'), fn($e) => str_contains((string) ($e['texto'] ?? ''), 'Tina Três'))) === 1);
+$r = $saida($tina, "$d3 10:00", $t3);
+verificar('o registro seguinte, dentro do intervalo, não repete o aviso', ($r['json']['dados']['avisos']['limite']['atrasos']['ja_avisado'] ?? null) === true, $r['texto']);
+
+// Presença do app depois da tolerância vira entrada atrasada sozinha.
+// Turma de dia inteiro, sem tolerância, e hoje como dia letivo extra:
+// o teste não depende da hora em que roda.
+post('escola/adicionarCalendario.php', ['data_inicio' => $hoje, 'tipo' => 'aula_extra', 'descricao' => 'Dia de teste'], $t3);
+$r = post('presenca/registrar.php', ['id_aluno' => $ivo, 'metodo' => 'manual'], $t3);
+verificar('presença depois da tolerância já registra a entrada atrasada (origem: presença)', $r['status'] === 201
+    && ($r['json']['dados']['entrada']['situacao'] ?? '') === 'atrasada' && ($r['json']['dados']['entrada']['id_atraso'] ?? 0) > 0
+    && valor("SELECT origem FROM tb_atraso WHERE id_aluno = ?", [$ivo]) === 'presenca', $r['texto']);
+post('escola/salvarConfiguracao.php', ['atraso_pela_presenca' => false], $t3);
+$iara = (int) ($novoAluno($t3, $sala3i, 'Iara Integral')['json']['dados']['id_aluno'] ?? 0);
+$r = post('presenca/registrar.php', ['id_aluno' => $iara, 'metodo' => 'manual'], $t3);
+verificar('com a opção desligada, a presença fica só como presença', ($r['json']['dados']['entrada']['situacao'] ?? '') === 'atrasada'
+    && array_key_exists('id_atraso', $r['json']['dados']['entrada'] ?? []) && $r['json']['dados']['entrada']['id_atraso'] === null
+    && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$iara]) === 0, $r['texto']);
+post('escola/salvarConfiguracao.php', ['atraso_pela_presenca' => true, 'tolerancia_minutos' => 10], $t3);
+
+$idAtrasoIvo = (int) valor("SELECT id_atraso FROM tb_atraso WHERE id_aluno = ?", [$ivo]);
+$r = post('registro/remover.php', ['tipo' => 'atraso', 'id' => $idAtrasoIvo], $t1);
+verificar('outra escola apagando registro: 404', $r['status'] === 404, $r['texto']);
+$r = post('registro/remover.php', ['tipo' => 'atraso', 'id' => $idAtrasoIvo], $t4);
+verificar('coordenador(a) não apaga registro: 403', $r['status'] === 403, $r['texto']);
+$r = post('registro/remover.php', ['tipo' => 'atraso', 'id' => $idAtrasoIvo], $t3);
+verificar('a gestão apaga um registro feito por engano', $r['status'] === 200 && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$ivo]) === 0, $r['texto']);
+
+// ------------------------------------------------------------ administração
+secao('Administração do sistema (equipe)');
+$r = post('admin/resumo.php', [], $tAdmin);
+verificar('resumo: catálogo, escolas em uso e contas', ($r['json']['dados']['escolas_catalogo'] ?? 0) === 5795
+    && ($r['json']['dados']['catalogo']['versao'] ?? '') === 'SEDUC-SP 08/2026' && ($r['json']['dados']['contas_ativas'] ?? 0) >= 5, $r['texto']);
+$r = post('admin/resumo.php', [], $t1);
+verificar('resumo para conta comum: 404', $r['status'] === 404, $r['texto']);
+$r = post('admin/escolas.php', ['em_uso' => true], $tAdmin);
+verificar('escolas em uso, com contas, turmas e alunos', in_array($idHelen, array_column($r['json']['dados']['escolas'] ?? [], 'id_escola'), true), $r['texto']);
+$r = post('admin/escolas.php', ['busca' => 'adamantina'], $tAdmin);
+verificar('a equipe busca no catálogo inteiro', ($r['json']['dados']['total_registros'] ?? 0) >= 2
+    && count(array_filter($r['json']['dados']['escolas'] ?? [], fn($e) => $e['municipio'] !== 'ADAMANTINA' && $e['diretoria_ensino'] !== 'ADAMANTINA')) === 0, $r['texto']);
+$novaConta('coord7@escola.test', ['id_escola' => $idHelen]);
+$idCoord7 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord7@escola.test'");
+$r = post('admin/contas.php', ['situacao' => 'pendente'], $tAdmin);
+verificar('a equipe vê as contas pendentes de todas as escolas', in_array('coord7@escola.test', array_column($r['json']['dados']['contas'] ?? [], 'email_coordenacao'), true), $r['texto']);
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'aprovar'], $tAdmin);
+verificar('a equipe aprova uma conta de qualquer escola', $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'mover_escola', 'id_escola' => 1], $tAdmin);
+verificar('a equipe move a conta para a escola certa (como coordenadora: lá já há gestão)', $r['status'] === 200
+    && ($r['json']['dados']['id_escola'] ?? 0) === 1 && ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord3, 'acao' => 'desativar'], $tAdmin);
+verificar('nem a equipe deixa uma escola sem gestão ativa: 409', $r['status'] === 409, $r['texto']);
+post('suporte/abrirChamado.php', ['categoria' => 'duvida', 'assunto' => 'Horário da turma', 'mensagem' => 'Como mudo o horário da turma do noturno?'], $t3);
+$r = post('admin/chamados.php', ['status' => 'aberto'], $tAdmin);
+$idChamado = (int) ($r['json']['dados']['chamados'][0]['id_chamado'] ?? 0);
+verificar('a equipe vê os chamados abertos, com a escola de quem abriu', $idChamado > 0
+    && ($r['json']['dados']['chamados'][0]['nome_escola'] ?? '') === 'E.E. Helen Keller', $r['texto']);
+$r = post('admin/responderChamado.php', ['id_chamado' => $idChamado, 'status' => 'respondido'], $tAdmin);
+verificar('marcar como respondido sem resposta: 422', $r['status'] === 422, $r['texto']);
+$r = post('admin/responderChamado.php', ['id_chamado' => $idChamado, 'resposta' => 'Em Escola > Turmas e horários.'], $tAdmin);
+verificar('a equipe responde o chamado', $r['status'] === 200, $r['texto']);
+$r = post('suporte/listarChamados.php', [], $t3);
+verificar('quem abriu vê a resposta em Meus chamados', ($r['json']['dados'][0]['status'] ?? '') === 'respondido'
+    && str_contains($r['json']['dados'][0]['resposta'] ?? '', 'Turmas e horários'), $r['texto']);
+$r = post('admin/responderChamado.php', ['id_chamado' => $idChamado, 'status' => 'fechado'], $t3);
+verificar('conta comum respondendo chamado: 404', $r['status'] === 404, $r['texto']);
 
 // ------------------------------------------------------------ biometria e presença
 secao('Biometria facial cifrada, identificação e presença automática');
@@ -613,7 +960,7 @@ verificar('identificar de novo no mesmo dia: avisa que já estava registrada, se
     && (int) valor("SELECT count(*) FROM tb_presenca WHERE id_aluno = ?", [$ana]) === 1, $r['texto']);
 $r = $identificar($vetor(303), $t1);
 verificar('rosto desconhecido: não reconhecido e nenhuma presença nova', ($r['json']['dados']['reconhecido'] ?? null) === false
-    && (int) valor("SELECT count(*) FROM tb_presenca") === 1, $r['texto']);
+    && (int) valor("SELECT count(*) FROM tb_presenca WHERE id_coordenacao = ?", [$idCoord1]) === 1, $r['texto']);
 verificar('as tentativas ficam registradas, sem dado biométrico',
     (int) valor("SELECT count(*) FROM tb_identificacao_biometrica WHERE id_coordenacao = ?", [$idCoord1]) === 3
     && (int) valor("SELECT count(*) FROM tb_identificacao_biometrica WHERE NOT reconhecido") === 1);
@@ -716,10 +1063,18 @@ verificar('outra escola confirmando check-in: 404', $r['status'] === 404, $r['te
 $r = post('digital/confirmarCheckin.php', ['id_checkin' => $idCheckin], $t1);
 verificar('confirmar check-in: 200', $r['status'] === 200, $r['texto']);
 
+// A ocorrência do celular chega "agora": para não depender da hora em que
+// o teste roda, Elisa passa para uma turma de dia inteiro, sem tolerância,
+// e hoje e ontem viram dias letivos extras na escola 1.
+$sala1t = (int) (post('user/addSala.php', ['nome_sala' => '1T', 'periodo_sala' => 'Integral', 'horario_inicio' => '00:00', 'horario_fim' => '23:59'], $t1)['json']['dados']['id_sala'] ?? 0);
+sql("UPDATE tb_aluno SET id_sala = ? WHERE id_aluno = ?", [$sala1t, $elisa]);
+post('escola/salvarConfiguracao.php', ['tolerancia_minutos' => 0], $t1);
+post('escola/adicionarCalendario.php', ['data_inicio' => $ontem, 'data_fim' => $hoje, 'tipo' => 'aula_extra', 'descricao' => 'Dias de teste'], $t1);
+
 $ocorrencia = assinado($uuid, $segredo2, 'falta') + ['motivo' => 'Consulta médica', 'observacao' => 'Levo atestado', 'responsavel_ciente' => true];
 $r = post('ocorrencia/enviarOcorrencia.php', $ocorrencia);
 verificar('ocorrência enviada pelo app: 201 pendente', $r['status'] === 201 && ($r['json']['dados']['status'] ?? '') === 'pendente', $r['texto']);
-verificar('ainda nenhuma falta no banco (só depois da aprovação)', (int) valor("SELECT count(*) FROM tb_falta WHERE id_aluno = ?", [$elisa]) === 0);
+verificar('a ocorrência não vira falta no banco', (int) valor("SELECT count(*) FROM tb_falta WHERE id_aluno = ?", [$elisa]) === 0);
 $r = post('ocorrencia/enviarOcorrencia.php', assinado($uuid, $segredo2, 'falta') + ['motivo' => 'De novo']);
 verificar('segundo envio do mesmo tipo no dia: 409', $r['status'] === 409, $r['texto']);
 $r = post('ocorrencia/enviarOcorrencia.php', assinado('aparelho-desconhecido', 'x', 'falta') + ['motivo' => 'x']);
@@ -731,23 +1086,32 @@ verificar('outra escola não vê a fila', ($r['json']['dados']['total'] ?? -1) =
 $r = post('ocorrencia/listarPendentes.php', [], $t1);
 $idOcorrencia = (int) ($r['json']['dados']['ocorrencias'][0]['id_ocorrencia'] ?? 0);
 verificar('coordenação vê a ocorrência na fila', $idOcorrencia > 0, $r['texto']);
-// Aprovada "no dia seguinte": a falta tem de ser do dia do envio.
-sql("UPDATE tb_ocorrencia_pendente SET criado_em = criado_em - INTERVAL '1 day' WHERE id_ocorrencia = ?", [$idOcorrencia]);
-$diaEnvio = valor("SELECT " . dia('criado_em') . "::text FROM tb_ocorrencia_pendente WHERE id_ocorrencia = ?", [$idOcorrencia]);
 $r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrencia, 'decisao' => 'aprovar', 'justificado' => true], $t1);
-$idFaltaCriada = (int) ($r['json']['dados']['id_registro'] ?? 0);
-verificar('aprovar: 200 e falta criada', $r['status'] === 200 && $idFaltaCriada > 0 && ($r['json']['dados']['ja_existia'] ?? null) === false, $r['texto']);
-verificar('a falta é do dia do ENVIO, não do dia da aprovação', valor("SELECT " . dia('dta_falta') . "::text FROM tb_falta WHERE id_falta = ?", [$idFaltaCriada]) === $diaEnvio);
-verificar('motivo escrito pelo aluno chegou na falta', valor("SELECT motivo_falta FROM tb_falta WHERE id_falta = ?", [$idFaltaCriada]) === 'Consulta médica');
+verificar('aprovar ocorrência de falta: 422 (faltas não são mais registradas)', $r['status'] === 422
+    && (int) valor("SELECT count(*) FROM tb_falta WHERE id_aluno = ?", [$elisa]) === 0, $r['texto']);
+$r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrencia, 'decisao' => 'rejeitar'], $t1);
+verificar('a ocorrência de falta é rejeitada e fica no histórico', $r['status'] === 200
+    && valor("SELECT status FROM tb_ocorrencia_pendente WHERE id_ocorrencia = ?", [$idOcorrencia]) === 'rejeitado', $r['texto']);
 $r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrencia, 'decisao' => 'rejeitar'], $t1);
 verificar('segunda decisão na mesma ocorrência: 409', $r['status'] === 409, $r['texto']);
+// Atraso enviado ontem e aprovado hoje: é do dia do envio.
+post('ocorrencia/enviarOcorrencia.php', assinado($uuid, $segredo2, 'atraso') + ['motivo' => 'Ônibus quebrou']);
+$idOcorrenciaOntem = (int) valor("SELECT id_ocorrencia FROM tb_ocorrencia_pendente WHERE id_aluno = ? AND tipo = 'atraso' AND status = 'pendente'", [$elisa]);
+sql("UPDATE tb_ocorrencia_pendente SET criado_em = criado_em - INTERVAL '1 day' WHERE id_ocorrencia = ?", [$idOcorrenciaOntem]);
+$diaEnvio = valor("SELECT " . dia('criado_em') . "::text FROM tb_ocorrencia_pendente WHERE id_ocorrencia = ?", [$idOcorrenciaOntem]);
+$r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrenciaOntem, 'decisao' => 'aprovar'], $t1);
+$idAtrasoCriado = (int) ($r['json']['dados']['id_registro'] ?? 0);
+verificar('aprovar atraso: 200 e entrada atrasada criada (origem: ocorrência)', $r['status'] === 200 && $idAtrasoCriado > 0
+    && valor("SELECT origem FROM tb_atraso WHERE id_atraso = ?", [$idAtrasoCriado]) === 'ocorrencia', $r['texto']);
+verificar('o atraso é do dia do ENVIO, não do dia da aprovação, com o motivo do aluno',
+    valor("SELECT " . dia('dta_atraso') . "::text || '|' || motivo_atraso FROM tb_atraso WHERE id_atraso = ?", [$idAtrasoCriado]) === "$diaEnvio|Ônibus quebrou");
 $idAtraso = (int) (post('user/marcarAtraso.php', ['id_aluno' => $elisa], $t1)['json']['dados']['id_atraso'] ?? 0);
 post('ocorrencia/enviarOcorrencia.php', assinado($uuid, $segredo2, 'atraso') + ['motivo' => 'Ônibus atrasou']);
-$idOcorrenciaAtraso = (int) valor("SELECT id_ocorrencia FROM tb_ocorrencia_pendente WHERE id_aluno = ? AND tipo = 'atraso'", [$elisa]);
+$idOcorrenciaAtraso = (int) valor("SELECT id_ocorrencia FROM tb_ocorrencia_pendente WHERE id_aluno = ? AND tipo = 'atraso' AND status = 'pendente'", [$elisa]);
 $r = post('ocorrencia/revisarOcorrencia.php', ['id_ocorrencia' => $idOcorrenciaAtraso, 'decisao' => 'aprovar'], $t1);
 verificar('aprovar atraso de um dia já lançado à mão não cria outro', $r['status'] === 200 && ($r['json']['dados']['ja_existia'] ?? null) === true
     && ($r['json']['dados']['id_registro'] ?? 0) === $idAtraso
-    && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$elisa]) === 1, $r['texto']);
+    && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$elisa]) === 2, $r['texto']);
 secao('Celular do aluno (fluxo anterior): desconectar pela coordenação');
 $r = post('digital/revogarDispositivo.php', ['id_aluno' => $elisa], $t2);
 verificar('outra escola desconectando o celular: 404', $r['status'] === 404, $r['texto']);
@@ -779,6 +1143,12 @@ $r = post('relatorio/exportarXml.php', ['relatorio' => 'alunos'], $t1);
 $xml = @simplexml_load_string($r['texto']);
 verificar('relatório XML: documento válido', $xml !== false && str_starts_with($r['h']['content-type'] ?? '', 'application/xml'), [$r['status'], mb_substr($r['texto'], 0, 200)]);
 verificar('relatório XML: só alunos da escola', $xml !== false && count($xml->itens->aluno) === 7 && !str_contains($r['texto'], 'Zeca'), $r['texto']);
+verificar('relatório XML de alunos: entradas atrasadas e saídas, sem faltas', $xml !== false && isset($xml->itens->aluno[0]->entradas_atrasadas)
+    && !str_contains($r['texto'], 'falta'), mb_substr($r['texto'], 0, 300));
+$r = post('relatorio/exportarXml.php', ['relatorio' => 'registros'], $t1);
+$xml = @simplexml_load_string($r['texto']);
+verificar('relatório XML de registros: entradas atrasadas e saídas antecipadas', $xml !== false && count($xml->itens->registro) >= 5
+    && str_contains($r['texto'], 'saida_antecipada') && str_contains($r['texto'], 'Tia Rosa'), mb_substr($r['texto'], 0, 300));
 
 // ------------------------------------------------------------ conta
 // No fim de propósito: aqui sessões são encerradas e a senha da
@@ -831,10 +1201,16 @@ verificar('sair: some de dispositivos conectados', $verdadeiro(valor("SELECT enc
 $tConta = $entrar('coord1@escola.test', 'Senha@123')['json']['dados']['token'] ?? '';
 $r = post('conta/perfil.php', [], $tConta);
 verificar('perfil: dados da conta', ($r['json']['dados']['email_coordenacao'] ?? '') === 'coord1@escola.test' && isset($r['json']['dados']['nome_escola']), $r['texto']);
-$perfil = ['nome_coordenacao' => 'Coordenação Central', 'email_coordenacao' => 'coord1@escola.test', 'nome_escola' => 'Escola Estadual Central'];
+$perfil = ['nome_coordenacao' => 'Coordenação Central', 'email_coordenacao' => 'coord1@escola.test'];
 $r = post('conta/atualizarPerfil.php', $perfil, $tConta);
-verificar('perfil: nome e escola mudam sem pedir senha', $r['status'] === 200 && ($r['json']['dados']['nome_escola'] ?? '') === 'Escola Estadual Central'
+verificar('perfil: o nome muda sem pedir senha', $r['status'] === 200 && ($r['json']['dados']['escola_do_catalogo'] ?? null) === true
     && valor("SELECT nome_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'Coordenação Central', $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['nome_escola' => 'Escola Estadual Central'] + $perfil, $tConta);
+verificar('perfil: o nome de uma escola do catálogo é o oficial e não muda: 409', $r['status'] === 409
+    && valor("SELECT nome_escola FROM tb_escola WHERE id_escola = 1") === 'E.E. Maria Nilde Mascellani', $r['texto']);
+$tSeis = $entrar('coord6@escola.test', 'Senha@123')['json']['dados']['token'] ?? '';
+$r = post('conta/atualizarPerfil.php', ['nome_coordenacao' => 'Coordenação Seis', 'email_coordenacao' => 'coord6@escola.test', 'nome_escola' => 'EMEF Seis'], $tSeis);
+verificar('perfil: a gestão de escola fora do catálogo muda o nome da escola', $r['status'] === 200 && ($r['json']['dados']['nome_escola'] ?? '') === 'EMEF Seis', $r['texto']);
 $r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'nova@escola.test'] + $perfil, $tConta);
 verificar('perfil: trocar o e-mail sem a senha: 403', $r['status'] === 403, $r['texto']);
 $r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'nova@escola.test', 'senha_atual' => 'errada'] + $perfil, $tConta);
@@ -844,8 +1220,8 @@ verificar('perfil: e-mail de outra conta: 409', $r['status'] === 409, $r['texto'
 $r = post('conta/atualizarPerfil.php', ['email_coordenacao' => ' Nova@Escola.test ', 'senha_atual' => 'Senha@123'] + $perfil, $tConta);
 verificar('perfil: e-mail trocado, gravado em minúsculas', $r['status'] === 200 && valor("SELECT email_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'nova@escola.test', $r['texto']);
 verificar('...e o login passa a ser pelo e-mail novo', $entrar('nova@escola.test', 'Senha@123')['status'] === 200);
-$r = post('conta/atualizarPerfil.php', ['nome_escola' => ''] + $perfil, $tConta);
-verificar('perfil: escola sem nome: 422', $r['status'] === 422, $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['nome_escola' => str_repeat('x', 151)] + $perfil, $tConta);
+verificar('perfil: nome de escola longo demais: 422', $r['status'] === 422, $r['texto']);
 
 $tOutroAparelho = $entrar('nova@escola.test', 'Senha@123')['json']['dados']['token'] ?? '';
 $r = post('conta/alterarSenha.php', ['senha_atual' => 'errada', 'senha_nova' => 'NovaSenha@1'], $tConta);

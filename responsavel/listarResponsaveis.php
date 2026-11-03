@@ -22,7 +22,7 @@ exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoorden
 try {
     $stmt = $conexao->prepare("
         SELECT r.id_responsavel, r.nome_responsavel, r.cpf_responsavel, r.telefone_responsavel,
-               r.email_responsavel, r.genero_responsavel
+               r.email_responsavel, r.genero_responsavel, r.canal_preferido, ar.parentesco
         FROM tb_aluno_responsavel ar
         JOIN tb_responsavel r ON r.id_responsavel = ar.id_responsavel
         WHERE ar.id_aluno = ?

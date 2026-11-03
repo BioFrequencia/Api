@@ -21,6 +21,8 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  *
  * Resposta 200 nos dois casos; "reconhecido" diz qual foi:
  *   reconhecido: true  -> aluno + presenca { nova, registrada_em, metodo }
+ *                         + entrada { situacao, horario_turma, ... }: presença
+ *                         nova depois da tolerância já é a entrada atrasada
  *   reconhecido: false -> o app pede outra foto ou a identificação manual
  */
 $idCoordenacao = autenticar();
@@ -63,13 +65,18 @@ try {
     }
 
     $presenca = registrarPresenca($conexao, $idAluno, $idCoordenacao, 'facial', $resultado['distancia']);
+    // Presença nova depois da tolerância vira entrada atrasada (helpers/presenca.php).
+    $entrada = $presenca['nova']
+        ? conferirEntradaDaPresenca($conexao, $idAluno, (int) $idCoordenacao, $idEscola, $presenca['registrada_em'], 'facial')
+        : null;
 
     enviarSucesso(
-        $presenca['nova'] ? "Presença registrada." : "A presença deste aluno já estava registrada hoje.",
+        $presenca['nova'] ? mensagemDaPresenca($entrada) : "A presença deste aluno já estava registrada hoje.",
         [
             "reconhecido" => true,
             "aluno" => dadosDoAluno($conexao, $idAluno),
             "presenca" => $presenca,
+            "entrada" => $entrada,
             "distancia" => round($resultado['distancia'], 4),
         ]
     );

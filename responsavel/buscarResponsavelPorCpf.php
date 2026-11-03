@@ -32,7 +32,7 @@ $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
 try {
     $stmt = $conexao->prepare("
         SELECT DISTINCT r.id_responsavel, r.nome_responsavel, r.cpf_responsavel, r.telefone_responsavel,
-               r.email_responsavel, r.genero_responsavel
+               r.email_responsavel, r.genero_responsavel, r.canal_preferido
         FROM tb_responsavel r
         JOIN tb_aluno_responsavel ar ON ar.id_responsavel = r.id_responsavel
         JOIN tb_aluno a ON a.id_aluno = ar.id_aluno
@@ -47,6 +47,19 @@ try {
     if (!$responsavel) {
         enviarErro("Nenhum responsável cadastrado com esse CPF nesta escola.", 404);
     }
+
+    // Os alunos desta escola que ele já acompanha (irmãos), para a tela
+    // mostrar antes de vincular.
+    $alunos = $conexao->prepare("
+        SELECT a.id_aluno, a.nome_aluno, s.nome_sala, ar.parentesco
+        FROM tb_aluno_responsavel ar
+        JOIN tb_aluno a ON a.id_aluno = ar.id_aluno
+        JOIN tb_sala s ON s.id_sala = a.id_sala
+        WHERE ar.id_responsavel = ? AND s.id_escola = ?
+        ORDER BY a.nome_aluno
+    ");
+    $alunos->execute([$responsavel['id_responsavel'], $idEscola]);
+    $responsavel['alunos'] = $alunos->fetchAll(PDO::FETCH_ASSOC);
 
     enviarSucesso("Responsável encontrado.", $responsavel);
 } catch (PDOException $erro) {

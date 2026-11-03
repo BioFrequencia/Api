@@ -1,8 +1,12 @@
 # BioFrequência API
 
-API PHP do sistema BioFrequência (TCC): autenticação de coordenação,
-cadastro/listagem de alunos, registro de faltas/atrasos, alertas,
-acompanhamento e biometria (facial + dispositivo do aluno).
+API PHP do sistema BioFrequência (TCC): registra as **entradas
+atrasadas** e as **saídas antecipadas** dos alunos (as faltas ficam na
+Sala do Futuro), avisa os responsáveis quando um aluno passa do limite
+da escola e cuida da biometria do app da coordenação. Também: escolas
+do catálogo da SEDUC-SP, contas por escola com aprovação da gestão,
+calendário e horários das turmas, alertas, acompanhamento e a
+administração do sistema.
 
 Ver `AUDITORIA.md` para o histórico completo de diagnóstico, bugs
 encontrados/corrigidos e o que foi testado em cada rodada.
@@ -63,8 +67,10 @@ psql -U seu_usuario -d seu_banco -f database/migracao-completa.sql
 O script já inclui as migrações **005** (escopo por escola, fila de
 ocorrências do app e níveis de alerta), da qual o código atual depende
 em quase todo endpoint, **006** (presença, consentimento e biometria cifrada do app da
-coordenação) e **007** (sessões e dispositivos conectados, preferências
-da conta e chamados de suporte). Em 30/10/2026 o banco de produção **ainda não
+coordenação), **007** (sessões e dispositivos conectados, preferências
+da conta e chamados de suporte) e **008** (catálogo de escolas, papel e
+aprovação das contas, saída antecipada, horário das turmas, calendário e
+configuração da escola, avisos por limite). Em 30/10/2026 o banco de produção **ainda não
 tinha nenhuma das duas**. Para saber se falta alguma migração, abra
 `/health.php`: ele responde 503 com `"schema": "desatualizado"` e a
 lista em `"faltando"`.
@@ -72,7 +78,7 @@ lista em `"faltando"`.
 Alternativamente, os arquivos individuais em `database/migrations/`
 (`001_schema_base.sql` reproduz o schema original de produção, com as
 mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003`,
-`005`, `006` e `007` são os que faltavam; `004_responsavel_cpf_unique.sql` é
+`005` a `008` são os que faltavam; `004_responsavel_cpf_unique.sql` é
 opcional). Todos podem ser rodados mais de uma vez sem erro. As tabelas
 novas já saem com RLS ligado e sem política, como as que existem no
 Supabase: só a API (dona das tabelas) as acessa, e não a API REST
@@ -94,7 +100,9 @@ php tests/helpers_test.php
 ```
 
 Testes unitários puros (sem banco): validação, CPF, fuso da escola,
-CORS, status de notificação, escalonamento dos alertas.
+CORS, status de notificação, calendário escolar (Páscoa, feriados,
+horário e tolerância), indicadores e alertas, avisos, catálogo de
+escolas, equipe e escalonamento.
 
 Testes de integração (requisições HTTP de verdade + conferência no
 banco): `tests/integracao_test.php`. **Apaga todos os dados do banco
@@ -122,11 +130,14 @@ biometria/        app da coordenação: consentimento, cadastro e identificaçã
 presenca/         presenças registradas pelo app (facial, digital ou manual)
 digital/          check-in pelo celular do próprio aluno (fluxo anterior)
 acompanhamento/   registro de contatos com responsáveis
-user/             coordenação, alunos, salas, faltas/atrasos, alertas, dashboard
+user/             coordenação, alunos, turmas, entradas atrasadas e saídas antecipadas, alertas, dashboard
+registro/         registros do dia (entradas atrasadas e saídas) e remoção pela gestão
+escola/           busca no catálogo de escolas, configuração, horários, calendário e equipe da escola
+admin/            painel da equipe do sistema (ADMIN_EMAILS): escolas, contas, chamados, catálogo
 conta/            minha conta: perfil, senha, preferências, dispositivos conectados
 suporte/          chamados de suporte abertos pela coordenação
-helpers/          validação, respostas padronizadas, cálculo de frequência/alertas
-database/         conexão PDO + migrações SQL
+helpers/          validação, respostas, calendário escolar, indicadores, alertas e avisos
+database/         conexão PDO, migrações SQL e o catálogo de escolas (dados/escolas-sp.csv)
 config/           configuração (config.php é local, não versionado)
 ocorrencia/       ocorrências enviadas pelo app e revisão pela coordenação
 notificacao/      fila de mensagens aos responsáveis
@@ -160,8 +171,11 @@ docs/             arquitetura
 | `CADASTRO_CODIGO_ACESSO` | não | Código pedido no cadastro de uma nova conta de coordenação. Sem ele, o cadastro fica desligado. No XAMPP pode ser a constante de mesmo nome em `config/config.php`. |
 | `BIOMETRIA_CHAVE` | para a biometria | Chave que cifra os vetores faciais e as digitais no banco: 64 caracteres hexadecimais (ou o base64 do `generateValue` do Render). Sem ela, os endpoints de biometria respondem 503. **Não troque depois de cadastrar alunos**: a biometria gravada com a chave antiga deixa de abrir e precisa ser refeita. |
 | `PORT` | não | Porta do Apache no container (padrão 8080). O Render define sozinho. |
-| `SMTP_REMETENTE` | não | Remetente dos e-mails de nível máximo de alerta. Sem ela, o aviso fica na fila em vez de ser enviado. |
-| `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | não | Provedor de WhatsApp. Sem eles, a fila guarda um link `wa.me` pronto para a coordenação clicar. |
+| `ADMIN_EMAILS` | não | E-mails da equipe do sistema (tela `/admin` do site: escolas, contas, chamados de suporte), separados por vírgula. Sem ela, ninguém vê a área de administração. |
+| `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | não | Provedor de WhatsApp dos avisos aos responsáveis (formato da Meta Cloud API). Sem eles, a fila de Notificações guarda um link `wa.me` pronto para a coordenação clicar. |
+| `WHATSAPP_TEMPLATE`, `WHATSAPP_TEMPLATE_IDIOMA` | não | Modelo aprovado pela Meta, com uma variável (`{{1}}`) que recebe a mensagem, e o idioma (padrão `pt_BR`). Fora da janela de 24 h a Meta só entrega modelos. |
+| `EMAIL_API_URL`, `EMAIL_API_TOKEN`, `EMAIL_REMETENTE` | não | E-mail dos avisos por HTTP, no formato da API do Resend (`{from, to[], subject, text}` com token Bearer). O Render não tem servidor de e-mail, então `mail()` não entrega nada lá. |
+| `SMTP_REMETENTE` | não | Alternativa ao e-mail por HTTP: remetente para o `mail()` do PHP, num servidor com sendmail. |
 
 ## Docker
 

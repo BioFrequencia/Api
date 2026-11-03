@@ -3,7 +3,6 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
-require_once __DIR__ . '/../helpers/frequencia.php';
 require_once __DIR__ . '/../helpers/alertas.php';
 require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
@@ -38,7 +37,7 @@ $corpoJson = json_decode(file_get_contents("php://input"), true) ?? [];
 $dados = $corpoFormulario ?: $corpoJson;
 $relatorio = $dados['relatorio'] ?? 'alertas';
 
-$relatoriosAceitos = ['alertas', 'alunos', 'acompanhamentos', 'ocorrencias'];
+$relatoriosAceitos = ['alertas', 'alunos', 'registros', 'acompanhamentos', 'ocorrencias'];
 if (!in_array($relatorio, $relatoriosAceitos, true)) {
     enviarErro("Relatório inválido. Use: " . implode(', ', $relatoriosAceitos) . ".", 422);
 }
@@ -78,34 +77,58 @@ try {
             $item->appendChild(elemento($doc, 'turma', $a['turma']));
             $item->appendChild(elemento($doc, 'tipo', $a['tipo']));
             $item->appendChild(elemento($doc, 'prioridade', $a['prioridade']));
-            $item->appendChild(elemento($doc, 'frequencia', $a['frequencia']));
+            $item->appendChild(elemento($doc, 'ocorrencias', $a['ocorrencias']));
+            $item->appendChild(elemento($doc, 'dias_de_aula', $a['dias_letivos']));
+            $item->appendChild(elemento($doc, 'taxa_percentual', $a['taxa']));
             $item->appendChild(elemento($doc, 'motivo', $a['motivo']));
             $item->appendChild(elemento($doc, 'data_referencia', $a['dta_referencia']));
             $itens->appendChild($item);
         }
     } elseif ($relatorio === 'alunos') {
-        $stmt = $conexao->prepare("
-            SELECT a.id_aluno, a.nome_aluno, s.nome_sala,
-                   COALESCE(f.qtd, 0) AS faltas, COALESCE(t.qtd, 0) AS atrasos
-            FROM tb_aluno a
-            JOIN tb_sala s ON s.id_sala = a.id_sala
-            LEFT JOIN (SELECT id_aluno, COUNT(DISTINCT " . sqlDataNaEscola('dta_falta') . ") qtd FROM tb_falta  WHERE dta_falta  >= ? GROUP BY id_aluno) f ON f.id_aluno = a.id_aluno
-            LEFT JOIN (SELECT id_aluno, COUNT(DISTINCT " . sqlDataNaEscola('dta_atraso') . ") qtd FROM tb_atraso WHERE dta_atraso >= ? GROUP BY id_aluno) t ON t.id_aluno = a.id_aluno
-            WHERE s.id_escola = ?
-            ORDER BY a.nome_aluno
-        ");
-        // Mesma regra de filtroAluno.php: mês no fuso da escola, contando dias.
-        $stmt->execute([inicioDoMesUtc(), inicioDoMesUtc(), $idEscola]);
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $linha) {
-            $frequencia = calcularFrequencia((int) $linha['faltas']);
+        // Mesmos números da lista de alunos (user/filtroAluno.php): a
+        // janela de alerta da escola, contando dias de aula.
+        $config = configuracaoDaEscola($conexao, $idEscola);
+        $janela = indicadoresDaJanela($conexao, $idEscola, $config);
+        $raiz->setAttribute('periodo', $janela['inicio'] . '/' . $janela['fim']);
+        foreach ($janela['alunos'] as $linha) {
             $item = $doc->createElement('aluno');
-            $item->setAttribute('id', $linha['id_aluno']);
+            $item->setAttribute('id', (string) $linha['id_aluno']);
             $item->appendChild(elemento($doc, 'nome', $linha['nome_aluno']));
             $item->appendChild(elemento($doc, 'turma', $linha['nome_sala']));
-            $item->appendChild(elemento($doc, 'faltas_mes', $linha['faltas']));
-            $item->appendChild(elemento($doc, 'atrasos_mes', $linha['atrasos']));
-            $item->appendChild(elemento($doc, 'frequencia', $frequencia));
-            $item->appendChild(elemento($doc, 'situacao', calcularStatusFrequencia($frequencia)));
+            $item->appendChild(elemento($doc, 'dias_de_aula', $linha['dias_letivos']));
+            $item->appendChild(elemento($doc, 'entradas_atrasadas', $linha['atrasos']));
+            $item->appendChild(elemento($doc, 'saidas_antecipadas', $linha['saidas']));
+            $item->appendChild(elemento($doc, 'taxa_atrasos', $linha['taxa_atrasos']));
+            $item->appendChild(elemento($doc, 'taxa_saidas', $linha['taxa_saidas']));
+            $item->appendChild(elemento($doc, 'situacao', situacaoDoAluno($linha['prioridade_atrasos'], $linha['prioridade_saidas'], $linha['dias_letivos'])));
+            $itens->appendChild($item);
+        }
+    } elseif ($relatorio === 'registros') {
+        // Entradas atrasadas e saídas antecipadas dos últimos 90 dias.
+        $desde = localParaUtc((new DateTimeImmutable(hojeNaEscola()))->modify('-89 days')->format('Y-m-d'));
+        $stmt = $conexao->prepare("
+            SELECT 'entrada_atrasada' AS tipo, t.dta_atraso AS momento, a.nome_aluno, s.nome_sala, t.motivo_atraso AS motivo,
+                   t.justificado_atraso AS justificado, t.origem, NULL AS retirado_por
+            FROM tb_atraso t JOIN tb_aluno a ON a.id_aluno = t.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala
+            WHERE s.id_escola = ? AND t.dta_atraso >= ?
+            UNION ALL
+            SELECT 'saida_antecipada', r.dta_saida, a.nome_aluno, s.nome_sala, r.motivo_saida, r.justificado_saida, NULL, r.retirado_por
+            FROM tb_saida_antecipada r JOIN tb_aluno a ON a.id_aluno = r.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala
+            WHERE s.id_escola = ? AND r.dta_saida >= ?
+            ORDER BY momento DESC
+        ");
+        $stmt->execute([$idEscola, $desde, $idEscola, $desde]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $linha) {
+            $local = (new DateTimeImmutable($linha['momento'], new DateTimeZone('UTC')))->setTimezone(fusoEscola());
+            $item = $doc->createElement('registro');
+            $item->setAttribute('tipo', $linha['tipo']);
+            $item->appendChild(elemento($doc, 'data_hora', $local->format('Y-m-d H:i')));
+            $item->appendChild(elemento($doc, 'aluno', $linha['nome_aluno']));
+            $item->appendChild(elemento($doc, 'turma', $linha['nome_sala']));
+            $item->appendChild(elemento($doc, 'motivo', $linha['motivo']));
+            $item->appendChild(elemento($doc, 'justificado', valorBooleano($linha['justificado']) ? 'sim' : 'nao'));
+            $item->appendChild(elemento($doc, 'origem', $linha['origem']));
+            $item->appendChild(elemento($doc, 'retirado_por', $linha['retirado_por']));
             $itens->appendChild($item);
         }
     } elseif ($relatorio === 'acompanhamentos') {

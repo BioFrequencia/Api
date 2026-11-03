@@ -34,6 +34,12 @@ fi
 chown www-data:www-data /var/www/html/config/config.php
 chmod 640 /var/www/html/config/config.php
 
+# Catálogo de escolas (helpers/catalogoEscolas.php): só importa quando a
+# versão do arquivo muda. Se falhar (banco fora do ar, migração 008 ainda
+# não aplicada), a API sobe do mesmo jeito.
+php /var/www/html/database/importarEscolas.php --se-necessario \
+    || echo "aviso: catálogo de escolas não importado agora" >&2
+
 # Porta dinâmica da plataforma.
 sed -i "s/^Listen .*/Listen ${PORT}/" /etc/apache2/ports.conf
 sed -i "s/:80>/:${PORT}>/" /etc/apache2/sites-available/000-default.conf

@@ -13,6 +13,10 @@ const OBJETOS_POR_MIGRACAO = [
     '005' => ['tb_escola', 'tb_ocorrencia_pendente', 'tb_alerta_nivel', 'tb_coordenacao.id_escola', 'tb_sala.id_escola', 'tb_notificacao.canal', 'tb_notificacao.nivel_alerta'],
     '006' => ['tb_presenca', 'tb_consentimento_biometria', 'tb_biometria_digital', 'tb_identificacao_biometrica', 'tb_biometria_facial.cifrado'],
     '007' => ['tb_sessao', 'tb_preferencia_coordenacao', 'tb_chamado_suporte'],
+    '008' => ['tb_saida_antecipada', 'tb_configuracao_escola', 'tb_calendario_escola', 'tb_aviso_limite', 'tb_catalogo_escolas',
+              'tb_escola.codigo_cie', 'tb_coordenacao.papel', 'tb_coordenacao.situacao', 'tb_sala.horario_inicio',
+              'tb_atraso.origem', 'tb_responsavel.canal_preferido', 'tb_aluno_responsavel.parentesco', 'tb_aluno.criado_em',
+              'tb_notificacao.tipo_aviso'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */

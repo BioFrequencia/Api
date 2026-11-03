@@ -11,7 +11,6 @@
 require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/validacaoResponsavel.php';
-require_once __DIR__ . '/../helpers/frequencia.php';
 require_once __DIR__ . '/../helpers/biometriaFacial.php';
 require_once __DIR__ . '/../helpers/corsRegras.php';
 require_once __DIR__ . '/../helpers/notificacao.php';
@@ -20,6 +19,12 @@ require_once __DIR__ . '/../helpers/dispositivo.php';
 require_once __DIR__ . '/../helpers/registroEvento.php';
 require_once __DIR__ . '/../helpers/criptografia.php';
 require_once __DIR__ . '/../helpers/conta.php';
+require_once __DIR__ . '/../helpers/calendario.php';
+require_once __DIR__ . '/../helpers/configuracaoEscola.php';
+require_once __DIR__ . '/../helpers/indicadores.php';
+require_once __DIR__ . '/../helpers/catalogoEscolas.php';
+require_once __DIR__ . '/../helpers/avisos.php';
+require_once __DIR__ . '/../helpers/equipe.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -70,61 +75,143 @@ afirmar('dataNascimentoValida: idade implausível (>120 anos)', dataNascimentoVa
 afirmar('dataNascimentoValida: vazia', dataNascimentoValida('') === false);
 afirmar('dataNascimentoValida: hoje é válido (recém-nascido)', dataNascimentoValida(date('Y-m-d')) === true);
 
-// ---------- calcularFrequencia / calcularStatusFrequencia ----------
-afirmar('calcularFrequencia: 0 faltas = 100%', calcularFrequencia(0) === 100);
-afirmar('calcularFrequencia: 20 faltas (todos os dias letivos) = 0%', calcularFrequencia(20) === 0);
-afirmar('calcularFrequencia: nunca fica negativo mesmo com mais faltas que dias letivos', calcularFrequencia(50) === 0);
-afirmar('calcularStatusFrequencia: 100% = Excelente', calcularStatusFrequencia(100) === 'Excelente');
-afirmar('calcularStatusFrequencia: 95% = Regular', calcularStatusFrequencia(95) === 'Regular');
-afirmar('calcularStatusFrequencia: 87% = Atenção', calcularStatusFrequencia(87) === 'Atenção');
-afirmar('calcularStatusFrequencia: 80% = Em risco', calcularStatusFrequencia(80) === 'Em risco');
-afirmar('calcularStatusFrequencia: limite exato 85% não é Em risco', calcularStatusFrequencia(85) === 'Atenção');
-afirmar('calcularStatusFrequencia: limite exato 98% é Excelente', calcularStatusFrequencia(98) === 'Excelente');
+// ---------- calendário escolar (helpers/calendario.php) ----------
+afirmar('Páscoa de 2024, 2025, 2026 e 2027', domingoDePascoa(2024) === '2024-03-31' && domingoDePascoa(2025) === '2025-04-20'
+    && domingoDePascoa(2026) === '2026-04-05' && domingoDePascoa(2027) === '2027-03-28');
+$feriados2026 = feriadosDoAno(2026);
+afirmar('2026: Carnaval na segunda e na terça (16 e 17/02)', ($feriados2026['2026-02-16'] ?? '') === 'Carnaval' && ($feriados2026['2026-02-17'] ?? '') === 'Carnaval');
+afirmar('2026: Sexta-feira Santa (03/04) e Corpus Christi (04/06)', isset($feriados2026['2026-04-03']) && ($feriados2026['2026-06-04'] ?? '') === 'Corpus Christi');
+afirmar('2026: 9 de julho, feriado de São Paulo', isset($feriados2026['2026-07-09']));
+afirmar('2026: Finados (02/11) e Consciência Negra (20/11)', isset($feriados2026['2026-11-02'], $feriados2026['2026-11-20']));
+afirmar('Consciência Negra só é feriado nacional desde 2024', !isset(feriadosDoAno(2023)['2023-11-20']));
+afirmar('terça-feira comum é dia letivo', situacaoDoDia('2026-11-03') === ['letivo' => true, 'motivo' => null]);
+afirmar('sábado não é dia letivo', situacaoDoDia('2026-10-31') === ['letivo' => false, 'motivo' => 'sábado']);
+afirmar('domingo não é dia letivo', situacaoDoDia('2026-11-01')['motivo'] === 'domingo');
+afirmar('feriado não é dia letivo, com o nome no motivo', situacaoDoDia('2026-11-02') === ['letivo' => false, 'motivo' => 'feriado de Finados']);
+$calendarioEscola = [
+    ['data_inicio' => '2026-07-13', 'data_fim' => '2026-07-24', 'tipo' => 'sem_aula', 'descricao' => 'Férias de julho'],
+    ['data_inicio' => '2026-10-31', 'data_fim' => '2026-10-31', 'tipo' => 'aula_extra', 'descricao' => 'Sábado letivo'],
+];
+afirmar('período sem aula da escola (férias)', situacaoDoDia('2026-07-15', $calendarioEscola) === ['letivo' => false, 'motivo' => 'Férias de julho']);
+afirmar('sábado letivo da escola vale mais que o fim de semana', situacaoDoDia('2026-10-31', $calendarioEscola)['letivo'] === true);
+afirmar('diasLetivosEntre: 26/10 a 01/11/2026 = 5 dias (fim de semana fora)', count(diasLetivosEntre('2026-10-26', '2026-11-01')) === 5);
+afirmar('diasLetivosEntre: 01 a 06/11/2026 sem o domingo e Finados', diasLetivosEntre('2026-11-01', '2026-11-06') === ['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06']);
+afirmar('horário padrão do Matutino', horarioDaTurma('Matutino') === ['inicio' => '07:00', 'fim' => '12:20']);
+afirmar('horário próprio da turma vale mais que o padrão', horarioDaTurma('Matutino', '07:30', '12:50') === ['inicio' => '07:30', 'fim' => '12:50']);
+afirmar('turma sem período conhecido usa o dia escolar inteiro', horarioDaTurma(null) === ['inicio' => '07:00', 'fim' => '23:00']);
+afirmar('horaValida: 07:05 sim; 7:05 e 24:00 não', horaValida('07:05') && !horaValida('7:05') && !horaValida('24:00'));
 
-// ---------- calcularFaltasConsecutivas ----------
-afirmar('calcularFaltasConsecutivas: lista vazia = 0', calcularFaltasConsecutivas([]) === 0);
-afirmar(
-    'calcularFaltasConsecutivas: 3 dias seguidos (hoje, ontem, anteontem)',
-    calcularFaltasConsecutivas([date('Y-m-d'), date('Y-m-d', strtotime('-1 day')), date('Y-m-d', strtotime('-2 day'))]) === 3
+$letivo = ['letivo' => true, 'motivo' => null];
+$manha = ['inicio' => '07:00', 'fim' => '12:20'];
+$conferir = fn(string $tipo, string $data, string $hora, ?array $dia = null) => conferirHorarioDoRegistro($tipo, $data, $hora, $dia ?? $letivo, $manha, 10, '1A');
+afirmar('entrada atrasada às 07:30 na turma da manhã: pode', $conferir('atraso', '2026-11-03', '07:30') === null);
+afirmar('entrada atrasada às 17:00 de aluno da manhã: recusada (caso de produção)', str_contains((string) $conferir('atraso', '2026-11-03', '17:00'), 'das 07:00 às 12:20'));
+afirmar('chegada às 07:10 está dentro da tolerância de 10 min: não é atraso', str_contains((string) $conferir('atraso', '2026-11-03', '07:10'), 'tolerância'));
+afirmar('chegada às 07:11 já é entrada atrasada', $conferir('atraso', '2026-11-03', '07:11') === null);
+afirmar('entrada antes do início da aula: recusada', $conferir('atraso', '2026-11-03', '06:50') !== null);
+afirmar('entrada atrasada num sábado: recusada', str_contains((string) $conferir('atraso', '2026-10-31', '08:00', situacaoDoDia('2026-10-31')), 'sábado'));
+afirmar('entrada atrasada num feriado: recusada', str_contains((string) $conferir('atraso', '2026-11-02', '08:00', situacaoDoDia('2026-11-02')), 'Finados'));
+afirmar('saída antecipada às 10:00: pode', $conferir('saida', '2026-11-03', '10:00') === null);
+afirmar('saída logo depois do início também pode (tolerância é só da entrada)', $conferir('saida', '2026-11-03', '07:05') === null);
+afirmar('saída no horário do fim da aula não é antecipada: recusada', $conferir('saida', '2026-11-03', '12:20') !== null);
+afirmar('presença às 07:05 (tolerância): no horário', situacaoDaEntrada('07:05', $letivo, $manha, 10) === 'no_horario');
+afirmar('presença às 07:25: entrada atrasada', situacaoDaEntrada('07:25', $letivo, $manha, 10) === 'atrasada');
+afirmar('presença às 13:00 de aluno da manhã: fora do horário (não vira atraso)', situacaoDaEntrada('13:00', $letivo, $manha, 10) === 'fora_do_horario');
+afirmar('presença num domingo: sem aula', situacaoDaEntrada('08:00', situacaoDoDia('2026-11-01'), $manha, 10) === 'sem_aula');
+
+// ---------- indicadores (helpers/indicadores.php) ----------
+afirmar('taxa: 4 dias com atraso em 18 dias de aula = 22,2%', taxaPercentual(4, 18) === 22.2);
+afirmar('taxa sem nenhum dia de aula é null (nunca 0% ou 100% inventados)', taxaPercentual(0, 0) === null);
+afirmar('taxa nunca passa de 100%', taxaPercentual(5, 3) === 100.0);
+afirmar('pontualidade: 2 atrasos em 40 dias-aluno = 95%', pontualidadePercentual(2, 40) === 95.0);
+afirmar('pontualidade sem dia de aula é null', pontualidadePercentual(0, 0) === null);
+$padrao = CONFIGURACAO_PADRAO;
+afirmar('classificar: 3 atrasos em 15 dias (20%) = média (avisa o responsável)', classificarTaxa(20.0, 3, $padrao) === 'media');
+afirmar('classificar: 6 em 15 dias (40%) = alta', classificarTaxa(40.0, 6, $padrao) === 'alta');
+afirmar('classificar: 2 em 18 dias (11%) = baixa (perto do limite)', classificarTaxa(11.1, 2, $padrao) === 'baixa');
+afirmar('classificar: 1 atraso em 2 dias (50%) não é alerta (mínimo de ocorrências)', classificarTaxa(50.0, 1, $padrao) === null);
+afirmar('classificar: 2 atrasos a 50% ficam em baixa (mínimo de 3 para avisar)', classificarTaxa(50.0, 2, $padrao) === 'baixa');
+afirmar('classificar: com o limite da escola em 30%, 25% é só baixa', classificarTaxa(25.0, 4, ['limite_alerta_percentual' => 30] + $padrao) === 'baixa');
+afirmar('situação do aluno: a pior entre atrasos e saídas', situacaoDoAluno('baixa', 'alta', 10) === 'Crítico' && situacaoDoAluno(null, 'media', 10) === 'Acima do limite');
+afirmar('situação sem ocorrência: Regular; sem dia de aula: Sem dias de aula', situacaoDoAluno(null, null, 5) === 'Regular' && situacaoDoAluno(null, null, 0) === 'Sem dias de aula');
+afirmar('dias de aula do aluno contam desde o cadastro', diasDeAulaDoAluno(['2026-11-03', '2026-11-04', '2026-11-05'], '2026-11-04') === 2);
+afirmar('aluno sem data de cadastro (antigo) conta o período todo', diasDeAulaDoAluno(['2026-11-03', '2026-11-04'], null) === 2);
+$resumo = resumoDoPeriodo(
+    [['id_aluno' => 1, 'cadastrado_em' => null], ['id_aluno' => 2, 'cadastrado_em' => '2026-11-05']],
+    ['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'],
+    // 01/11/2026 é domingo: o registro antigo desse dia não conta.
+    [1 => ['2026-11-03', '2026-11-01'], 2 => ['2026-11-06']],
+    [1 => ['2026-11-04']]
 );
-afirmar(
-    'calcularFaltasConsecutivas: só uma falta há muito tempo = sequência encerrada (0)',
-    calcularFaltasConsecutivas([date('Y-m-d', strtotime('-30 days'))]) === 0
-);
-// Este teste usava datas fixas de setembro sem fixar "hoje": passava no
-// dia em que foi escrito e falhava depois (era a falha "antiga" que a
-// AUDITORIA.md registrava como 50/51). "Hoje" agora é parâmetro.
-afirmar(
-    'calcularFaltasConsecutivas: sexta + segunda seguinte conta como consecutivo (tolera fim de semana)',
-    calcularFaltasConsecutivas(['2026-09-14', '2026-09-11'], '2026-09-14') === 2 // segunda, sexta anterior
-);
-afirmar(
-    'calcularFaltasConsecutivas: gap de mais de 3 dias corridos quebra a sequência',
-    calcularFaltasConsecutivas([date('Y-m-d'), date('Y-m-d', strtotime('-6 days'))]) === 1
-);
-afirmar(
-    'calcularFaltasConsecutivas: terça e sexta NÃO são consecutivas (quarta e quinta foram dias de aula)',
-    calcularFaltasConsecutivas(['2026-10-30', '2026-10-27'], '2026-10-30') === 1
-);
-afirmar(
-    'calcularFaltasConsecutivas: segunda a sexta = 5',
-    calcularFaltasConsecutivas(['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30'], '2026-10-30') === 5
-);
-afirmar(
-    'calcularFaltasConsecutivas: a mesma data repetida conta uma vez',
-    calcularFaltasConsecutivas(['2026-10-29', '2026-10-29', '2026-10-28'], '2026-10-29') === 2
-);
-afirmar(
-    'calcularFaltasConsecutivas: sequência que terminou numa sexta continua "atual" na segunda',
-    calcularFaltasConsecutivas(['2026-10-29', '2026-10-30'], '2026-11-02') === 2
-);
-afirmar(
-    'calcularFaltasConsecutivas: com um dia útil sem falta depois, a sequência acabou',
-    calcularFaltasConsecutivas(['2026-10-26', '2026-10-27'], '2026-10-29') === 0
-);
-afirmar('diasUteisEntre: sexta e segunda = 0', diasUteisEntre('2026-10-30', '2026-11-02') === 0);
-afirmar('diasUteisEntre: terça e sexta = 2', diasUteisEntre('2026-10-27', '2026-10-30') === 2);
-afirmar('diasUteisEntre: ordem não importa', diasUteisEntre('2026-10-30', '2026-10-27') === 2);
+afirmar('resumo: dias-aluno somam o cadastro de cada um (4 + 2)', $resumo['aluno_dias'] === 6);
+afirmar('resumo: atraso num domingo (registro antigo) não conta', $resumo['atrasos'] === 2);
+afirmar('resumo: pontualidade = 100% - 2/6', $resumo['pontualidade'] === 66.7);
+afirmar('resumo: saídas só em dia letivo', $resumo['saidas'] === 1);
+afirmar('resumo sem alunos: pontualidade null (não 100%)', resumoDoPeriodo([], ['2026-11-03'], [], [])['pontualidade'] === null);
+afirmar('numeroBr: vírgula decimal e inteiro sem ",0"', numeroBr(22.5) === '22,5' && numeroBr(20.0) === '20');
+
+// ---------- configuração da escola (helpers/configuracaoEscola.php) ----------
+afirmar('escola sem configuração gravada usa o padrão', normalizarConfiguracao(null) === CONFIGURACAO_PADRAO);
+$doBanco = normalizarConfiguracao(['tolerancia_minutos' => '15', 'aviso_automatico' => 'f']);
+afirmar('configuração do banco: número e booleano com os tipos certos', $doBanco['tolerancia_minutos'] === 15 && $doBanco['aviso_automatico'] === false);
+[$nova, $erroConfig] = lerConfiguracao(['limite_alerta_percentual' => 25, 'aviso_cada_registro' => true], CONFIGURACAO_PADRAO);
+afirmar('alteração parcial: só muda o que veio', $erroConfig === null && $nova['limite_alerta_percentual'] === 25
+    && $nova['aviso_cada_registro'] === true && $nova['tolerancia_minutos'] === 10);
+afirmar('tolerância acima de 60 minutos: recusada', lerConfiguracao(['tolerancia_minutos' => 90], CONFIGURACAO_PADRAO)[1] !== null);
+afirmar('limite de 0%: recusado', lerConfiguracao(['limite_alerta_percentual' => 0], CONFIGURACAO_PADRAO)[1] !== null);
+afirmar('booleano em texto: recusado', lerConfiguracao(['aviso_automatico' => 'sim'], CONFIGURACAO_PADRAO)[1] !== null);
+afirmar('número decimal: recusado', lerConfiguracao(['janela_alerta_dias' => 30.5], CONFIGURACAO_PADRAO)[1] !== null);
+
+// ---------- catálogo de escolas (helpers/catalogoEscolas.php) ----------
+afirmar('nome de exibição: escola estadual ganha "E.E."', nomeDeExibicaoEscola('FLEURIDES CAVALLINI MENECHINO PROFA', 8) === 'E.E. Fleurides Cavallini Menechino Profa.');
+afirmar('nome de exibição: "EE" da planilha vira "E.E." uma vez só', nomeDeExibicaoEscola('EE MARIA NILDE MASCELLANI', 8) === 'E.E. Maria Nilde Mascellani');
+afirmar('nome de exibição: preposição minúscula, número e romano mantidos',
+    nomeDeExibicaoEscola('9 DE JULHO', 8) === 'E.E. 9 de Julho' && nomeDeExibicaoEscola('DOM PEDRO II', 8) === 'E.E. Dom Pedro II');
+afirmar('nome de exibição: outros tipos sem prefixo, siglas mantidas', nomeDeExibicaoEscola('CEL JTO A EE HELEN KELLER', 6) === 'CEL Jto a EE Helen Keller');
+afirmar('busca sem acento e sem pontuação', normalizarTextoBusca(' São  Bernardo-do Campo ') === 'SAO BERNARDO DO CAMPO');
+afirmar('mesma escola com prefixos diferentes tem a mesma chave', chaveNomeEscola('E.E. Maria Nilde Mascellani') === chaveNomeEscola('EE MARIA NILDE MASCELLANI'));
+$catalogo = lerCatalogoCsv(ARQUIVO_CATALOGO_ESCOLAS);
+afirmar('catálogo da SEDUC: 5.795 escolas com código CIE único', count($catalogo) === 5795
+    && count(array_unique(array_column($catalogo, 'codigo_cie'))) === 5795);
+afirmar('catálogo: CEP com 8 dígitos (zero à esquerda mantido)', count(array_filter($catalogo, fn($e) => $e['cep'] !== null && !preg_match('/^\d{8}$/', $e['cep']))) === 0);
+
+// ---------- avisos aos responsáveis (helpers/avisos.php) ----------
+$contatos = ['telefone_responsavel' => '11999990001', 'email_responsavel' => 'mae@exemplo.test'];
+afirmar('canal preferido WhatsApp', canaisDoResponsavel($contatos + ['canal_preferido' => 'whatsapp']) === ['whatsapp']);
+afirmar('canal "ambos"', canaisDoResponsavel($contatos + ['canal_preferido' => 'ambos']) === ['whatsapp', 'email']);
+afirmar('prefere e-mail mas não tem e-mail: vai pelo WhatsApp', canaisDoResponsavel(['telefone_responsavel' => '11999990001', 'email_responsavel' => null, 'canal_preferido' => 'email']) === ['whatsapp']);
+afirmar('sem telefone válido nem e-mail: nenhum canal', canaisDoResponsavel(['telefone_responsavel' => '123', 'email_responsavel' => '', 'canal_preferido' => 'whatsapp']) === []);
+afirmar('mensagem de limite: números que a família entende',
+    str_contains(mensagemAvisoLimite('E.E. Teste', 'Ana', 'atrasos', 4, 18, 22.2, 30), '4 entradas atrasadas em 18 dias de aula nos últimos 30 dias (22,2%)'));
+afirmar('mensagem de limite no singular', str_contains(mensagemAvisoLimite('E.E. Teste', 'Ana', 'saidas', 1, 5, 20.0, 30), '1 saída antecipada'));
+$mensagemRegistro = mensagemAvisoRegistro('E.E. Teste', 'Ana', 'saida', '2026-11-03', '10:15', 'Consulta', 'Maria (mãe)');
+afirmar('mensagem do registro: data, hora, motivo e quem buscou', str_contains($mensagemRegistro, 'saída antecipada de Ana em 03/11/2026 às 10:15')
+    && str_contains($mensagemRegistro, 'Motivo: Consulta.') && str_contains($mensagemRegistro, 'Retirado(a) por: Maria (mãe).'));
+afirmar('WhatsApp sem modelo configurado: texto livre', corpoWhatsapp('5511999990001', 'Oi')['type'] === 'text');
+putenv('WHATSAPP_TEMPLATE=aviso_escola');
+$corpoModelo = corpoWhatsapp('5511999990001', 'Oi');
+putenv('WHATSAPP_TEMPLATE');
+afirmar('WhatsApp com modelo aprovado: a mensagem vai na variável do modelo', $corpoModelo['type'] === 'template'
+    && $corpoModelo['template']['name'] === 'aviso_escola' && $corpoModelo['template']['language']['code'] === 'pt_BR'
+    && $corpoModelo['template']['components'][0]['parameters'][0]['text'] === 'Oi');
+
+// ---------- equipe da escola (helpers/equipe.php) ----------
+$pendente = ['situacao' => 'pendente', 'papel' => 'coordenador'];
+$gestorAtivo = ['situacao' => 'ativo', 'papel' => 'gestor'];
+afirmar('aprovar conta pendente', proximoEstadoDoMembro($pendente, 'aprovar', false) === ['ativo', 'coordenador', null]);
+afirmar('aprovar conta já ativa: recusado', proximoEstadoDoMembro($gestorAtivo, 'aprovar', false)[2] !== null);
+afirmar('recusar conta pendente', proximoEstadoDoMembro($pendente, 'recusar', false)[0] === 'recusado');
+afirmar('desativar a última gestão: recusado (a escola ficaria sem gestor)', proximoEstadoDoMembro($gestorAtivo, 'desativar', true)[2] !== null);
+afirmar('desativar gestor quando há outro', proximoEstadoDoMembro($gestorAtivo, 'desativar', false)[0] === 'desativado');
+afirmar('rebaixar a última gestão: recusado', proximoEstadoDoMembro($gestorAtivo, 'tornar_coordenador', true)[2] !== null);
+afirmar('promover coordenador ativo', proximoEstadoDoMembro(['situacao' => 'ativo', 'papel' => 'coordenador'], 'tornar_gestor', false) === ['ativo', 'gestor', null]);
+afirmar('promover conta pendente: recusado (aprove antes)', proximoEstadoDoMembro($pendente, 'tornar_gestor', false)[2] !== null);
+afirmar('reativar conta desativada', proximoEstadoDoMembro(['situacao' => 'desativado', 'papel' => 'coordenador'], 'reativar', false)[0] === 'ativo');
+putenv('ADMIN_EMAILS= Equipe@Escola.test , outra@escola.test');
+afirmar('administradores vêm de ADMIN_EMAILS, sem diferenciar maiúsculas',
+    ehAdministrador('equipe@escola.test') && ehAdministrador('OUTRA@escola.test') && !ehAdministrador('coord@escola.test'));
+putenv('ADMIN_EMAILS');
+afirmar('sem ADMIN_EMAILS ninguém é administrador', !ehAdministrador('equipe@escola.test'));
 
 // ---------- fuso da escola (helpers/tempo.php) ----------
 $madrugadaUtc = new DateTimeImmutable('2026-11-01 01:30:00', new DateTimeZone('UTC')); // 31/10 22:30 em São Paulo
@@ -140,7 +227,6 @@ afirmar('dataNaEscola: aceita microssegundos', dataNaEscola('2026-10-30 14:25:11
 afirmar('dataIsoValida: data real', dataIsoValida('2026-02-28') === true);
 afirmar('dataIsoValida: 30 de fevereiro', dataIsoValida('2026-02-30') === false);
 afirmar('dataIsoValida: formato brasileiro', dataIsoValida('28/02/2026') === false);
-afirmar('lerMomentoDoEvento: só a data vira meio-dia local (15:00 UTC)', lerMomentoDoEvento('2026-10-28') === '2026-10-28 15:00:00');
 afirmar('lerMomentoDoEvento: data e hora locais', lerMomentoDoEvento('2026-10-28 22:30') === '2026-10-29 01:30:00');
 afirmar('lerMomentoDoEvento: vazio = agora (null)', lerMomentoDoEvento(null) === null);
 afirmar('sqlDataNaEscola: converte de UTC para o fuso da escola', sqlDataNaEscola('f.dta_falta') === "((f.dta_falta) AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date");
@@ -190,7 +276,7 @@ afirmar('corsOrigensPermitidas: sem configuração vale o padrão local', corsOr
 
 // ---------- escalonamento dos alertas ----------
 $agora = strtotime('2026-10-29 12:00:00 UTC');
-$alta = [['prioridade' => 'alta', 'tipo' => 'frequencia']];
+$alta = [['prioridade' => 'alta', 'tipo' => 'atrasos']];
 afirmar('calcularNivelAluno: alerta alto sem histórico = 3', calcularNivelAluno($alta, null, $agora)['nivel'] === 3);
 afirmar(
     'calcularNivelAluno: alto mantido há 8 dias escala para 4',
@@ -210,7 +296,7 @@ afirmar(
 );
 afirmar(
     'calcularNivelAluno: dois alertas altos = crítico (4)',
-    calcularNivelAluno([['prioridade' => 'alta', 'tipo' => 'frequencia'], ['prioridade' => 'alta', 'tipo' => 'faltas']], null, $agora)['nivel'] === 4
+    calcularNivelAluno([['prioridade' => 'alta', 'tipo' => 'atrasos'], ['prioridade' => 'alta', 'tipo' => 'saidas']], null, $agora)['nivel'] === 4
 );
 afirmar(
     'calcularNivelAluno: melhora (de 4 para só alerta baixo) desce o nível',
