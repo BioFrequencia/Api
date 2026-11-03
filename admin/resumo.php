@@ -29,7 +29,9 @@ try {
         "escolas_em_uso"        => $numero("SELECT COUNT(DISTINCT id_escola) FROM tb_coordenacao WHERE situacao = 'ativo'"),
         "escolas_fora_catalogo" => $numero("SELECT COUNT(*) FROM tb_escola WHERE codigo_cie IS NULL"),
         "contas_ativas"         => $numero("SELECT COUNT(*) FROM tb_coordenacao WHERE situacao = 'ativo'"),
-        "contas_pendentes"      => $numero("SELECT COUNT(*) FROM tb_coordenacao WHERE situacao = 'pendente'"),
+        // Pendentes que já confirmaram o e-mail: as que a equipe já pode aprovar.
+        "contas_pendentes"      => $numero("SELECT COUNT(*) FROM tb_coordenacao WHERE situacao = 'pendente' AND email_verificado_em IS NOT NULL"),
+        "contas_sem_email"      => $numero("SELECT COUNT(*) FROM tb_coordenacao WHERE situacao = 'pendente' AND email_verificado_em IS NULL"),
         "alunos"                => $numero("SELECT COUNT(*) FROM tb_aluno"),
         "turmas"                => $numero("SELECT COUNT(*) FROM tb_sala"),
         "atrasos_mes"           => $numero("SELECT COUNT(*) FROM tb_atraso WHERE dta_atraso >= ?", [$inicioMes]),

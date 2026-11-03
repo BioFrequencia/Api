@@ -25,6 +25,7 @@ require_once __DIR__ . '/../helpers/indicadores.php';
 require_once __DIR__ . '/../helpers/catalogoEscolas.php';
 require_once __DIR__ . '/../helpers/avisos.php';
 require_once __DIR__ . '/../helpers/equipe.php';
+require_once __DIR__ . '/../helpers/emailConta.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -196,9 +197,19 @@ afirmar('WhatsApp com modelo aprovado: a mensagem vai na variável do modelo', $
     && $corpoModelo['template']['components'][0]['parameters'][0]['text'] === 'Oi');
 
 // ---------- equipe da escola (helpers/equipe.php) ----------
-$pendente = ['situacao' => 'pendente', 'papel' => 'coordenador'];
-$gestorAtivo = ['situacao' => 'ativo', 'papel' => 'gestor'];
-afirmar('aprovar conta pendente', proximoEstadoDoMembro($pendente, 'aprovar', false) === ['ativo', 'coordenador', null]);
+// Toda conta nova é pendente; a aprovação exige o e-mail confirmado (migração 009).
+$pendente = ['situacao' => 'pendente', 'papel' => 'coordenador', 'email_verificado' => true];
+$gestorAtivo = ['situacao' => 'ativo', 'papel' => 'gestor', 'email_verificado' => true];
+afirmar('aprovar conta pendente numa escola com gestão: coordenador', proximoEstadoDoMembro($pendente, 'aprovar', false) === ['ativo', 'coordenador', null]);
+afirmar('aprovar a primeira conta de uma escola sem gestão: vira gestor', proximoEstadoDoMembro($pendente, 'aprovar', true) === ['ativo', 'gestor', null]);
+afirmar('conta pedida como gestora, aprovada quando a escola já tem gestão: coordenador',
+    proximoEstadoDoMembro(['papel' => 'gestor'] + $pendente, 'aprovar', false) === ['ativo', 'coordenador', null]);
+$semEmail = ['email_verificado' => false] + $pendente;
+afirmar('aprovar conta que não confirmou o e-mail: recusado, sem mudar nada', proximoEstadoDoMembro($semEmail, 'aprovar', true) === ['pendente', 'coordenador',
+    proximoEstadoDoMembro($semEmail, 'aprovar', true)[2]] && str_contains((string) proximoEstadoDoMembro($semEmail, 'aprovar', true)[2], 'e-mail'));
+afirmar('recusar conta que não confirmou o e-mail: pode (limpa a fila)', proximoEstadoDoMembro($semEmail, 'recusar', false)[0] === 'recusado');
+afirmar('reativar conta recusada sem e-mail confirmado: recusado',
+    proximoEstadoDoMembro(['situacao' => 'recusado', 'papel' => 'coordenador', 'email_verificado' => false], 'reativar', false)[2] !== null);
 afirmar('aprovar conta já ativa: recusado', proximoEstadoDoMembro($gestorAtivo, 'aprovar', false)[2] !== null);
 afirmar('recusar conta pendente', proximoEstadoDoMembro($pendente, 'recusar', false)[0] === 'recusado');
 afirmar('desativar a última gestão: recusado (a escola ficaria sem gestor)', proximoEstadoDoMembro($gestorAtivo, 'desativar', true)[2] !== null);
@@ -206,7 +217,53 @@ afirmar('desativar gestor quando há outro', proximoEstadoDoMembro($gestorAtivo,
 afirmar('rebaixar a última gestão: recusado', proximoEstadoDoMembro($gestorAtivo, 'tornar_coordenador', true)[2] !== null);
 afirmar('promover coordenador ativo', proximoEstadoDoMembro(['situacao' => 'ativo', 'papel' => 'coordenador'], 'tornar_gestor', false) === ['ativo', 'gestor', null]);
 afirmar('promover conta pendente: recusado (aprove antes)', proximoEstadoDoMembro($pendente, 'tornar_gestor', false)[2] !== null);
-afirmar('reativar conta desativada', proximoEstadoDoMembro(['situacao' => 'desativado', 'papel' => 'coordenador'], 'reativar', false)[0] === 'ativo');
+afirmar('reativar conta desativada', proximoEstadoDoMembro(['situacao' => 'desativado', 'papel' => 'coordenador', 'email_verificado' => true], 'reativar', false)[0] === 'ativo');
+
+// ---------- confirmação de e-mail (helpers/emailConta.php) ----------
+afirmar('link: pode pedir o primeiro', esperaParaNovoLink(0, null) === null);
+afirmar('link: menos de um minuto depois do anterior, espera', str_contains((string) esperaParaNovoLink(1, 30.0), 'minuto'));
+afirmar('link: depois de um minuto, pode', esperaParaNovoLink(1, 61.0) === null);
+afirmar('link: no máximo cinco por dia', esperaParaNovoLink(LINKS_POR_DIA, 7200.0) !== null && esperaParaNovoLink(LINKS_POR_DIA - 1, 7200.0) === null);
+$codigo = str_repeat('a1', 32);
+afirmar('código do link: 64 caracteres hexadecimais', codigoDeConfirmacaoValido($codigo) && !codigoDeConfirmacaoValido(substr($codigo, 1))
+    && !codigoDeConfirmacaoValido(str_repeat('g', 64)) && !codigoDeConfirmacaoValido(null) && !codigoDeConfirmacaoValido(['x']));
+afirmar('o banco guarda só o hash do código', hashDoCodigo($codigo) === hash('sha256', $codigo) && hashDoCodigo($codigo) !== $codigo);
+
+putenv('SITE_URL=https://biofrequencia.example/');
+afirmar('endereço do site: SITE_URL, sem a barra no fim', urlDoSite() === 'https://biofrequencia.example'
+    && linkDeConfirmacao($codigo) === "https://biofrequencia.example/confirmar-email?codigo=$codigo");
+putenv('SITE_URL');
+putenv('CORS_ORIGENS=https://site-git-*-equipe.vercel.app,https://site.example');
+afirmar('sem SITE_URL: a primeira origem fixa do CORS (pula as com *)', urlDoSite() === 'https://site.example');
+putenv('CORS_ORIGENS');
+
+[$assunto, $texto, $html] = mensagemDeConfirmacao('Ana  Lima <b>', 'E.E. Helen Keller', 'https://site.example/confirmar-email?codigo=x', 'cadastro');
+afirmar('e-mail de confirmação: assunto, primeiro nome, escola e link', str_contains($assunto, 'Confirme o seu e-mail') && str_contains($texto, 'Olá, Ana!')
+    && str_contains($texto, 'E.E. Helen Keller') && str_contains($texto, 'https://site.example/confirmar-email?codigo=x'));
+afirmar('e-mail de confirmação: o HTML escapa o que veio da pessoa', str_contains($html, 'href="https://site.example/confirmar-email?codigo=x"')
+    && !str_contains(mensagemDeConfirmacao('<script>', 'E.E. <i>', 'https://x', 'cadastro')[2], '<script>')
+    && !str_contains(mensagemDeConfirmacao('<script>', 'E.E. <i>', 'https://x', 'cadastro')[2], '<i>'));
+afirmar('e-mail de troca: fala do e-mail novo e diz o que acontece se não foi a pessoa',
+    str_contains(mensagemDeConfirmacao('Ana', 'E.E. X', 'https://x', 'troca_email')[0], 'novo e-mail')
+    && str_contains(mensagemDeConfirmacao('Ana', 'E.E. X', 'https://x', 'troca_email')[1], 'continua o mesmo'));
+
+afirmar('cadastro com o e-mail enviado: diz para onde foi e quem aprova (equipe)',
+    str_contains(mensagemDoCadastro('ana@escola.test', 'E.E. X', 'equipe', ENVIO_OK), 'ana@escola.test')
+    && str_contains(mensagemDoCadastro('ana@escola.test', 'E.E. X', 'equipe', ENVIO_OK), 'equipe do BioFrequência'));
+afirmar('cadastro numa escola com gestão: quem aprova é a gestão', str_contains(mensagemDoCadastro('ana@escola.test', 'E.E. X', 'gestao', ENVIO_OK), 'gestão da E.E. X'));
+afirmar('cadastro sem provedor de e-mail: não finge que enviou', str_contains(mensagemDoCadastro('a@b.test', 'E.E. X', 'equipe', ENVIO_SEM_PROVEDOR), 'não foi configurado')
+    && !str_contains(mensagemDoCadastro('a@b.test', 'E.E. X', 'equipe', ENVIO_SEM_PROVEDOR), 'Enviamos'));
+afirmar('cadastro com falha no envio: sugere reenviar', str_contains(mensagemDoCadastro('a@b.test', 'E.E. X', 'equipe', ENVIO_FALHOU), 'Reenviar'));
+
+[$assunto, $texto] = mensagemDePedidoDeAcesso(['nome_coordenacao' => 'Bia Souza', 'email_coordenacao' => 'bia@escola.test',
+    'nome_escola' => 'E.E. X', 'municipio' => 'SANTOS'], 'https://site.example/admin?aba=contas');
+afirmar('pedido de acesso para quem aprova: quem, de que escola e onde aprovar', str_contains($assunto, 'Bia Souza') && str_contains($texto, 'bia@escola.test')
+    && str_contains($texto, 'E.E. X (SANTOS)') && str_contains($texto, 'https://site.example/admin?aba=contas'));
+$aprovada = mensagemDoResultadoDoPedido('Bia Souza', 'E.E. X', 'aprovar', 'https://site.example');
+afirmar('conta aprovada: e-mail com o link do login', $aprovada !== null && str_contains($aprovada[0], 'aprovada') && str_contains($aprovada[1], 'https://site.example/login'));
+$recusada = mensagemDoResultadoDoPedido('Bia Souza', 'E.E. X', 'recusar', 'https://site.example');
+afirmar('conta recusada: e-mail avisando', $recusada !== null && str_contains($recusada[0], 'não foi aprovado'));
+afirmar('outras ações não mandam e-mail', mensagemDoResultadoDoPedido('Bia', 'E.E. X', 'desativar', 'https://x') === null);
 putenv('ADMIN_EMAILS= Equipe@Escola.test , outra@escola.test');
 afirmar('administradores vêm de ADMIN_EMAILS, sem diferenciar maiúsculas',
     ehAdministrador('equipe@escola.test') && ehAdministrador('OUTRA@escola.test') && !ehAdministrador('coord@escola.test'));

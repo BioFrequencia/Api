@@ -48,14 +48,21 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    SEDUC, `database/dados/escolas-sp.csv`), importado pelo
    `docker-entrypoint.sh` sempre que a versão do arquivo muda
    (`database/importarEscolas.php`, nunca apaga nada). O cadastro
-   (`user/addCoord.php`) exige o código `CADASTRO_CODIGO_ACESSO` e a escola
-   escolhida na busca do catálogo (`escola/buscar.php`, pública), ou cria
-   uma escola fora dele. Cada conta é de uma escola: a primeira vira
-   **gestora** (`tb_coordenacao.papel`); as próximas ficam **pendentes**
-   (`situacao`) até a gestão aprovar em Escola > Equipe
-   (`escola/atualizarMembro.php`). Conta pendente, recusada ou desativada
-   não entra, e quem é desativado perde as sessões na hora. A escola
-   nunca fica sem gestão ativa (`helpers/equipe.php`).
+   (`user/addCoord.php`) é aberto (o código de acesso saiu na migração
+   009): a escola vem da busca do catálogo (`escola/buscar.php`, pública)
+   ou é criada fora dele. Toda conta nova nasce **pendente** (`situacao`)
+   e com o e-mail por confirmar: a pessoa abre o link que chega por e-mail
+   (`conta/confirmarEmail.php`; só o hash do código fica em
+   `tb_verificacao_email`, e o link vale 24 horas) e, depois, quem aprova
+   libera o acesso - a gestão da escola em Escola > Equipe
+   (`escola/atualizarMembro.php`) ou, se a escola ainda não tem gestão, a
+   equipe do sistema em `/admin` (`admin/atualizarConta.php`). Quem aprova
+   recebe o pedido por e-mail, e quem pediu recebe a decisão. A primeira
+   conta aprovada de uma escola vira **gestora** (`tb_coordenacao.papel`).
+   Sem e-mail confirmado ou sem aprovação não se entra; conta recusada ou
+   desativada também não, e quem é desativado perde as sessões na hora.
+   Trocar o e-mail de login também passa pelo link. A escola nunca fica
+   sem gestão ativa (`helpers/equipe.php`).
 4. **Entradas atrasadas e saídas antecipadas** (`helpers/registroEvento.php`,
    `user/marcarAtraso.php`, `user/marcarSaida.php`): o objetivo do
    sistema. Só num dia de aula e dentro do horário da turma
@@ -127,8 +134,9 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    (Escola > Avisos, só a gestão).
 8. **Minha conta** (migração 007): `conta/perfil.php` e
    `conta/atualizarPerfil.php` (nome e e-mail - trocar o e-mail, que é o
-   login, pede a senha atual; o nome da escola só muda pela gestão e só
-   fora do catálogo), `conta/alterarSenha.php`
+   login, pede a senha atual e só vale depois do link mandado ao endereço
+   novo; o nome da escola só muda pela gestão e só fora do catálogo),
+   `conta/alterarSenha.php`
    (confere a atual e desconecta os outros aparelhos) e as preferências
    da conta (`conta/preferencias.php`, `conta/salvarPreferencias.php`:
    tema e sons), guardadas no banco para valer em qualquer computador.
@@ -162,8 +170,10 @@ calendário da escola.
 | Render (API) | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Supabase pelo connection pooler (porta 6543) |
 | Render | `JWT_SECRET_KEY` | Gerada pelo Render (render.yaml) |
 | Render | `CORS_ORIGENS` | Origens do site, separadas por vírgula; aceita `*` num trecho do host para os previews da Vercel |
-| Render | `CADASTRO_CODIGO_ACESSO` | Código para criar contas de coordenação |
-| Render | `SMTP_REMETENTE`, `WHATSAPP_API_URL`, `WHATSAPP_TOKEN` | Opcionais, envio automático no nível máximo de alerta |
+| Render | `SITE_URL` | Endereço do site nos links dos e-mails |
+| Render | `ADMIN_EMAILS` | E-mails da equipe do sistema (área `/admin`; aprova as contas novas) |
+| Render | `EMAIL_API_URL`, `EMAIL_API_TOKEN`, `EMAIL_REMETENTE` | E-mail (formato do Resend): confirmação de cadastro, aprovações e avisos aos responsáveis |
+| Render | `WHATSAPP_API_URL`, `WHATSAPP_TOKEN`, `SMTP_REMETENTE` | Opcionais: WhatsApp dos avisos e e-mail por `mail()` |
 | Vercel (site) | `NEXT_PUBLIC_API_URL` | URL pública da API. Sem ela, o login mostra erro de configuração (nunca usa localhost) |
 | Vercel | `NEXT_PUBLIC_APK_URL` | Opcional: link do APK na página de downloads |
 | GitHub (App) | variável `API_URL` | Endereço embutido no APK do CI (padrão: `https://biofrequencia-api.onrender.com/`) |

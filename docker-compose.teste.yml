@@ -1,10 +1,10 @@
 # Testes de integração com Docker, iguais aos do CI (.github/workflows/
 # api.yml, job "docker"): banco PostgreSQL 17 descartável (some ao parar),
 # migrações aplicadas duas vezes, a imagem real da API (Apache +
-# .htaccess) e um provedor de WhatsApp falso. Nenhum serviço externo é
-# chamado e nenhuma mensagem real é enviada.
+# .htaccess) e provedores falsos de WhatsApp e e-mail. Nenhum serviço
+# externo é chamado e nenhuma mensagem real é enviada.
 #
-#   docker compose -f docker-compose.teste.yml up -d --build --wait api whatsapp-falso
+#   docker compose -f docker-compose.teste.yml up -d --build --wait api provedores-falsos
 #   docker compose -f docker-compose.teste.yml run --rm testes
 #   docker compose -f docker-compose.teste.yml down -v
 #
@@ -23,11 +23,16 @@ x-variaveis: &variaveis
   DB_PASSWORD: postgres-teste
   JWT_SECRET_KEY: chave-apenas-para-testes-nao-usar-em-producao
   CORS_ORIGENS: https://site-teste.example,https://site-git-*-equipe-teste.vercel.app
-  CADASTRO_CODIGO_ACESSO: codigo-de-acesso-somente-teste
+  SITE_URL: https://site-teste.example
   BIOMETRIA_CHAVE: 7465737465732d736f6d656e74652d6e616f2d757361722d656d2d70726f6421
-  WHATSAPP_API_URL: http://whatsapp-falso:8099/
+  WHATSAPP_API_URL: http://provedores-falsos:8099/
   WHATSAPP_TOKEN: token-somente-teste
-  ADMIN_EMAILS: admin@escola.test
+  EMAIL_API_URL: http://provedores-falsos:8099/email
+  EMAIL_API_TOKEN: token-email-somente-teste
+  EMAIL_REMETENTE: BioFrequência <nao-responda@biofrequencia.test>
+  # equipe2 não tem conta: os testes conferem que ninguém vira equipe do
+  # sistema trocando o próprio e-mail para ele sem confirmar.
+  ADMIN_EMAILS: admin@escola.test,equipe2@escola.test
 
 services:
   db:
@@ -73,15 +78,16 @@ services:
       timeout: 5s
       retries: 40
 
-  whatsapp-falso:
+  provedores-falsos:
     build: .
     image: biofrequencia-api:teste
-    entrypoint: ["php", "-S", "0.0.0.0:8099", "/tests/mock_whatsapp.php"]
+    entrypoint: ["php", "-S", "0.0.0.0:8099", "/tests/mock_provedores.php"]
     # A imagem traz o health check da API (porta 8080); este serviço é outro.
     healthcheck:
       disable: true
     environment:
       WHATSAPP_LOG: /logs/whatsapp.log
+      EMAIL_LOG: /logs/email.log
     volumes:
       - ./tests:/tests:ro
       - logs:/logs
@@ -94,13 +100,14 @@ services:
       disable: true
     depends_on:
       api: { condition: service_healthy }
-      whatsapp-falso: { condition: service_started }
+      provedores-falsos: { condition: service_started }
     environment:
       <<: *variaveis
       API_URL: http://api:8080
       BANCO_DE_TESTE: "1"
       APACHE: "1"
       WHATSAPP_LOG: /logs/whatsapp.log
+      EMAIL_LOG: /logs/email.log
     volumes:
       - ./tests:/tests:ro
       - logs:/logs

@@ -2,7 +2,7 @@
 /**
  * Testes de integração da API: requisições HTTP de verdade contra a API
  * rodando (php -S no CI, ou o container Docker com Apache) e um
- * PostgreSQL de teste com o schema de produção (migrações 001-008).
+ * PostgreSQL de teste com o schema de produção (migrações 001-009).
  * Cada resultado gravado é conferido direto no banco, não só pela
  * resposta.
  *
@@ -19,9 +19,10 @@
  *   API_URL                 http://127.0.0.1:8080
  *   DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD
  *   JWT_SECRET_KEY          para montar um token expirado
- *   CADASTRO_CODIGO_ACESSO  código de cadastro configurado na API
+ *   SITE_URL                endereço do site nos links dos e-mails
  *   CORS_ORIGENS            a primeira origem é usada nos testes de CORS
- *   WHATSAPP_LOG            arquivo onde tests/mock_whatsapp.php registra os envios
+ *   WHATSAPP_LOG, EMAIL_LOG arquivos onde tests/mock_provedores.php registra os envios
+ *   EMAIL_API_TOKEN         token que a API manda ao provedor de e-mail (falso)
  *   APACHE=1                liga os testes que dependem do .htaccess
  *
  * Rodar: php tests/integracao_test.php
@@ -36,17 +37,18 @@ $api = rtrim(getenv('API_URL') ?: 'http://127.0.0.1:8080', '/');
 $dbHost = getenv('DB_HOST') ?: '127.0.0.1';
 $apache = getenv('APACHE') === '1';
 $jwtSecret = (string) getenv('JWT_SECRET_KEY');
-$codigoCadastro = (string) getenv('CADASTRO_CODIGO_ACESSO');
+$siteUrl = rtrim((string) getenv('SITE_URL'), '/');
 $origens = array_map('trim', explode(',', (string) getenv('CORS_ORIGENS')));
 $origem = $origens[0] ?? '';
 $logWhatsapp = getenv('WHATSAPP_LOG') ?: sys_get_temp_dir() . '/whatsapp.log';
+$logEmail = getenv('EMAIL_LOG') ?: sys_get_temp_dir() . '/email.log';
 
 $bancoLocal = in_array($dbHost, ['127.0.0.1', 'localhost'], true) || preg_match('/^[a-z0-9-]+$/i', $dbHost) === 1;
 if (getenv('BANCO_DE_TESTE') !== '1' || !$bancoLocal) {
     fwrite(STDERR, "Recusado: este teste apaga o banco. Use BANCO_DE_TESTE=1 com um banco local (localhost ou serviço do Docker).\n");
     exit(2);
 }
-foreach (['JWT_SECRET_KEY' => $jwtSecret, 'CADASTRO_CODIGO_ACESSO' => $codigoCadastro, 'CORS_ORIGENS' => $origem] as $nome => $valor) {
+foreach (['JWT_SECRET_KEY' => $jwtSecret, 'SITE_URL' => $siteUrl, 'CORS_ORIGENS' => $origem] as $nome => $valor) {
     if ($valor === '') {
         fwrite(STDERR, "Defina $nome (o mesmo valor configurado na API).\n");
         exit(2);
@@ -228,6 +230,29 @@ function enviosWhatsapp(string $numero): array {
     return array_values(array_filter($linhas, fn($l) => ($l['to'] ?? '') === $numero));
 }
 
+/** E-mails que o provedor falso recebeu para este endereço, na ordem. */
+function emailsPara(string $email): array {
+    global $logEmail;
+    if (!is_file($logEmail)) return [];
+    $linhas = array_filter(array_map(fn($l) => json_decode($l, true), file($logEmail, FILE_IGNORE_NEW_LINES)));
+    return array_values(array_filter($linhas, fn($l) => in_array($email, $l['to'] ?? [], true)));
+}
+
+/** Código do último link de confirmação mandado para o endereço ('' se nenhum). */
+function codigoDoLink(string $email): string {
+    foreach (array_reverse(emailsPara($email)) as $mensagem) {
+        if (preg_match('/confirmar-email\?codigo=([0-9a-f]{64})/', (string) ($mensagem['texto'] ?? ''), $m)) {
+            return $m[1];
+        }
+    }
+    return '';
+}
+
+/** E-mails para o endereço cujo assunto contém o trecho. */
+function emailsComAssunto(string $email, string $trecho): array {
+    return array_values(array_filter(emailsPara($email), fn($m) => str_contains((string) ($m['assunto'] ?? ''), $trecho)));
+}
+
 $hoje = (new DateTimeImmutable('today', $fuso))->format('Y-m-d');
 $ontem = (new DateTimeImmutable('today', $fuso))->modify('-1 day')->format('Y-m-d');
 $inicioMesLocal = (new DateTimeImmutable('first day of this month', $fuso))->format('Y-m-d');
@@ -259,12 +284,14 @@ $pdo->exec("
              tb_notificacao, tb_alerta_nivel, tb_alerta_encerrado, tb_acompanhamento, tb_verificacao_facial,
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
              tb_sala, tb_sessao, tb_preferencia_coordenacao, tb_chamado_suporte, tb_coordenacao,
-             tb_saida_antecipada, tb_aviso_limite, tb_calendario_escola, tb_configuracao_escola, tb_catalogo_escolas
+             tb_saida_antecipada, tb_aviso_limite, tb_calendario_escola, tb_configuracao_escola, tb_catalogo_escolas,
+             tb_verificacao_email
              RESTART IDENTITY CASCADE
 ");
 $pdo->exec("DELETE FROM tb_escola WHERE id_escola <> 1");
 $pdo->exec("UPDATE tb_escola SET codigo_cie = NULL WHERE id_escola = 1");
 @unlink($logWhatsapp);
+@unlink($logEmail);
 $escola2 = (int) valor("INSERT INTO tb_escola (nome_escola) VALUES ('Escola Vizinha') RETURNING id_escola");
 $sala1 = (int) valor("INSERT INTO tb_sala (nome_sala, periodo_sala, id_escola) VALUES ('1A', 'Matutino', 1) RETURNING id_sala");
 $sala1b = (int) valor("INSERT INTO tb_sala (nome_sala, periodo_sala, id_escola) VALUES ('1B', 'Vespertino', 1) RETURNING id_sala");
@@ -302,25 +329,92 @@ if ($apache) {
 }
 
 // ------------------------------------------------------------ cadastro e login
-secao('Cadastro de coordenação e login');
-$cadastrar = fn(string $email, ?string $codigo) => post('user/addCoord.php',
-    ['nome' => 'Coordenação Teste', 'email' => $email, 'senha' => 'Senha@123'] + ($codigo === null ? [] : ['codigo_acesso' => $codigo]));
-$r = $cadastrar('coord1@escola.test', null);
-verificar('cadastro sem código de acesso: 403', $r['status'] === 403, $r['texto']);
-$r = $cadastrar('coord1@escola.test', 'codigo-errado');
-verificar('cadastro com código errado: 403', $r['status'] === 403, $r['texto']);
-$r = $cadastrar('Coord1@Escola.test', $codigoCadastro);
-verificar('cadastro com o código certo: 200', $r['status'] === 200, $r['texto']);
-verificar('email gravado em minúsculas', valor("SELECT email_coordenacao FROM tb_coordenacao ORDER BY id_coordenacao LIMIT 1") === 'coord1@escola.test');
-$r = $cadastrar('COORD1@escola.test', $codigoCadastro);
-verificar('mesmo email com outra caixa: 409', $r['status'] === 409, $r['texto']);
-$r = $cadastrar('coord2@escola.test', $codigoCadastro);
+secao('Cadastro aberto, confirmação do e-mail e aprovação');
+// Sem código de acesso (migração 009): a conta nasce pendente, confirma o
+// e-mail pelo link (lido aqui do provedor falso) e espera quem aprova.
+$cadastrar = fn(string $email, array $extra = []) => post('user/addCoord.php',
+    ['nome' => 'Coordenação Teste', 'email' => $email, 'senha' => 'Senha@123'] + $extra);
+$confirmar = fn(string $email) => post('conta/confirmarEmail.php', ['codigo' => codigoDoLink($email)]);
+$entrarComo = fn(string $email, string $senha = 'Senha@123') => post('user/selectCoord.php', ['email' => $email, 'senha' => $senha]);
+$r = $cadastrar('Coord1@Escola.test');
+verificar('cadastro sem código de acesso: 200, pendente e com o e-mail por confirmar', $r['status'] === 200
+    && ($r['json']['dados']['situacao'] ?? '') === 'pendente' && ($r['json']['dados']['email_verificado'] ?? null) === false
+    && ($r['json']['dados']['email_enviado'] ?? null) === true && ($r['json']['dados']['aprovacao'] ?? '') === 'equipe', $r['texto']);
+verificar('email gravado em minúsculas', valor("SELECT email_coordenacao FROM tb_coordenacao WHERE lower(email_coordenacao) = 'coord1@escola.test'") === 'coord1@escola.test');
+$emails = emailsPara('coord1@escola.test');
+verificar('o link de confirmação sai pelo provedor de e-mail (falso), com o endereço do site', count($emails) === 1
+    && str_contains((string) ($emails[0]['texto'] ?? ''), "$siteUrl/confirmar-email?codigo=") && codigoDoLink('coord1@escola.test') !== ''
+    && ($emails[0]['auth'] ?? '') === 'Bearer ' . getenv('EMAIL_API_TOKEN') && str_contains((string) ($emails[0]['html'] ?? ''), 'Confirmar o e-mail'), $emails);
+verificar('o banco guarda só o hash do código do link', valor("SELECT token_hash FROM tb_verificacao_email ORDER BY id_verificacao DESC LIMIT 1")
+    === hash('sha256', codigoDoLink('coord1@escola.test')));
+$r = $cadastrar('COORD1@escola.test', ['codigo_acesso' => 'qualquer']);
+verificar('mesmo email (com outra caixa) aguardando a confirmação: 409', $r['status'] === 409, $r['texto']);
+$r = $cadastrar('coord2@escola.test');
 verificar('segunda conta: 200', $r['status'] === 200, $r['texto']);
 $idCoord1 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord1@escola.test'");
 $escolaDaConta = (int) valor("SELECT id_escola FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]);
 verificar('conta nova ganha escola própria (antes caía na escola 1 e via os alunos das outras)', $escolaDaConta !== 1
     && valor("SELECT nome_escola FROM tb_escola WHERE id_escola = ?", [$escolaDaConta]) === 'Escola de Coordenação Teste');
 $idCoord2 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord2@escola.test'");
+
+$r = $entrarComo('coord1@escola.test', 'errada');
+verificar('e-mail por confirmar e senha errada: 401 (não revela nada)', $r['status'] === 401, $r['texto']);
+$r = $entrarComo('coord1@escola.test');
+verificar('e-mail por confirmar não entra: 403 "email_nao_confirmado"', $r['status'] === 403
+    && ($r['json']['dados']['situacao'] ?? '') === 'email_nao_confirmado', $r['texto']);
+$r = post('conta/reenviarConfirmacao.php', ['email' => 'coord1@escola.test', 'senha' => 'errada']);
+verificar('reenviar o link com a senha errada: 401', $r['status'] === 401, $r['texto']);
+$r = post('conta/reenviarConfirmacao.php', ['email' => 'coord1@escola.test', 'senha' => 'Senha@123']);
+verificar('reenviar logo depois do primeiro link: 429 (espera um minuto)', $r['status'] === 429, $r['texto']);
+$codigoAntigo = codigoDoLink('coord1@escola.test');
+sql("UPDATE tb_verificacao_email SET criado_em = criado_em - INTERVAL '2 minutes'");
+$r = post('conta/reenviarConfirmacao.php', ['email' => 'coord1@escola.test', 'senha' => 'Senha@123']);
+verificar('reenviar depois de um minuto: 200 e um link novo', $r['status'] === 200 && count(emailsPara('coord1@escola.test')) === 2
+    && codigoDoLink('coord1@escola.test') !== $codigoAntigo, $r['texto']);
+$r = post('conta/confirmarEmail.php', ['codigo' => $codigoAntigo]);
+verificar('o link antigo vence quando sai um novo: 410', $r['status'] === 410, $r['texto']);
+$r = post('conta/confirmarEmail.php', ['codigo' => 'abc']);
+verificar('código malformado: 422', $r['status'] === 422, $r['texto']);
+$r = post('conta/confirmarEmail.php', ['codigo' => str_repeat('0', 64)]);
+verificar('código que não existe: 404', $r['status'] === 404, $r['texto']);
+$r = $confirmar('coord1@escola.test');
+verificar('o link confirma o e-mail; a conta segue pendente, à espera da equipe do sistema', $r['status'] === 200
+    && ($r['json']['dados']['situacao'] ?? '') === 'pendente' && ($r['json']['dados']['aprovacao'] ?? '') === 'equipe'
+    && (int) valor("SELECT count(*) FROM tb_coordenacao WHERE id_coordenacao = ? AND email_verificado_em IS NOT NULL", [$idCoord1]) === 1, $r['texto']);
+$r = $confirmar('coord1@escola.test');
+verificar('abrir o mesmo link de novo (recarregar a página): 200, "já estava confirmado"', $r['status'] === 200
+    && str_contains($r['json']['mensagem'] ?? '', 'já estava'), $r['texto']);
+$r = $entrarComo('coord1@escola.test');
+verificar('confirmado, mas ainda sem aprovação: 403 dizendo que a equipe do sistema aprova', $r['status'] === 403
+    && ($r['json']['dados']['situacao'] ?? '') === 'pendente' && str_contains($r['json']['mensagem'] ?? '', 'equipe do BioFrequência'), $r['texto']);
+$confirmar('coord2@escola.test');
+
+// A equipe do sistema (ADMIN_EMAILS) se cadastra como qualquer pessoa e,
+// ao confirmar o e-mail, já entra: é ela quem aprova os outros.
+$r = $cadastrar('admin@escola.test', ['nome_escola' => 'Equipe BioFrequência']);
+verificar('conta da equipe do sistema: cadastro como qualquer outra', $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'pendente', $r['texto']);
+$r = $entrarComo('admin@escola.test');
+verificar('...que também não entra antes de confirmar o e-mail (saber o endereço não basta)', $r['status'] === 403
+    && ($r['json']['dados']['situacao'] ?? '') === 'email_nao_confirmado', $r['texto']);
+$r = $confirmar('admin@escola.test');
+verificar('ao confirmar o e-mail, a equipe do sistema fica ativa', $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
+$r = $entrarComo('admin@escola.test');
+$tAdmin = $r['json']['dados']['token'] ?? '';
+verificar('login informa que a conta é da equipe do sistema', ($r['json']['dados']['administrador'] ?? null) === true, $r['texto']);
+$pedidos = emailsComAssunto('admin@escola.test', 'aguardando aprovação');
+verificar('quem confirma o e-mail numa escola sem gestão avisa a equipe, com o link da tela de contas', count($pedidos) === 2
+    && str_contains((string) ($pedidos[0]['texto'] ?? ''), "$siteUrl/admin?aba=contas") && str_contains((string) ($pedidos[0]['texto'] ?? ''), 'coord1@escola.test'), $pedidos);
+$r = post('admin/resumo.php', [], $tAdmin);
+verificar('o contador da equipe soma só os pendentes que já confirmaram o e-mail', ($r['json']['dados']['contas_pendentes'] ?? -1) === 2
+    && ($r['json']['dados']['contas_sem_email'] ?? -1) === 0, $r['texto']);
+foreach (['coord1' => $idCoord1, 'coord2' => $idCoord2] as $quem => $id) {
+    $r = post('admin/atualizarConta.php', ['id_coordenacao' => $id, 'acao' => 'aprovar'], $tAdmin);
+    verificar("a equipe aprova $quem, que vira a gestão da escola nova", $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'ativo'
+        && ($r['json']['dados']['papel'] ?? '') === 'gestor', $r['texto']);
+}
+$aprovacao = emailsComAssunto('coord1@escola.test', 'aprovada');
+verificar('quem é aprovado recebe um e-mail com o link do login', count($aprovacao) === 1
+    && str_contains((string) ($aprovacao[0]['texto'] ?? ''), "$siteUrl/login"), $aprovacao);
 // Daqui em diante a coordenação 1 usa a escola 1 (a que já existe em
 // produção, com as turmas criadas no preparo) e a 2, a escola vizinha.
 sql("UPDATE tb_coordenacao SET id_escola = 1 WHERE id_coordenacao = ?", [$idCoord1]);
@@ -539,23 +633,31 @@ post('responsavel/atualizarResponsavel.php', ['id_responsavel' => $respA, 'canal
 secao('Avisos aos responsáveis a cada registro');
 $r = post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => true], $t1);
 verificar('a gestão liga o aviso a cada registro', $r['status'] === 200 && ($r['json']['dados']['aviso_cada_registro'] ?? null) === true, $r['texto']);
-// Carla tem a responsável A (WhatsApp, provedor falso: entrega) e a E
-// (só email, sem provedor de email configurado: fica na fila).
+// Carla tem a responsável A (WhatsApp) e a E (só e-mail): os dois avisos
+// saem pelos provedores falsos.
 $respE = (int) ($addResp($t1, $carla, gerarCpf(5), '(11) 97777-0055', 'Feminino', ['email_responsavel' => 'resp.e@exemplo.test', 'canal_preferido' => 'email'])['json']['dados']['id_responsavel'] ?? 0);
 $r = $saida($carla, "$d1 10:30", $t1, ['motivo_saida' => 'Dentista', 'retirado_por' => 'Tia Rosa']);
 verificar('saída com os avisos ligados: a resposta diz o que saiu', $r['status'] === 200
-    && ($r['json']['dados']['avisos']['registro']['enviados'] ?? null) === 1 && ($r['json']['dados']['avisos']['registro']['na_fila'] ?? null) === 1, $r['texto']);
+    && ($r['json']['dados']['avisos']['registro']['enviados'] ?? null) === 2 && ($r['json']['dados']['avisos']['registro']['na_fila'] ?? null) === 0, $r['texto']);
 $enviosCarla = array_values(array_filter(enviosWhatsapp('5511999990001'), fn($e) => str_contains((string) ($e['texto'] ?? ''), 'Carla Teste')));
 verificar('o provedor recebeu a mensagem com data, hora e quem buscou', count($enviosCarla) === 1
     && str_contains($enviosCarla[0]['texto'], '10:30') && str_contains($enviosCarla[0]['texto'], 'Tia Rosa'), $enviosCarla);
-verificar('WhatsApp registrado como "Enviado" e email como "Pendente" (sem provedor)',
+$emailsResp = array_values(array_filter(emailsPara('resp.e@exemplo.test'), fn($m) => str_contains((string) ($m['texto'] ?? ''), 'Carla Teste')));
+verificar('o provedor de e-mail recebeu o aviso, com quem buscou', count($emailsResp) === 1
+    && str_contains((string) $emailsResp[0]['texto'], 'Tia Rosa'), $emailsResp);
+verificar('WhatsApp e e-mail registrados como "Enviado"',
     valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'whatsapp' AND tipo_aviso = 'registro_saida'", [$carla]) === 'Enviado'
-    && valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'email' AND tipo_aviso = 'registro_saida'", [$carla]) === 'Pendente');
+    && valor("SELECT status_notificacao FROM tb_notificacao WHERE id_aluno = ? AND canal = 'email' AND tipo_aviso = 'registro_saida'", [$carla]) === 'Enviado');
+// Sem provedor (escola que não configurou nenhum), a mensagem fica na fila,
+// "Pendente", e a coordenação manda e marca à mão. Com os dois provedores
+// falsos ligados aqui, ela entra direto no banco.
+$idNotificacao = (int) valor("
+    INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso)
+    VALUES (?, ?, 'Aviso na fila manual', 'Pendente', 'email', 'registro_saida') RETURNING id_notificacao", [$carla, $respE]);
 $r = post('notificacao/listarNotificacoes.php', ['status' => 'pendente'], $t1);
-$idNotificacao = (int) ($r['json']['dados']['notificacoes'][0]['id_notificacao'] ?? 0);
-verificar('listar pendentes: a mensagem por email aparece como "pendente"', $idNotificacao > 0
-    && ($r['json']['dados']['notificacoes'][0]['status_notificacao'] ?? '') === 'pendente'
-    && ($r['json']['dados']['notificacoes'][0]['tipo_aviso'] ?? '') === 'registro_saida', $r['texto']);
+$naFila = array_values(array_filter($r['json']['dados']['notificacoes'] ?? [], fn($n) => $n['id_notificacao'] === $idNotificacao));
+verificar('listar pendentes: a mensagem da fila aparece como "pendente"', count($naFila) === 1
+    && ($naFila[0]['status_notificacao'] ?? '') === 'pendente' && ($naFila[0]['tipo_aviso'] ?? '') === 'registro_saida', $r['texto']);
 $r = post('notificacao/listarNotificacoes.php', [], $t2);
 verificar('outra escola não vê as notificações', ($r['json']['dados']['total_registros'] ?? -1) === 0, $r['texto']);
 $r = post('notificacao/marcarEnviada.php', ['id_notificacao' => $idNotificacao], $t2);
@@ -655,13 +757,8 @@ verificar('o limite da escola vem junto (para o gráfico e o texto)', ($painel['
 // ------------------------------------------------------------ catálogo e equipe
 secao('Catálogo de escolas, cadastro pela escola e aprovação da gestão');
 $novaConta = fn(string $email, array $escola) => post('user/addCoord.php',
-    ['nome' => 'Coordenação ' . strtok($email, '@'), 'email' => $email, 'senha' => 'Senha@123', 'codigo_acesso' => $codigoCadastro] + $escola);
-// A equipe do sistema é quem está em ADMIN_EMAILS (variável de ambiente).
-$r = $novaConta('admin@escola.test', ['nome_escola' => 'Equipe BioFrequência']);
-verificar('conta da equipe do sistema criada', $r['status'] === 200, $r['texto']);
-$r = post('user/selectCoord.php', ['email' => 'admin@escola.test', 'senha' => 'Senha@123']);
-$tAdmin = $r['json']['dados']['token'] ?? '';
-verificar('login informa que a conta é da equipe do sistema', ($r['json']['dados']['administrador'] ?? null) === true, $r['texto']);
+    ['nome' => 'Coordenação ' . strtok($email, '@'), 'email' => $email, 'senha' => 'Senha@123'] + $escola);
+$idDe = fn(string $email) => (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = ?", [$email]);
 $r = post('user/selectCoord.php', ['email' => 'coord1@escola.test', 'senha' => 'Senha@123']);
 verificar('login de conta comum: papel na escola e sem acesso de equipe', ($r['json']['dados']['papel'] ?? '') === 'gestor'
     && ($r['json']['dados']['administrador'] ?? null) === false, $r['texto']);
@@ -693,11 +790,30 @@ $idHelen = (int) ($escolaHelen['id_escola'] ?? 0);
 verificar('escola do catálogo ainda sem ninguém, com o nome de exibição', $idHelen > 0 && ($escolaHelen['tem_gestao'] ?? null) === false
     && ($escolaHelen['nome_escola'] ?? '') === 'E.E. Helen Keller', $escolaHelen);
 $r = $novaConta('coord3@escola.test', ['id_escola' => $idHelen]);
-verificar('primeira conta da escola: ativa e gestora', $r['status'] === 200 && ($r['json']['dados']['papel'] ?? '') === 'gestor'
-    && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
+verificar('primeira conta da escola: pendente, e quem aprova é a equipe do sistema', $r['status'] === 200
+    && ($r['json']['dados']['situacao'] ?? '') === 'pendente' && ($r['json']['dados']['aprovacao'] ?? '') === 'equipe', $r['texto']);
+$idCoord3 = $idDe('coord3@escola.test');
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord3, 'acao' => 'aprovar'], $tAdmin);
+verificar('nem a equipe aprova quem ainda não confirmou o e-mail: 409', $r['status'] === 409 && str_contains($r['json']['mensagem'] ?? '', 'e-mail'), $r['texto']);
+$confirmar('coord3@escola.test');
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord3, 'acao' => 'aprovar'], $tAdmin);
+verificar('e-mail confirmado: a equipe aprova e a primeira conta da escola vira a gestão', $r['status'] === 200
+    && ($r['json']['dados']['papel'] ?? '') === 'gestor' && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
 $r = $novaConta('coord4@escola.test', ['id_escola' => $idHelen]);
 verificar('segunda conta da mesma escola: pendente, aguardando a gestão', ($r['json']['dados']['situacao'] ?? '') === 'pendente'
-    && ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
+    && ($r['json']['dados']['papel'] ?? '') === 'coordenador' && ($r['json']['dados']['aprovacao'] ?? '') === 'gestao', $r['texto']);
+$idCoord4 = $idDe('coord4@escola.test');
+$t3 = $entrarComo('coord3@escola.test')['json']['dados']['token'] ?? '';
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' => 'aprovar'], $t3);
+verificar('a gestão também não aprova antes da confirmação do e-mail: 409', $r['status'] === 409, $r['texto']);
+$r = post('escola/equipe.php', [], $t3);
+verificar('quem não confirmou o e-mail aparece na equipe, mas não conta no menu', ($r['json']['dados']['pendentes'] ?? -1) === 0
+    && in_array('coord4@escola.test', array_column($r['json']['dados']['equipe'] ?? [], 'email_coordenacao'), true), $r['texto']);
+$r = $confirmar('coord4@escola.test');
+verificar('confirmado o e-mail numa escola com gestão: quem aprova é a gestão', ($r['json']['dados']['aprovacao'] ?? '') === 'gestao', $r['texto']);
+$pedido = emailsComAssunto('coord3@escola.test', 'aguardando aprovação');
+verificar('...e a gestão recebe o pedido por e-mail, com o link da equipe da escola', count($pedido) === 1
+    && str_contains((string) ($pedido[0]['texto'] ?? ''), "$siteUrl/escola?aba=equipe") && str_contains((string) ($pedido[0]['texto'] ?? ''), 'coord4@escola.test'), $pedido);
 $r = $novaConta('coord5@escola.test', ['id_escola' => 999999]);
 verificar('escola que não existe no catálogo: 404', $r['status'] === 404, $r['texto']);
 $r = $novaConta('coord5@escola.test', ['id_escola' => $escola2]);
@@ -705,7 +821,7 @@ verificar('escola criada à mão não pode ser escolhida no cadastro: 404', $r['
 $r = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'errada']);
 verificar('conta pendente com senha errada: 401 (não revela a situação)', $r['status'] === 401, $r['texto']);
 $r = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123']);
-verificar('conta pendente não entra: 403 explicando a aprovação', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'aprovação'), $r['texto']);
+verificar('conta pendente não entra: 403 explicando que a gestão aprova', $r['status'] === 403 && str_contains($r['json']['mensagem'] ?? '', 'aprovação da gestão'), $r['texto']);
 $r = post('user/selectCoord.php', ['email' => 'coord3@escola.test', 'senha' => 'Senha@123', 'cliente' => 'app']);
 $t3 = $r['json']['dados']['token'] ?? '';
 $payload = json_decode((string) base64_decode(strtr(explode('.', $t3 . '..')[1], '-_', '+/')), true) ?? [];
@@ -739,8 +855,24 @@ $r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' =
 verificar('a gestão reativa a conta', $r['status'] === 200, $r['texto']);
 $t4 = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123'])['json']['dados']['token'] ?? '';
 $r = $novaConta('coord6@escola.test', ['nome_escola' => 'Escola Municipal Seis', 'municipio' => 'Santo André']);
-verificar('escola fora do catálogo: a conta cria a escola (com o município) e vira gestora', ($r['json']['dados']['papel'] ?? '') === 'gestor'
+verificar('escola fora do catálogo: a conta cria a escola (com o município)', ($r['json']['dados']['aprovacao'] ?? '') === 'equipe'
     && valor("SELECT municipio FROM tb_escola WHERE nome_escola = 'Escola Municipal Seis'") === 'SANTO ANDRÉ', $r['texto']);
+$confirmar('coord6@escola.test');
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idDe('coord6@escola.test'), 'acao' => 'aprovar'], $tAdmin);
+verificar('...e, aprovada pela equipe, vira a gestão dela', ($r['json']['dados']['papel'] ?? '') === 'gestor', $r['texto']);
+
+// Um e-mail digitado errado (ou de outra pessoa) não fica preso: com o
+// link vencido e nunca confirmado, o cadastro novo toma o lugar.
+$novaConta('digitado@escola.test', ['id_escola' => $idHelen]);
+$idDigitado = $idDe('digitado@escola.test');
+$r = $novaConta('digitado@escola.test', ['nome_escola' => 'Escola Certa']);
+verificar('e-mail cadastrado com o link ainda valendo: 409', $r['status'] === 409, $r['texto']);
+sql("UPDATE tb_verificacao_email SET expira_em = NOW() - INTERVAL '1 minute' WHERE id_coordenacao = ?", [$idDigitado]);
+$r = $novaConta('digitado@escola.test', ['nome_escola' => 'Escola Certa']);
+verificar('link vencido e nunca confirmado: o cadastro novo toma o lugar do antigo, sem duplicar', $r['status'] === 200
+    && (int) valor("SELECT count(*) FROM tb_coordenacao WHERE email_coordenacao = 'digitado@escola.test'") === 1
+    && $idDe('digitado@escola.test') === $idDigitado && ($r['json']['dados']['nome_escola'] ?? '') === 'Escola Certa'
+    && count(emailsPara('digitado@escola.test')) === 2, $r['texto']);
 
 // ------------------------------------------------------------ configuração da escola
 secao('Escola: horários das turmas, tolerância, calendário e aviso por limite');
@@ -870,7 +1002,8 @@ $r = post('admin/escolas.php', ['busca' => 'adamantina'], $tAdmin);
 verificar('a equipe busca no catálogo inteiro', ($r['json']['dados']['total_registros'] ?? 0) >= 2
     && count(array_filter($r['json']['dados']['escolas'] ?? [], fn($e) => $e['municipio'] !== 'ADAMANTINA' && $e['diretoria_ensino'] !== 'ADAMANTINA')) === 0, $r['texto']);
 $novaConta('coord7@escola.test', ['id_escola' => $idHelen]);
-$idCoord7 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord7@escola.test'");
+$confirmar('coord7@escola.test');
+$idCoord7 = $idDe('coord7@escola.test');
 $r = post('admin/contas.php', ['situacao' => 'pendente'], $tAdmin);
 verificar('a equipe vê as contas pendentes de todas as escolas', in_array('coord7@escola.test', array_column($r['json']['dados']['contas'] ?? [], 'email_coordenacao'), true), $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'aprovar'], $tAdmin);
@@ -880,6 +1013,21 @@ verificar('a equipe move a conta para a escola certa (como coordenadora: lá já
     && ($r['json']['dados']['id_escola'] ?? 0) === 1 && ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord3, 'acao' => 'desativar'], $tAdmin);
 verificar('nem a equipe deixa uma escola sem gestão ativa: 409', $r['status'] === 409, $r['texto']);
+// Sem provedor de e-mail o link não chega: a equipe confirma no lugar da
+// pessoa, depois de falar com ela.
+$novaConta('coord8@escola.test', ['nome_escola' => 'Escola Oito']);
+$idCoord8 = $idDe('coord8@escola.test');
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $t1);
+verificar('conta comum não confirma o e-mail de ninguém: 404', $r['status'] === 404, $r['texto']);
+$r = post('admin/contas.php', ['situacao' => 'pendente', 'busca' => 'coord8'], $tAdmin);
+verificar('a lista de contas mostra quem ainda não confirmou o e-mail', ($r['json']['dados']['contas'][0]['email_verificado'] ?? null) === false, $r['texto']);
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $tAdmin);
+verificar('a equipe confirma o e-mail no lugar da pessoa', $r['status'] === 200 && ($r['json']['dados']['email_verificado'] ?? null) === true, $r['texto']);
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $tAdmin);
+verificar('confirmar de novo: 409', $r['status'] === 409, $r['texto']);
+$r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'recusar'], $tAdmin);
+verificar('a equipe recusa um pedido, e a pessoa fica sabendo por e-mail', $r['status'] === 200
+    && count(emailsComAssunto('coord8@escola.test', 'não foi aprovado')) === 1, $r['texto']);
 post('suporte/abrirChamado.php', ['categoria' => 'duvida', 'assunto' => 'Horário da turma', 'mensagem' => 'Como mudo o horário da turma do noturno?'], $t3);
 $r = post('admin/chamados.php', ['status' => 'aberto'], $tAdmin);
 $idChamado = (int) ($r['json']['dados']['chamados'][0]['id_chamado'] ?? 0);
@@ -1217,9 +1365,22 @@ $r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'nova@escola.test
 verificar('perfil: trocar o e-mail com a senha errada: 403', $r['status'] === 403, $r['texto']);
 $r = post('conta/atualizarPerfil.php', ['email_coordenacao' => 'COORD2@escola.test', 'senha_atual' => 'Senha@123'] + $perfil, $tConta);
 verificar('perfil: e-mail de outra conta: 409', $r['status'] === 409, $r['texto']);
+sql("UPDATE tb_verificacao_email SET criado_em = criado_em - INTERVAL '2 minutes' WHERE id_coordenacao = ?", [$idCoord1]);
 $r = post('conta/atualizarPerfil.php', ['email_coordenacao' => ' Nova@Escola.test ', 'senha_atual' => 'Senha@123'] + $perfil, $tConta);
-verificar('perfil: e-mail trocado, gravado em minúsculas', $r['status'] === 200 && valor("SELECT email_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'nova@escola.test', $r['texto']);
+verificar('perfil: trocar o e-mail manda o link para o endereço novo; o login continua o atual até confirmar', $r['status'] === 200
+    && ($r['json']['dados']['email_pendente'] ?? '') === 'nova@escola.test' && codigoDoLink('nova@escola.test') !== ''
+    && valor("SELECT email_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'coord1@escola.test', $r['texto']);
+verificar('...o e-mail novo ainda não entra', $entrar('nova@escola.test', 'Senha@123')['status'] === 401);
+$r = post('conta/confirmarEmail.php', ['codigo' => codigoDoLink('nova@escola.test')]);
+verificar('perfil: o link confirma a troca, gravada em minúsculas', $r['status'] === 200 && ($r['json']['dados']['finalidade'] ?? '') === 'troca_email'
+    && valor("SELECT email_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]) === 'nova@escola.test', $r['texto']);
 verificar('...e o login passa a ser pelo e-mail novo', $entrar('nova@escola.test', 'Senha@123')['status'] === 200);
+// Antes da migração 009, trocar o próprio e-mail para um de ADMIN_EMAILS
+// sem conta (equipe2) dava acesso à área da equipe na hora.
+sql("UPDATE tb_verificacao_email SET criado_em = criado_em - INTERVAL '2 minutes' WHERE id_coordenacao = ?", [$idCoord1]);
+$r = post('conta/atualizarPerfil.php', ['nome_coordenacao' => 'Coordenação Central', 'email_coordenacao' => 'equipe2@escola.test', 'senha_atual' => 'Senha@123'], $tConta);
+verificar('trocar o e-mail para um da equipe do sistema: sai só o link, e a conta não vira equipe', $r['status'] === 200
+    && post('admin/resumo.php', [], $tConta)['status'] === 404 && $entrar('equipe2@escola.test', 'Senha@123')['status'] === 401, $r['texto']);
 $r = post('conta/atualizarPerfil.php', ['nome_escola' => str_repeat('x', 151)] + $perfil, $tConta);
 verificar('perfil: nome de escola longo demais: 422', $r['status'] === 422, $r['texto']);
 

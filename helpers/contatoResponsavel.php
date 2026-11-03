@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/notificacao.php';
+require_once __DIR__ . '/provedores.php';
 
 /**
  * Envio de mensagens aos responsáveis: WhatsApp e e-mail. Quem decide
@@ -15,11 +16,7 @@ require_once __DIR__ . '/notificacao.php';
  *                                      a mensagem - fora da janela de 24 h
  *                                      a Meta só entrega modelos
  *   WHATSAPP_TEMPLATE_IDIOMA           idioma do modelo (padrão pt_BR)
- *   EMAIL_API_URL, EMAIL_API_TOKEN,    e-mail por HTTP, no formato da API
- *   EMAIL_REMETENTE                    do Resend (o Render não tem servidor
- *                                      de e-mail: mail() não entrega lá)
- *   SMTP_REMETENTE                     alternativa: mail() do PHP, para um
- *                                      servidor com sendmail
+ *   EMAIL_*, SMTP_REMETENTE            e-mail (ver helpers/provedores.php)
  *
  * Sem provedor - o estado de um TCC sem conta paga - a mensagem fica na
  * fila de Notificações com um link wa.me pronto, que a coordenação clica e
@@ -30,10 +27,6 @@ require_once __DIR__ . '/notificacao.php';
  * 'Pendente' (sem provedor: fila manual) ou 'Erro' (havia provedor e o
  * envio falhou - fica registrado para a coordenação ver e tratar).
  */
-
-const ENVIO_OK = 'enviado';
-const ENVIO_SEM_PROVEDOR = 'sem_provedor';
-const ENVIO_FALHOU = 'falhou';
 
 function telefoneParaWhatsapp(?string $telefone): ?string {
     if ($telefone === null) {
@@ -51,58 +44,8 @@ function linkWhatsapp(string $telefoneInternacional, string $mensagem): string {
     return 'https://wa.me/' . $telefoneInternacional . '?text=' . rawurlencode($mensagem);
 }
 
-/** POST JSON autenticado no provedor; só o código HTTP vai para o log. */
-function postarNoProvedor(string $url, string $token, array $corpo, string $canal): string {
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => 10,
-        CURLOPT_HTTPHEADER => [
-            'Authorization: Bearer ' . $token,
-            'Content-Type: application/json',
-        ],
-        CURLOPT_POSTFIELDS => json_encode($corpo),
-    ]);
-    $resposta = curl_exec($ch);
-    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    if ($resposta === false || $status < 200 || $status >= 300) {
-        // A resposta do provedor pode ecoar o destino e o texto da
-        // mensagem: não vai para o log.
-        error_log("[BioFrequenciaApi] Falha ao enviar $canal: HTTP $status");
-        return ENVIO_FALHOU;
-    }
-    return ENVIO_OK;
-}
-
 function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem): string {
-    $url = getenv('EMAIL_API_URL');
-    $token = getenv('EMAIL_API_TOKEN');
-    $remetente = getenv('EMAIL_REMETENTE');
-    if ($url && $token && $remetente) {
-        return postarNoProvedor($url, $token, [
-            'from'    => $remetente,
-            'to'      => [$destino],
-            'subject' => $assunto,
-            'text'    => $mensagem,
-        ], 'e-mail');
-    }
-
-    $remetenteSmtp = getenv('SMTP_REMETENTE');
-    if ($remetenteSmtp === false || trim($remetenteSmtp) === '') {
-        return ENVIO_SEM_PROVEDOR; // sem provedor: fica na fila
-    }
-    $cabecalhos = [
-        'From: ' . $remetenteSmtp,
-        'Content-Type: text/plain; charset=UTF-8',
-    ];
-    if (!@mail($destino, $assunto, $mensagem, implode("\r\n", $cabecalhos))) {
-        error_log('[BioFrequenciaApi] Falha ao enviar e-mail ao responsável.');
-        return ENVIO_FALHOU;
-    }
-    return ENVIO_OK;
+    return enviarEmail($destino, $assunto, $mensagem); // sem provedor: fica na fila
 }
 
 /**

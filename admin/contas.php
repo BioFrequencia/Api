@@ -43,12 +43,12 @@ try {
 
     $stmt = $conexao->prepare("
         SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.papel, c.situacao, c.criado_em,
-               e.id_escola, e.nome_escola, e.municipio,
+               c.email_verificado_em IS NOT NULL AS email_verificado, e.id_escola, e.nome_escola, e.municipio,
                (SELECT MAX(s.ultimo_acesso) FROM tb_sessao s WHERE s.id_coordenacao = c.id_coordenacao) AS ultimo_acesso
         FROM tb_coordenacao c
         JOIN tb_escola e ON e.id_escola = c.id_escola
         WHERE $onde
-        ORDER BY (c.situacao = 'pendente') DESC, c.criado_em DESC NULLS LAST, c.id_coordenacao DESC
+        ORDER BY (c.situacao = 'pendente') DESC, (c.email_verificado_em IS NOT NULL) DESC, c.criado_em DESC NULLS LAST, c.id_coordenacao DESC
         LIMIT $porPagina OFFSET " . (($pagina - 1) * $porPagina)
     );
     $stmt->execute($parametros);
@@ -56,6 +56,7 @@ try {
         $c['id_coordenacao'] = (int) $c['id_coordenacao'];
         $c['id_escola'] = (int) $c['id_escola'];
         $c['administrador'] = ehAdministrador($c['email_coordenacao']);
+        $c['email_verificado'] = valorBooleano($c['email_verificado']);
         return $c;
     }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 

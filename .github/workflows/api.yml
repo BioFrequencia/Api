@@ -25,14 +25,19 @@ concurrency:
 # de integração (que precisam saber o que a API espera).
 env:
   CORS_ORIGENS: https://site-teste.example,https://site-git-*-equipe-teste.vercel.app
-  CADASTRO_CODIGO_ACESSO: codigo-de-acesso-somente-ci
+  SITE_URL: https://site-teste.example
   BIOMETRIA_CHAVE: 63692d736f6d656e74652d6e616f2d757361722d656d2d70726f647563616f21
   JWT_SECRET_KEY: chave-apenas-para-ci-nao-usar-em-producao
   WHATSAPP_API_URL: http://127.0.0.1:8099/
   WHATSAPP_TOKEN: token-somente-ci
-  # Conta da equipe do sistema (tela /admin) que os testes criam.
-  ADMIN_EMAILS: admin@escola.test
+  EMAIL_API_URL: http://127.0.0.1:8099/email
+  EMAIL_API_TOKEN: token-email-somente-ci
+  EMAIL_REMETENTE: BioFrequência <nao-responda@biofrequencia.test>
+  # Conta da equipe do sistema (tela /admin) que os testes criam; equipe2
+  # fica sem conta (ninguém vira equipe trocando o e-mail sem confirmar).
+  ADMIN_EMAILS: admin@escola.test,equipe2@escola.test
   WHATSAPP_LOG: /tmp/whatsapp.log
+  EMAIL_LOG: /tmp/email.log
   BANCO_DE_TESTE: '1'
   DB_HOST: 127.0.0.1
   DB_PORT: '5432'
@@ -104,7 +109,7 @@ jobs:
           done
           psql_ci -f database/migracao-completa.sql
 
-      - name: Subir a API (php -S) e o provedor de WhatsApp falso
+      - name: Subir a API (php -S) e os provedores falsos (WhatsApp e e-mail)
         run: |
           cat > config/config.php <<PHP
           <?php
@@ -115,7 +120,7 @@ jobs:
           define("DB_PORT", "$DB_PORT");
           define("JWT_SECRET_KEY", "$JWT_SECRET_KEY");
           PHP
-          php -S 127.0.0.1:8099 tests/mock_whatsapp.php > /tmp/mock.log 2>&1 &
+          php -S 127.0.0.1:8099 tests/mock_provedores.php > /tmp/mock.log 2>&1 &
           # Vários processos: os testes disparam requisições simultâneas.
           PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8080 -t . > /tmp/api.log 2>&1 &
           for _ in $(seq 1 30); do
@@ -212,13 +217,13 @@ jobs:
           psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -q -f database/migrations/001_schema_base.sql
           psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -q -f database/migracao-completa.sql
 
-      - name: Subir o container e o provedor de WhatsApp falso
+      - name: Subir o container e os provedores falsos (WhatsApp e e-mail)
         run: |
-          php -S 127.0.0.1:8099 tests/mock_whatsapp.php > /tmp/mock.log 2>&1 &
+          php -S 127.0.0.1:8099 tests/mock_provedores.php > /tmp/mock.log 2>&1 &
           docker run -d --name api --network host \
             -e PORT=8080 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
-            -e CORS_ORIGENS -e CADASTRO_CODIGO_ACESSO -e BIOMETRIA_CHAVE -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
-            -e ADMIN_EMAILS \
+            -e CORS_ORIGENS -e SITE_URL -e BIOMETRIA_CHAVE -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
+            -e EMAIL_API_URL -e EMAIL_API_TOKEN -e EMAIL_REMETENTE -e ADMIN_EMAILS \
             biofrequencia-api:ci
           for _ in $(seq 1 40); do
             curl -sf http://127.0.0.1:8080/health.php > /dev/null && break
