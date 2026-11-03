@@ -132,13 +132,25 @@ function diaSeguinte(string $data): string {
 }
 
 /**
- * Alunos da escola (ou de uma turma, ou um só) com a data local do
- * cadastro.
+ * Alunos da escola (ou de uma turma, ou um só) com a data local em que
+ * cada um começou a contar: o cadastro ou, se houver registro anterior a
+ * ele (entrada atrasada, saída ou presença lançadas para trás), esse
+ * primeiro registro - o aluno estava na escola naquele dia. Sem isso, um
+ * aluno cadastrado hoje com registros de setembro tinha os atrasos
+ * contados e os dias de aula não, e a taxa ia para 100%.
+ *
+ * Aluno sem data de cadastro (os que já existiam antes da migração 008)
+ * fica com null: conta o período todo.
  */
 function alunosDaEscola(PDO $conexao, int $idEscola, ?int $idSala = null, ?int $idAluno = null): array {
     $stmt = $conexao->prepare("
         SELECT a.id_aluno, a.nome_aluno, s.id_sala, s.nome_sala, s.periodo_sala,
-               " . sqlDataNaEscola('a.criado_em') . "::text AS cadastrado_em
+               CASE WHEN a.criado_em IS NULL THEN NULL ELSE LEAST(
+                   " . sqlDataNaEscola('a.criado_em') . ",
+                   (SELECT MIN(" . sqlDataNaEscola('t.dta_atraso') . ") FROM tb_atraso t WHERE t.id_aluno = a.id_aluno),
+                   (SELECT MIN(" . sqlDataNaEscola('r.dta_saida') . ") FROM tb_saida_antecipada r WHERE r.id_aluno = a.id_aluno),
+                   (SELECT MIN(p.dia_letivo) FROM tb_presenca p WHERE p.id_aluno = a.id_aluno)
+               )::text END AS cadastrado_em
         FROM tb_aluno a
         JOIN tb_sala s ON s.id_sala = a.id_sala
         WHERE s.id_escola = ?
