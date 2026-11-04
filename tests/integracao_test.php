@@ -1052,6 +1052,8 @@ $confirmar('coord7@escola.test');
 $idCoord7 = $idDe('coord7@escola.test');
 $r = post('admin/contas.php', ['situacao' => 'pendente'], $tAdmin);
 verificar('a equipe vê as contas pendentes de todas as escolas', in_array('coord7@escola.test', array_column($r['json']['dados']['contas'] ?? [], 'email_coordenacao'), true), $r['texto']);
+$pedidoCoord7 = array_values(array_filter($r['json']['dados']['contas'] ?? [], fn($c) => $c['email_coordenacao'] === 'coord7@escola.test'))[0] ?? [];
+verificar('a lista diz se a escola do pedido já tem gestão (o modal de aprovação usa)', ($pedidoCoord7['escola_tem_gestao'] ?? null) === true, $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'aprovar'], $tAdmin);
 verificar('a equipe aprova uma conta de qualquer escola', $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'mover_escola', 'id_escola' => 1], $tAdmin);
@@ -1067,6 +1069,7 @@ $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 
 verificar('conta comum não confirma o e-mail de ninguém: 404', $r['status'] === 404, $r['texto']);
 $r = post('admin/contas.php', ['situacao' => 'pendente', 'busca' => 'coord8'], $tAdmin);
 verificar('a lista de contas mostra quem ainda não confirmou o e-mail', ($r['json']['dados']['contas'][0]['email_verificado'] ?? null) === false, $r['texto']);
+verificar('escola nova, sem gestão: a lista avisa (quem for aprovado vira a gestão)', ($r['json']['dados']['contas'][0]['escola_tem_gestao'] ?? null) === false, $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $tAdmin);
 verificar('a equipe confirma o e-mail no lugar da pessoa', $r['status'] === 200 && ($r['json']['dados']['email_verificado'] ?? null) === true, $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $tAdmin);

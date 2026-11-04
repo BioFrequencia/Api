@@ -10,6 +10,10 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * Contas de coordenação de todas as escolas, para a equipe do sistema.
  *
  *   { busca?: nome, email ou escola, situacao?: pendente | ativo | recusado | desativado, pagina? }
+ *
+ * Cada conta vem com escola_tem_gestao: se a escola dela já tem outra
+ * pessoa ativa na gestão. Sem isso, quem for aprovado vira a gestão da
+ * escola - o site trava a escolha da permissão em Gestão.
  */
 $idCoordenacao = autenticar();
 exigirAdministrador($conexao, $idCoordenacao);
@@ -44,6 +48,9 @@ try {
     $stmt = $conexao->prepare("
         SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.papel, c.cargo, c.situacao, c.criado_em,
                c.email_verificado_em IS NOT NULL AS email_verificado, e.id_escola, e.nome_escola, e.municipio,
+               EXISTS (SELECT 1 FROM tb_coordenacao g
+                       WHERE g.id_escola = c.id_escola AND g.papel = 'gestor' AND g.situacao = 'ativo'
+                         AND g.id_coordenacao <> c.id_coordenacao) AS escola_tem_gestao,
                (SELECT MAX(s.ultimo_acesso) FROM tb_sessao s WHERE s.id_coordenacao = c.id_coordenacao) AS ultimo_acesso
         FROM tb_coordenacao c
         JOIN tb_escola e ON e.id_escola = c.id_escola
@@ -57,6 +64,7 @@ try {
         $c['id_escola'] = (int) $c['id_escola'];
         $c['administrador'] = ehAdministrador($c['email_coordenacao']);
         $c['email_verificado'] = valorBooleano($c['email_verificado']);
+        $c['escola_tem_gestao'] = valorBooleano($c['escola_tem_gestao']);
         return $c;
     }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
