@@ -248,6 +248,16 @@ function codigoDoLink(string $email): string {
     return '';
 }
 
+/** Código do último link de senha nova mandado para o endereço ('' se nenhum). */
+function codigoDaSenhaNova(string $email): string {
+    foreach (array_reverse(emailsPara($email)) as $mensagem) {
+        if (preg_match('/redefinir-senha\?codigo=([0-9a-f]{64})/', (string) ($mensagem['texto'] ?? ''), $m)) {
+            return $m[1];
+        }
+    }
+    return '';
+}
+
 /** E-mails para o endereço cujo assunto contém o trecho. */
 function emailsComAssunto(string $email, string $trecho): array {
     return array_values(array_filter(emailsPara($email), fn($m) => str_contains((string) ($m['assunto'] ?? ''), $trecho)));
@@ -333,7 +343,7 @@ secao('Cadastro aberto, confirmação do e-mail e aprovação');
 // Sem código de acesso (migração 009): a conta nasce pendente, confirma o
 // e-mail pelo link (lido aqui do provedor falso) e espera quem aprova.
 $cadastrar = fn(string $email, array $extra = []) => post('user/addCoord.php',
-    ['nome' => 'Coordenação Teste', 'email' => $email, 'senha' => 'Senha@123'] + $extra);
+    array_merge(['nome' => 'Coordenação Teste', 'email' => $email, 'senha' => 'Senha@123', 'cargo' => 'coordenacao'], $extra));
 $confirmar = fn(string $email) => post('conta/confirmarEmail.php', ['codigo' => codigoDoLink($email)]);
 $entrarComo = fn(string $email, string $senha = 'Senha@123') => post('user/selectCoord.php', ['email' => $email, 'senha' => $senha]);
 $r = $cadastrar('Coord1@Escola.test');
@@ -351,6 +361,15 @@ $r = $cadastrar('COORD1@escola.test', ['codigo_acesso' => 'qualquer']);
 verificar('mesmo email (com outra caixa) aguardando a confirmação: 409', $r['status'] === 409, $r['texto']);
 $r = $cadastrar('coord2@escola.test');
 verificar('segunda conta: 200', $r['status'] === 200, $r['texto']);
+$r = $cadastrar('fraca@escola.test', ['senha' => 'senha123']);
+verificar('cadastro com senha fraca: 422 com a lista do que falta', $r['status'] === 422
+    && ($r['json']['dados']['requisitos_senha'] ?? null) === ['uma letra maiúscula', 'um caractere especial (ex.: ! @ # $ %)']
+    && str_contains($r['json']['mensagem'] ?? '', 'uma letra maiúscula e um caractere especial'), $r['texto']);
+$r = $cadastrar('semcargo@escola.test', ['cargo' => null]);
+verificar('cadastro sem cargo: 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'cargo'), $r['texto']);
+$r = $cadastrar('semcargo@escola.test', ['cargo' => 'diretor']);
+verificar('cargo fora da lista: 422', $r['status'] === 422, $r['texto']);
+verificar('nenhuma das contas recusadas ficou no banco', (int) valor("SELECT count(*) FROM tb_coordenacao WHERE email_coordenacao IN ('fraca@escola.test', 'semcargo@escola.test')") === 0);
 $idCoord1 = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'coord1@escola.test'");
 $escolaDaConta = (int) valor("SELECT id_escola FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]);
 verificar('conta nova ganha escola própria (antes caía na escola 1 e via os alunos das outras)', $escolaDaConta !== 1
@@ -757,7 +776,7 @@ verificar('o limite da escola vem junto (para o gráfico e o texto)', ($painel['
 // ------------------------------------------------------------ catálogo e equipe
 secao('Catálogo de escolas, cadastro pela escola e aprovação da gestão');
 $novaConta = fn(string $email, array $escola) => post('user/addCoord.php',
-    ['nome' => 'Coordenação ' . strtok($email, '@'), 'email' => $email, 'senha' => 'Senha@123'] + $escola);
+    array_merge(['nome' => 'Coordenação ' . strtok($email, '@'), 'email' => $email, 'senha' => 'Senha@123', 'cargo' => 'coordenacao'], $escola));
 $idDe = fn(string $email) => (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = ?", [$email]);
 $r = post('user/selectCoord.php', ['email' => 'coord1@escola.test', 'senha' => 'Senha@123']);
 verificar('login de conta comum: papel na escola e sem acesso de equipe', ($r['json']['dados']['papel'] ?? '') === 'gestor'
@@ -854,6 +873,33 @@ verificar('conta desativada não entra: 403', $r['status'] === 403, $r['texto'])
 $r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idCoord4, 'acao' => 'reativar'], $t3);
 verificar('a gestão reativa a conta', $r['status'] === 200, $r['texto']);
 $t4 = post('user/selectCoord.php', ['email' => 'coord4@escola.test', 'senha' => 'Senha@123'])['json']['dados']['token'] ?? '';
+// Cargo e permissão (migração 010): a diretora que entra numa escola que já
+// tem gestão era aprovada como Coordenação. Agora quem aprova escolhe, com
+// a permissão sugerida pelo cargo.
+$r = $novaConta('diretora@escola.test', ['id_escola' => $idHelen, 'cargo' => 'direcao']);
+verificar('cadastro da diretora numa escola com gestão: Gestão prevista pelo cargo', ($r['json']['dados']['papel'] ?? '') === 'gestor'
+    && ($r['json']['dados']['cargo'] ?? '') === 'direcao' && ($r['json']['dados']['aprovacao'] ?? '') === 'gestao', $r['texto']);
+$confirmar('diretora@escola.test');
+$idDiretora = $idDe('diretora@escola.test');
+$pedidoDiretora = emailsComAssunto('coord3@escola.test', 'aguardando aprovação');
+verificar('o pedido que chega para a gestão diz o cargo', str_contains((string) (end($pedidoDiretora)['texto'] ?? ''), 'como Direção'), $pedidoDiretora);
+$r = post('escola/equipe.php', [], $t3);
+$diretoraNaLista = array_values(array_filter($r['json']['dados']['equipe'] ?? [], fn($m) => ($m['email_coordenacao'] ?? '') === 'diretora@escola.test'))[0] ?? [];
+verificar('a equipe mostra o cargo de quem pediu acesso', ($diretoraNaLista['cargo'] ?? '') === 'direcao', $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idDiretora, 'acao' => 'aprovar', 'papel' => 'chefe'], $t3);
+verificar('permissão inválida na aprovação: 422', $r['status'] === 422, $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idDiretora, 'acao' => 'aprovar'], $t3);
+verificar('diretora aprovada sem escolha explícita: Gestão, mesmo com a escola já tendo gestão', $r['status'] === 200
+    && ($r['json']['dados']['papel'] ?? '') === 'gestor' && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
+$novaConta('secretaria@escola.test', ['id_escola' => $idHelen, 'cargo' => 'secretaria']);
+$confirmar('secretaria@escola.test');
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idDe('secretaria@escola.test'), 'acao' => 'aprovar', 'papel' => 'gestor'], $t3);
+verificar('quem aprova escolhe Gestão para a secretaria', ($r['json']['dados']['papel'] ?? '') === 'gestor', $r['texto']);
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idDe('secretaria@escola.test'), 'acao' => 'tornar_coordenador'], $t3);
+verificar('com mais de uma gestão, uma pode voltar a ser Coordenação', ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
+// A escola volta a ter só uma gestão (coord3), como os testes seguintes esperam.
+$r = post('escola/atualizarMembro.php', ['id_coordenacao' => $idDiretora, 'acao' => 'tornar_coordenador'], $t3);
+verificar('...e a diretora também (a escola segue com a gestão de coord3)', ($r['json']['dados']['papel'] ?? '') === 'coordenador', $r['texto']);
 $r = $novaConta('coord6@escola.test', ['nome_escola' => 'Escola Municipal Seis', 'municipio' => 'Santo André']);
 verificar('escola fora do catálogo: a conta cria a escola (com o município)', ($r['json']['dados']['aprovacao'] ?? '') === 'equipe'
     && valor("SELECT municipio FROM tb_escola WHERE nome_escola = 'Escola Municipal Seis'") === 'SANTO ANDRÉ', $r['texto']);
@@ -1006,6 +1052,8 @@ $confirmar('coord7@escola.test');
 $idCoord7 = $idDe('coord7@escola.test');
 $r = post('admin/contas.php', ['situacao' => 'pendente'], $tAdmin);
 verificar('a equipe vê as contas pendentes de todas as escolas', in_array('coord7@escola.test', array_column($r['json']['dados']['contas'] ?? [], 'email_coordenacao'), true), $r['texto']);
+$pedidoCoord7 = array_values(array_filter($r['json']['dados']['contas'] ?? [], fn($c) => $c['email_coordenacao'] === 'coord7@escola.test'))[0] ?? [];
+verificar('a lista diz se a escola do pedido já tem gestão (o modal de aprovação usa)', ($pedidoCoord7['escola_tem_gestao'] ?? null) === true, $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'aprovar'], $tAdmin);
 verificar('a equipe aprova uma conta de qualquer escola', $r['status'] === 200 && ($r['json']['dados']['situacao'] ?? '') === 'ativo', $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord7, 'acao' => 'mover_escola', 'id_escola' => 1], $tAdmin);
@@ -1021,6 +1069,7 @@ $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 
 verificar('conta comum não confirma o e-mail de ninguém: 404', $r['status'] === 404, $r['texto']);
 $r = post('admin/contas.php', ['situacao' => 'pendente', 'busca' => 'coord8'], $tAdmin);
 verificar('a lista de contas mostra quem ainda não confirmou o e-mail', ($r['json']['dados']['contas'][0]['email_verificado'] ?? null) === false, $r['texto']);
+verificar('escola nova, sem gestão: a lista avisa (quem for aprovado vira a gestão)', ($r['json']['dados']['contas'][0]['escola_tem_gestao'] ?? null) === false, $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $tAdmin);
 verificar('a equipe confirma o e-mail no lugar da pessoa', $r['status'] === 200 && ($r['json']['dados']['email_verificado'] ?? null) === true, $r['texto']);
 $r = post('admin/atualizarConta.php', ['id_coordenacao' => $idCoord8, 'acao' => 'confirmar_email'], $tAdmin);
@@ -1297,6 +1346,12 @@ $r = post('relatorio/exportarXml.php', ['relatorio' => 'registros'], $t1);
 $xml = @simplexml_load_string($r['texto']);
 verificar('relatório XML de registros: entradas atrasadas e saídas antecipadas', $xml !== false && count($xml->itens->registro) >= 5
     && str_contains($r['texto'], 'saida_antecipada') && str_contains($r['texto'], 'Tia Rosa'), mb_substr($r['texto'], 0, 300));
+foreach (['alunos', 'registros', 'alertas', 'acompanhamentos'] as $tipoRelatorio) {
+    $r = post('relatorio/exportarXml.php', ['relatorio' => $tipoRelatorio], $t2);
+    verificar("relatório XML de $tipoRelatorio pela escola 2: nada da escola 1", $r['status'] === 200
+        && @simplexml_load_string($r['texto']) !== false && preg_match('/(Ana|Bruno|Carla|Diego|Elisa|Fabio|Gabi) Teste/', $r['texto']) === 0,
+        [$r['status'], mb_substr($r['texto'], 0, 200)]);
+}
 
 // ------------------------------------------------------------ conta
 // No fim de propósito: aqui sessões são encerradas e a senha da
@@ -1388,7 +1443,16 @@ $tOutroAparelho = $entrar('nova@escola.test', 'Senha@123')['json']['dados']['tok
 $r = post('conta/alterarSenha.php', ['senha_atual' => 'errada', 'senha_nova' => 'NovaSenha@1'], $tConta);
 verificar('senha: atual errada: 403 (sem derrubar a sessão)', $r['status'] === 403 && post('user/listarSalas.php', [], $tConta)['status'] === 200, $r['texto']);
 $r = post('conta/alterarSenha.php', ['senha_atual' => 'Senha@123', 'senha_nova' => '123'], $tConta);
-verificar('senha: nova curta demais: 422', $r['status'] === 422, $r['texto']);
+verificar('senha: nova fraca: 422 com o que falta (tamanho, maiúscula, minúscula e especial)', $r['status'] === 422
+    && count($r['json']['dados']['requisitos_senha'] ?? []) === 4, $r['texto']);
+// O e-mail da conta já é o novo (nova@escola.test): o perfil vai com ele.
+$perfilAtual = ['email_coordenacao' => 'nova@escola.test'] + $perfil;
+$r = post('conta/atualizarPerfil.php', ['cargo' => 'vice_direcao'] + $perfilAtual, $tConta);
+verificar('perfil: a pessoa informa o próprio cargo', $r['status'] === 200 && ($r['json']['dados']['cargo'] ?? '') === 'vice_direcao', $r['texto']);
+$r = post('conta/atualizarPerfil.php', ['cargo' => 'reitor'] + $perfilAtual, $tConta);
+verificar('perfil: cargo fora da lista: 422', $r['status'] === 422, $r['texto']);
+$r = post('conta/atualizarPerfil.php', $perfilAtual, $tConta);
+verificar('perfil: sem mandar o cargo, ele continua o mesmo', ($r['json']['dados']['cargo'] ?? '') === 'vice_direcao', $r['texto']);
 $r = post('conta/alterarSenha.php', ['senha_atual' => 'Senha@123', 'senha_nova' => 'Senha@123'], $tConta);
 verificar('senha: igual à atual: 422', $r['status'] === 422, $r['texto']);
 $r = post('conta/alterarSenha.php', ['senha_atual' => 'Senha@123', 'senha_nova' => 'NovaSenha@1'], $tConta);
@@ -1428,6 +1492,85 @@ for ($i = 0; $i < 9; $i++) {
 }
 $r = post('suporte/abrirChamado.php', $chamado, $tConta);
 verificar('chamados: limite de 10 por dia: 429', $r['status'] === 429, $r['texto']);
+
+// ------------------------------------------------------------ senhas
+secao('Senhas: Argon2id, limite de tentativas e senha nova pelo e-mail');
+// Cada bloco simula uma rede (o IP vem do X-Forwarded-For, como atrás do
+// balanceador do Render): os erros daqui não esbarram no resto da suíte.
+$redeA = 'X-Forwarded-For: 198.51.100.7';
+$redeB = 'X-Forwarded-For: 198.51.100.8';
+$redeC = 'X-Forwarded-For: 198.51.100.9';
+$tentar = fn(string $email, string $senha, string $rede) => post('user/selectCoord.php', ['email' => $email, 'senha' => $senha], null, [$rede]);
+$hashDe = fn(string $email) => (string) valor("SELECT senha_coordenacao FROM tb_coordenacao WHERE email_coordenacao = ?", [$email]);
+
+verificar('senha de conta nova guardada em Argon2id', str_starts_with($hashDe('coord2@escola.test'), '$argon2id$'));
+sql("UPDATE tb_coordenacao SET senha_coordenacao = ? WHERE email_coordenacao = 'coord2@escola.test'", [password_hash('Senha@123', PASSWORD_BCRYPT)]);
+$r = $tentar('coord2@escola.test', 'Senha@123', $redeA);
+verificar('hash bcrypt antigo: entra e o hash vira Argon2id', $r['status'] === 200 && str_starts_with($hashDe('coord2@escola.test'), '$argon2id$'), $r['texto']);
+
+for ($i = 0; $i < 4; $i++) {
+    $tentar('nova@escola.test', 'errada', $redeA);
+}
+verificar('4 erros e a senha certa: entra (e os erros são zerados)', $tentar('nova@escola.test', 'NovaSenha@1', $redeA)['status'] === 200);
+for ($i = 0; $i < 5; $i++) {
+    $tentar('nova@escola.test', 'errada', $redeA);
+}
+$r = $tentar('nova@escola.test', 'NovaSenha@1', $redeA);
+verificar('5 erros em seguida: até a senha certa espera (429), com o tempo no Retry-After', $r['status'] === 429
+    && str_contains($r['json']['mensagem'] ?? '', 'espere') && ($r['json']['dados']['espera_segundos'] ?? 0) > 800
+    && (int) ($r['h']['retry-after'] ?? 0) === ($r['json']['dados']['espera_segundos'] ?? -1), $r['texto']);
+verificar('o bloqueio é do e-mail: de outra rede também espera', $tentar('nova@escola.test', 'NovaSenha@1', $redeB)['status'] === 429);
+verificar('outro e-mail na mesma rede entra normalmente', $tentar('coord2@escola.test', 'Senha@123', $redeA)['status'] === 200);
+verificar('o banco guarda só hashes: nem o e-mail nem o IP em texto', (int) valor("SELECT count(*) FROM tb_tentativa_login") >= 5
+    && (int) valor("SELECT count(*) FROM tb_tentativa_login WHERE chave_email LIKE '%@%' OR chave_rede LIKE '%.%'") === 0);
+for ($i = 0; $i < 20; $i++) {
+    $tentar("robo$i@escola.test", 'Qualquer@1', $redeC);
+}
+verificar('20 erros da mesma rede: a rede espera, até com conta e senha certas', $tentar('coord2@escola.test', 'Senha@123', $redeC)['status'] === 429);
+verificar('...e as outras redes seguem entrando', $tentar('coord2@escola.test', 'Senha@123', $redeB)['status'] === 200);
+sql("DELETE FROM tb_tentativa_login");
+
+// "Esqueci minha senha". Os links mais antigos da conta saem da janela de
+// 24 horas, para o limite de envios (5 por dia) não atrapalhar o teste.
+sql("UPDATE tb_verificacao_email SET criado_em = criado_em - INTERVAL '2 days' WHERE id_coordenacao = ?", [$idCoord1]);
+$antes = count(emailsPara('nova@escola.test'));
+$tNova = $tentar('nova@escola.test', 'NovaSenha@1', $redeB)['json']['dados']['token'] ?? '';
+$r = post('conta/esqueciSenha.php', ['email' => 'Nova@Escola.test']);
+$emailsSenha = array_slice(emailsPara('nova@escola.test'), $antes);
+verificar('esqueci a senha: resposta genérica e o link sai por e-mail, valendo 1 hora', $r['status'] === 200 && count($emailsSenha) === 1
+    && str_contains((string) ($emailsSenha[0]['texto'] ?? ''), "$siteUrl/redefinir-senha?codigo=") && str_contains((string) ($emailsSenha[0]['texto'] ?? ''), '1 hora'), $r['texto']);
+$semConta = post('conta/esqueciSenha.php', ['email' => 'ninguem@escola.test']);
+verificar('e-mail sem conta: a mesma resposta, e nenhum e-mail sai', $semConta['status'] === 200
+    && ($semConta['json']['mensagem'] ?? '') === ($r['json']['mensagem'] ?? '-') && emailsPara('ninguem@escola.test') === []);
+$r = post('conta/esqueciSenha.php', ['email' => 'nova@escola.test']);
+verificar('pedir de novo em menos de um minuto: mesma resposta, sem outro e-mail', $r['status'] === 200 && count(emailsPara('nova@escola.test')) === $antes + 1);
+$r = post('conta/esqueciSenha.php', ['email' => 'sem-arroba']);
+verificar('e-mail inválido: 422', $r['status'] === 422, $r['texto']);
+$codigoSenha = codigoDaSenhaNova('nova@escola.test');
+verificar('o banco guarda só o hash do código, para 1 hora', valor("SELECT finalidade FROM tb_verificacao_email WHERE token_hash = ?", [hash('sha256', $codigoSenha)]) === 'redefinir_senha'
+    && (int) valor("SELECT EXTRACT(EPOCH FROM (expira_em - criado_em))::int FROM tb_verificacao_email WHERE token_hash = ?", [hash('sha256', $codigoSenha)]) === 3600);
+$r = post('conta/confirmarEmail.php', ['codigo' => $codigoSenha]);
+verificar('o link de senha nova não serve para confirmar e-mail: 404', $r['status'] === 404, $r['texto']);
+$r = post('conta/redefinirSenha.php', ['codigo' => $codigoSenha, 'senha_nova' => 'fraca']);
+verificar('senha nova fraca: 422 com a lista do que falta, e o link continua valendo', $r['status'] === 422
+    && count($r['json']['dados']['requisitos_senha'] ?? []) >= 3
+    && valor("SELECT usado_em FROM tb_verificacao_email WHERE token_hash = ?", [hash('sha256', $codigoSenha)]) === null, $r['texto']);
+$r = post('conta/redefinirSenha.php', ['codigo' => $codigoSenha, 'senha_nova' => 'Recuperada#2026']);
+verificar('senha nova criada, desconectando todos os aparelhos', $r['status'] === 200 && ($r['json']['dados']['sessoes_encerradas'] ?? 0) >= 1, $r['texto']);
+verificar('...a sessão aberta antes caiu', post('user/listarSalas.php', [], $tNova)['status'] === 401);
+verificar('...a senha antiga não entra mais', $tentar('nova@escola.test', 'NovaSenha@1', $redeB)['status'] === 401);
+verificar('...a nova entra, guardada em Argon2id', $tentar('nova@escola.test', 'Recuperada#2026', $redeB)['status'] === 200
+    && str_starts_with($hashDe('nova@escola.test'), '$argon2id$'));
+$r = post('conta/redefinirSenha.php', ['codigo' => $codigoSenha, 'senha_nova' => 'Outra#Senha99']);
+verificar('o mesmo link de novo: 410', $r['status'] === 410, $r['texto']);
+$r = post('conta/redefinirSenha.php', ['codigo' => str_repeat('a', 64), 'senha_nova' => 'Outra#Senha99']);
+verificar('código que não existe: 404', $r['status'] === 404, $r['texto']);
+sql("UPDATE tb_verificacao_email SET criado_em = criado_em - INTERVAL '2 minutes' WHERE id_coordenacao = ?", [$idCoord1]);
+post('conta/esqueciSenha.php', ['email' => 'nova@escola.test']);
+$codigoVencido = codigoDaSenhaNova('nova@escola.test');
+sql("UPDATE tb_verificacao_email SET expira_em = NOW() - INTERVAL '1 minute' WHERE token_hash = ?", [hash('sha256', $codigoVencido)]);
+$r = post('conta/redefinirSenha.php', ['codigo' => $codigoVencido, 'senha_nova' => 'Outra#Senha99']);
+verificar('link vencido: 410', $codigoVencido !== $codigoSenha && $r['status'] === 410, $r['texto']);
 
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);

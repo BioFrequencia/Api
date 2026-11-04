@@ -8,7 +8,7 @@ require_once __DIR__ . '/sessao.php';
  */
 function perfilDaCoordenacao(PDO $conexao, int $idCoordenacao): ?array {
     $stmt = $conexao->prepare("
-        SELECT c.nome_coordenacao, c.email_coordenacao, c.papel, e.nome_escola, e.municipio,
+        SELECT c.nome_coordenacao, c.email_coordenacao, c.papel, c.cargo, e.nome_escola, e.municipio,
                (e.codigo_cie IS NOT NULL) AS escola_do_catalogo,
                (SELECT v.email FROM tb_verificacao_email v
                 WHERE v.id_coordenacao = c.id_coordenacao AND v.finalidade = 'troca_email'

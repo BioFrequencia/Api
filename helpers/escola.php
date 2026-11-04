@@ -176,3 +176,24 @@ function escolaTemGestor(PDO $conexao, int $idEscola, ?int $exceto = null): bool
     $stmt->execute();
     return (bool) $stmt->fetchColumn();
 }
+
+/**
+ * Cargos na escola (migração 010), com o texto da tela. O cargo é só
+ * descritivo; a permissão no sistema é o papel (helpers/equipe.php).
+ */
+const CARGOS_NA_ESCOLA = [
+    'direcao'      => 'Direção',
+    'vice_direcao' => 'Vice-direção',
+    'coordenacao'  => 'Coordenação pedagógica',
+    'secretaria'   => 'Secretaria',
+    'outro'        => 'Outro',
+];
+
+function cargoValido($cargo): bool {
+    return is_string($cargo) && array_key_exists($cargo, CARGOS_NA_ESCOLA);
+}
+
+/** Permissão sugerida para o cargo: direção e vice-direção ficam com a Gestão. */
+function papelSugeridoPeloCargo(?string $cargo): string {
+    return in_array($cargo, ['direcao', 'vice_direcao'], true) ? 'gestor' : 'coordenador';
+}

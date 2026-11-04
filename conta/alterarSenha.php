@@ -23,9 +23,7 @@ $senhaNova = $dados["senha_nova"] ?? null;
 if (!campoPreenchido($senhaAtual) || !campoPreenchido($senhaNova)) {
     enviarErro("Informe a senha atual e a nova senha.", 422);
 }
-if (!senhaForte($senhaNova)) {
-    enviarErro("A nova senha deve ter pelo menos 6 caracteres.", 422);
-}
+exigirSenhaForte($senhaNova);
 if ($senhaNova === $senhaAtual) {
     enviarErro("A nova senha precisa ser diferente da atual.", 422);
 }
@@ -40,7 +38,7 @@ try {
     }
 
     $conexao->prepare("UPDATE tb_coordenacao SET senha_coordenacao = ? WHERE id_coordenacao = ?")
-        ->execute([password_hash($senhaNova, PASSWORD_DEFAULT), $idCoordenacao]);
+        ->execute([gerarHashSenha($senhaNova), $idCoordenacao]);
 
     // A senha já mudou: uma falha aqui não pode virar "erro ao trocar a senha".
     $encerradas = 0;

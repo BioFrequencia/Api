@@ -13,8 +13,40 @@ function emailValido(?string $email): bool {
     return filter_var(trim($email), FILTER_VALIDATE_EMAIL) !== false;
 }
 
-function senhaForte(?string $senha, int $minimo = 6): bool {
-    return campoPreenchido($senha) && strlen($senha) >= $minimo;
+const SENHA_MINIMA = 8;
+const SENHA_MAXIMA = 128;
+
+/**
+ * Os requisitos que a senha ainda não cumpre, no texto que a tela mostra
+ * (vazio = senha aceita). São os mesmos do site e do software desktop:
+ * 8 a 128 caracteres, com maiúscula, minúscula, número e caractere especial
+ * (qualquer coisa que não seja letra, número ou espaço). Espaço é aceito.
+ *
+ * @return string[]
+ */
+function requisitosSenhaPendentes(?string $senha): array {
+    $senha = (string) $senha;
+    $tamanho = mb_strlen($senha);
+    $tem = fn(string $padrao) => preg_match($padrao, $senha) === 1;
+    $pendentes = [];
+    if ($tamanho < SENHA_MINIMA) $pendentes[] = 'pelo menos ' . SENHA_MINIMA . ' caracteres';
+    if (!$tem('/\p{Lu}/u')) $pendentes[] = 'uma letra maiúscula';
+    if (!$tem('/\p{Ll}/u')) $pendentes[] = 'uma letra minúscula';
+    if (!$tem('/\p{N}/u')) $pendentes[] = 'um número';
+    if (!$tem('/[^\p{L}\p{N}\s]/u')) $pendentes[] = 'um caractere especial (ex.: ! @ # $ %)';
+    if ($tamanho > SENHA_MAXIMA) $pendentes[] = 'no máximo ' . SENHA_MAXIMA . ' caracteres';
+    return $pendentes;
+}
+
+function senhaForte(?string $senha): bool {
+    return campoPreenchido($senha) && requisitosSenhaPendentes($senha) === [];
+}
+
+/** "A senha precisa ter uma letra maiúscula e um número." */
+function mensagemRequisitosSenha(array $pendentes): string {
+    $ultimo = array_pop($pendentes);
+    $lista = $pendentes === [] ? $ultimo : implode(', ', $pendentes) . ' e ' . $ultimo;
+    return "A senha precisa ter $lista.";
 }
 
 function inteiroValido($valor): bool {

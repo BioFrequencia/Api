@@ -22,9 +22,12 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
 ```
 
 1. **Login da coordenação**: `user/selectCoord.php` confere email (sem
-   diferenciar maiúsculas) e senha (`password_verify`; contas antigas em
-   texto puro migram no primeiro login) e emite um JWT HS256 de 2 h com o
-   `id_coordenacao` em `sub` (30 dias com "Lembrar de mim"; 12 h no app).
+   diferenciar maiúsculas) e senha (Argon2id; hashes antigos - bcrypt ou
+   texto puro - são convertidos no login certo) e emite um JWT HS256 de 2 h
+   com o `id_coordenacao` em `sub` (30 dias com "Lembrar de mim"; 12 h no
+   app). Erros seguidos bloqueiam por um tempo (5 por e-mail ou 20 por
+   rede em 15 minutos, `tb_tentativa_login`, só com hashes) - 429 com
+   `Retry-After`.
    O site guarda o token no `localStorage` e manda `Authorization:
    Bearer` em toda chamada. Token vencido: o site descobre pelo `exp` ao
    abrir/voltar à aba ou pelo 401 da API e manda para
@@ -59,6 +62,12 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    equipe do sistema em `/admin` (`admin/atualizarConta.php`). Quem aprova
    recebe o pedido por e-mail, e quem pediu recebe a decisão. A primeira
    conta aprovada de uma escola vira **gestora** (`tb_coordenacao.papel`).
+   **Cargo e permissão** (migração 010) são coisas separadas: o cargo
+   (`tb_coordenacao.cargo`: direção, vice-direção, coordenação
+   pedagógica, secretaria ou outro) é informado no cadastro e só descreve
+   a função; a permissão (`papel`: Gestão ou Coordenação) é escolhida por
+   quem aprova, com a sugerida pelo cargo já marcada (direção e
+   vice-direção: Gestão). Uma escola pode ter várias contas de Gestão.
    Sem e-mail confirmado ou sem aprovação não se entra; conta recusada ou
    desativada também não, e quem é desativado perde as sessões na hora.
    Trocar o e-mail de login também passa pelo link. A escola nunca fica
@@ -137,7 +146,10 @@ App (celular)     --HTTPS + HMAC-------->  API (Render)
    login, pede a senha atual e só vale depois do link mandado ao endereço
    novo; o nome da escola só muda pela gestão e só fora do catálogo),
    `conta/alterarSenha.php`
-   (confere a atual e desconecta os outros aparelhos) e as preferências
+   (confere a atual, exige senha forte e desconecta os outros aparelhos),
+   "Esqueci minha senha" (`conta/esqueciSenha.php` e
+   `conta/redefinirSenha.php`: link de 1 hora, só o hash no banco, e todos
+   os aparelhos caem) e as preferências
    da conta (`conta/preferencias.php`, `conta/salvarPreferencias.php`:
    tema e sons), guardadas no banco para valer em qualquer computador.
    Senha atual errada responde 403, não 401 - o site trata 401 como

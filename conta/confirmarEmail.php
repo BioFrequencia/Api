@@ -34,7 +34,7 @@ try {
         SELECT v.id_verificacao, v.id_coordenacao, v.email, v.finalidade,
                v.usado_em IS NOT NULL AS usado, v.expira_em <= NOW() AS vencido
         FROM tb_verificacao_email v
-        WHERE v.token_hash = ?
+        WHERE v.token_hash = ? AND v.finalidade IN ('cadastro', 'troca_email')
         FOR UPDATE
     ");
     $stmt->execute([hashDoCodigo($codigo)]);
@@ -45,7 +45,7 @@ try {
     }
 
     $stmt = $conexao->prepare("
-        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.id_escola, c.papel, c.situacao,
+        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.id_escola, c.papel, c.cargo, c.situacao,
                c.email_verificado_em IS NOT NULL AS confirmado, e.nome_escola, e.municipio
         FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
         WHERE c.id_coordenacao = ?

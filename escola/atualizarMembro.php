@@ -11,10 +11,12 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * A gestão decide sobre uma conta da própria escola:
  *
  *   { id_coordenacao, acao: aprovar | recusar | desativar | reativar |
- *                           tornar_gestor | tornar_coordenador }
+ *                           tornar_gestor | tornar_coordenador,
+ *     papel?: gestor | coordenador }   (na aprovação: a permissão escolhida)
  *
- * Regras (helpers/equipe.php): a escola nunca fica sem gestão ativa, e
- * quem deixa de estar ativo perde as sessões abertas na hora.
+ * Regras (helpers/equipe.php): sem "papel", a aprovação usa a permissão
+ * sugerida pelo cargo; a escola nunca fica sem gestão ativa, e quem deixa
+ * de estar ativo perde as sessões abertas na hora.
  */
 $idCoordenacao = autenticar();
 $conta = exigirGestor($conexao, $idCoordenacao);
@@ -27,6 +29,10 @@ if (!inteiroValido($dados['id_coordenacao'] ?? null)) {
 if (!in_array($acao, ACOES_EQUIPE, true)) {
     enviarErro("Ação inválida.", 422);
 }
+$papelEscolhido = $dados['papel'] ?? null;
+if ($papelEscolhido !== null && !in_array($papelEscolhido, PAPEIS, true)) {
+    enviarErro("Permissão inválida: escolha Gestão ou Coordenação.", 422);
+}
 
 try {
     $membro = membroDaEquipe($conexao, (int) $dados['id_coordenacao']);
@@ -34,7 +40,7 @@ try {
     if ($membro === null || $membro['id_escola'] !== $conta['id_escola']) {
         enviarErro("Conta não encontrada nesta escola.", 404);
     }
-    $erro = aplicarAcaoNaEquipe($conexao, $membro, $acao, (int) $idCoordenacao);
+    $erro = aplicarAcaoNaEquipe($conexao, $membro, $acao, (int) $idCoordenacao, $papelEscolhido);
     if ($erro !== null) {
         enviarErro($erro, 409);
     }

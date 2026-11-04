@@ -4,6 +4,7 @@ require_once __DIR__ . '/../helpers/cors.php';
 require_once __DIR__ . '/../database/conexao.php';
 require_once __DIR__ . '/../helpers/validacao.php';
 require_once __DIR__ . '/../helpers/resposta.php';
+require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/sessao.php';
 require_once __DIR__ . '/../helpers/emailConta.php';
 
@@ -11,14 +12,20 @@ require_once __DIR__ . '/../helpers/emailConta.php';
  * Cadastro de uma nova conta de coordenação. Aberto: o código de acesso
  * saiu na migração 009.
  *
- *   { nome, email, senha, id_escola }                   escola do catálogo
- *   { nome, email, senha, nome_escola, municipio? }     escola fora do catálogo
+ *   { nome, email, senha, cargo, id_escola }                 escola do catálogo
+ *   { nome, email, senha, cargo, nome_escola, municipio? }   escola fora do catálogo
+ *
+ * cargo: direcao | vice_direcao | coordenacao | secretaria | outro - a
+ * função na escola, só descritiva; a permissão (Gestão ou Coordenação) é
+ * escolhida por quem aprova, com a sugerida pelo cargo já marcada.
+ * A senha segue a regra de senha forte (helpers/validacao.php).
  *
  * A conta nasce "pendente", com o e-mail por confirmar. Até entrar:
  *   1. a pessoa abre o link que chega por e-mail (conta/confirmarEmail.php);
  *   2. quem aprova libera o acesso: a gestão da escola, se ela já usa o
  *      BioFrequência, ou a equipe do sistema (tela /admin). A primeira
- *      conta aprovada de uma escola vira a gestão dela.
+ *      conta aprovada de uma escola vira a gestão dela, qualquer que seja
+ *      o cargo.
  * Assim ninguém vê os alunos e os telefones dos responsáveis de uma
  * escola sem que alguém de confiança tenha liberado.
  *
@@ -38,6 +45,7 @@ $senha  = $dados["senha"] ?? null;
 $idEscola = $dados["id_escola"] ?? null;
 $nomeEscola = $dados["nome_escola"] ?? null;
 $municipio = $dados["municipio"] ?? null;
+$cargo = $dados["cargo"] ?? null;
 
 if (!campoPreenchido($nome) || !campoPreenchido($email) || !campoPreenchido($senha)) {
     enviarErro("Preencha nome, email e senha.", 422);
@@ -47,8 +55,10 @@ if (!emailValido($email) || mb_strlen(trim($email)) > 150) {
     enviarErro("Informe um email válido.", 422);
 }
 
-if (!senhaForte($senha)) {
-    enviarErro("A senha deve ter pelo menos 6 caracteres.", 422);
+exigirSenhaForte($senha);
+
+if (!cargoValido($cargo)) {
+    enviarErro("Informe o seu cargo na escola: direção, vice-direção, coordenação pedagógica, secretaria ou outro.", 422);
 }
 
 if (mb_strlen(trim($nome)) > 150) {
@@ -105,7 +115,7 @@ try {
         }
     }
 
-    $senhaHash = password_hash($senha, PASSWORD_DEFAULT);
+    $senhaHash = gerarHashSenha($senha);
 
     $conexao->beginTransaction();
 
@@ -126,26 +136,27 @@ try {
         $idEscola = (int) $escola->fetchColumn();
     }
 
-    // O papel aqui é o previsto; o definitivo sai na aprovação (quem é
-    // aprovado numa escola sem gestão ativa vira a gestão - helpers/equipe.php).
+    // O papel aqui é o previsto; o definitivo sai na aprovação, escolhido por
+    // quem aprova (helpers/equipe.php). Numa escola sem gestão ativa, quem
+    // entra vira a gestão dela.
     $aprovacao = escolaTemGestor($conexao, $idEscola) ? 'gestao' : 'equipe';
-    $papel = $aprovacao === 'gestao' ? 'coordenador' : 'gestor';
+    $papel = $aprovacao === 'gestao' ? papelSugeridoPeloCargo($cargo) : 'gestor';
 
     if ($substituir !== null) {
         $conexao->prepare("
             UPDATE tb_coordenacao
-            SET nome_coordenacao = ?, email_coordenacao = ?, senha_coordenacao = ?, id_escola = ?, papel = ?,
+            SET nome_coordenacao = ?, email_coordenacao = ?, senha_coordenacao = ?, id_escola = ?, papel = ?, cargo = ?,
                 situacao = 'pendente', criado_em = NOW(), aprovado_em = NULL, aprovado_por = NULL
             WHERE id_coordenacao = ?
-        ")->execute([$nome, $email, $senhaHash, $idEscola, $papel, $substituir]);
+        ")->execute([$nome, $email, $senhaHash, $idEscola, $papel, $cargo, $substituir]);
         $idNova = $substituir;
     } else {
         $insert = $conexao->prepare("
-            INSERT INTO tb_coordenacao (nome_coordenacao, email_coordenacao, senha_coordenacao, id_escola, papel, situacao)
-            VALUES (?, ?, ?, ?, ?, 'pendente')
+            INSERT INTO tb_coordenacao (nome_coordenacao, email_coordenacao, senha_coordenacao, id_escola, papel, cargo, situacao)
+            VALUES (?, ?, ?, ?, ?, ?, 'pendente')
             RETURNING id_coordenacao
         ");
-        $insert->execute([$nome, $email, $senhaHash, $idEscola, $papel]);
+        $insert->execute([$nome, $email, $senhaHash, $idEscola, $papel, $cargo]);
         $idNova = (int) $insert->fetchColumn();
     }
 
@@ -160,6 +171,7 @@ try {
     enviarSucesso(mensagemDoCadastro($email, $nomeEscola, $aprovacao, $envio), [
         "nome_escola"      => $nomeEscola,
         "papel"            => $papel,
+        "cargo"            => $cargo,
         "situacao"         => 'pendente',
         "email_verificado" => false,
         "email_enviado"    => $envio === ENVIO_OK,

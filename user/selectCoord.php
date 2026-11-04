@@ -7,6 +7,7 @@ require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/sessao.php';
 require_once __DIR__ . '/../helpers/escola.php';
+require_once __DIR__ . '/../helpers/tentativas.php';
 require_once __DIR__ . '/../Authentication/tokenLogin.php';
 
 /**
@@ -25,6 +26,10 @@ require_once __DIR__ . '/../Authentication/tokenLogin.php';
  * sistema, e a gestão pode recusar ou desativar uma conta. A senha é
  * conferida antes, para a mensagem de situação não revelar a quem não
  * sabe a senha que o email existe.
+ *
+ * Erros seguidos de senha bloqueiam o e-mail (e a rede) por um tempo
+ * (helpers/tentativas.php): 429 com a espera. Login certo converte o hash
+ * antigo para Argon2id (helpers/senha.php).
  */
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
@@ -39,6 +44,13 @@ if (!campoPreenchido($email) || !campoPreenchido($senha)) {
 }
 
 try {
+    $ip = ipDoCliente();
+    $espera = esperaDoLogin($conexao, $email, $ip);
+    if ($espera !== null) {
+        header('Retry-After: ' . $espera);
+        enviarErro(mensagemDeEsperaDoLogin($espera), 429, null, ["espera_segundos" => $espera]);
+    }
+
     // Sem diferenciar maiúsculas: o teclado do celular capitaliza a
     // primeira letra e o login falhava com a senha certa. Se existirem
     // duas contas que só diferem na caixa (cadastros antigos), vale a
@@ -60,14 +72,19 @@ try {
     $mensagemCredenciaisInvalidas = "Email ou senha incorretos.";
 
     if (!$coordenacao) {
+        // Confere contra um hash qualquer: a resposta leva o mesmo tempo com ou sem conta.
+        password_verify($senha, HASH_PARA_EMAIL_INEXISTENTE);
+        registrarFalhaDeLogin($conexao, $email, $ip);
         enviarErro($mensagemCredenciaisInvalidas, 401);
     }
 
     $verificacao = verificarSenhaComMigracao($senha, $coordenacao['senha_coordenacao']);
 
     if (!$verificacao['valida']) {
+        registrarFalhaDeLogin($conexao, $email, $ip);
         enviarErro($mensagemCredenciaisInvalidas, 401);
     }
+    limparFalhasDoEmail($conexao, $email);
 
     if (!valorBooleano($coordenacao['email_confirmado'])) {
         enviarErro(
@@ -88,10 +105,10 @@ try {
         enviarErro($situacoes[$coordenacao['situacao']], 403, null, ["situacao" => $coordenacao['situacao']]);
     }
 
-    // Conta ainda tinha a senha em texto puro (formato antigo): migra
-    // silenciosamente para hash agora que sabemos a senha correta.
+    // Hash de formato antigo (texto puro de antes da primeira correção, ou
+    // bcrypt): converte para Argon2id agora que sabemos a senha correta.
     if ($verificacao['precisaAtualizar']) {
-        $novoHash = password_hash($senha, PASSWORD_DEFAULT);
+        $novoHash = gerarHashSenha($senha);
         $update = $conexao->prepare("UPDATE tb_coordenacao SET senha_coordenacao = ? WHERE id_coordenacao = ?");
         $update->bindValue(1, $novoHash);
         $update->bindValue(2, $coordenacao['id_coordenacao']);
