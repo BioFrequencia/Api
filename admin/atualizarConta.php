@@ -13,7 +13,8 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  *   { id_coordenacao, acao: aprovar | recusar | desativar | reativar |
  *                           tornar_gestor | tornar_coordenador | mover_escola |
  *                           confirmar_email,
- *     id_escola? (para mover_escola) }
+ *     id_escola? (para mover_escola),
+ *     papel?: gestor | coordenador (na aprovação: a permissão escolhida) }
  *
  * confirmar_email: a equipe confirma o e-mail no lugar da pessoa, quando o
  * link não tem como chegar (o envio de e-mails ainda não foi configurado,
@@ -32,6 +33,10 @@ $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 $acao = $dados['acao'] ?? null;
 if (!inteiroValido($dados['id_coordenacao'] ?? null)) {
     enviarErro("Informe a conta.", 422);
+}
+$papelEscolhido = $dados['papel'] ?? null;
+if ($papelEscolhido !== null && !in_array($papelEscolhido, PAPEIS, true)) {
+    enviarErro("Permissão inválida: escolha Gestão ou Coordenação.", 422);
 }
 if (!in_array($acao, [...ACOES_EQUIPE, 'mover_escola', 'confirmar_email'], true)) {
     enviarErro("Ação inválida.", 422);
@@ -72,7 +77,7 @@ try {
         ");
         $move->execute([$destino, $papel, (int) $idCoordenacao, $membro['id_coordenacao']]);
     } else {
-        $erro = aplicarAcaoNaEquipe($conexao, $membro, $acao, (int) $idCoordenacao);
+        $erro = aplicarAcaoNaEquipe($conexao, $membro, $acao, (int) $idCoordenacao, $papelEscolhido);
         if ($erro !== null) {
             enviarErro($erro, 409);
         }

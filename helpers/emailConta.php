@@ -5,18 +5,21 @@ require_once __DIR__ . '/corsRegras.php';
 
 /**
  * E-mails da própria conta (migração 009): o link para confirmar o e-mail
- * - no cadastro e na troca do e-mail de login - e os avisos do pedido de
- * acesso (para quem aprova e, depois, para quem pediu).
+ * - no cadastro e na troca do e-mail de login -, o link para criar uma
+ * senha nova (migração 010, "Esqueci minha senha") e os avisos do pedido
+ * de acesso (para quem aprova e, depois, para quem pediu).
  *
- * O código do link é aleatório (32 bytes) e vale por 24 horas; o banco
- * guarda só o hash SHA-256 dele, então nem quem lê o banco confirma o
- * e-mail de outra pessoa. Pedir um link novo vence os anteriores.
+ * O código do link é aleatório (32 bytes) e vale por 24 horas (o de senha
+ * nova, por 1 hora); o banco guarda só o hash SHA-256 dele, então nem quem
+ * lê o banco confirma o e-mail nem troca a senha de outra pessoa. Pedir um
+ * link novo vence os anteriores da mesma finalidade.
  *
  * O endereço do site, para montar os links, vem de SITE_URL (ou da
  * primeira origem fixa de CORS_ORIGENS).
  */
 
 const VALIDADE_LINK_HORAS = 24;
+const VALIDADE_LINK_SENHA_HORAS = 1;
 const ESPERA_ENTRE_LINKS_SEGUNDOS = 60;
 const LINKS_POR_DIA = 5;
 /** Contas novas, ainda sem e-mail confirmado, aceitas por hora no sistema todo (freio contra robôs). */
@@ -47,6 +50,10 @@ function linkDeConfirmacao(string $codigo): string {
     return urlDoSite() . '/confirmar-email?codigo=' . $codigo;
 }
 
+function linkDeNovaSenha(string $codigo): string {
+    return urlDoSite() . '/redefinir-senha?codigo=' . $codigo;
+}
+
 /**
  * Regra de espera entre links (função pura - testada em
  * tests/helpers_test.php): um minuto entre um e outro e no máximo cinco
@@ -73,8 +80,12 @@ function motivoParaEsperarLink(PDO $conexao, int $idCoordenacao): ?string {
     return esperaParaNovoLink((int) $linha['no_dia'], $linha['segundos'] === null ? null : (float) $linha['segundos']);
 }
 
-/** Cria o link (vencendo os anteriores da mesma finalidade) e devolve o código, que só vai no e-mail. */
-function criarCodigoDeConfirmacao(PDO $conexao, int $idCoordenacao, string $email, string $finalidade): string {
+/**
+ * Cria o link (vencendo os anteriores da mesma finalidade) e devolve o
+ * código, que só vai no e-mail. $finalidade: 'cadastro', 'troca_email' ou
+ * 'redefinir_senha'.
+ */
+function criarCodigoDeConfirmacao(PDO $conexao, int $idCoordenacao, string $email, string $finalidade, int $validadeHoras = VALIDADE_LINK_HORAS): string {
     $conexao->prepare("
         UPDATE tb_verificacao_email SET expira_em = NOW()
         WHERE id_coordenacao = ? AND finalidade = ? AND usado_em IS NULL AND expira_em > NOW()
@@ -83,7 +94,7 @@ function criarCodigoDeConfirmacao(PDO $conexao, int $idCoordenacao, string $emai
     $conexao->prepare("
         INSERT INTO tb_verificacao_email (id_coordenacao, email, finalidade, token_hash, expira_em)
         VALUES (?, ?, ?, ?, NOW() + make_interval(hours => ?::int))
-    ")->execute([$idCoordenacao, $email, $finalidade, hashDoCodigo($codigo), VALIDADE_LINK_HORAS]);
+    ")->execute([$idCoordenacao, $email, $finalidade, hashDoCodigo($codigo), $validadeHoras]);
     return $codigo;
 }
 
@@ -142,6 +153,28 @@ function enviarLinkDeConfirmacao(PDO $conexao, array $conta, string $email, stri
     return enviarEmail($email, $assunto, $texto, $html);
 }
 
+/** Assunto, texto e HTML do e-mail com o link para criar uma senha nova (função pura). */
+function mensagemDeNovaSenha(string $nome, string $link): array {
+    $ola = 'Olá, ' . primeiroNome($nome) . '!';
+    $assunto = 'Crie uma senha nova no BioFrequência';
+    $pedido = 'Recebemos um pedido para criar uma senha nova para a sua conta no BioFrequência. Para continuar, abra o link abaixo.';
+    $validade = 'O link vale por ' . VALIDADE_LINK_SENHA_HORAS . ' hora e só funciona uma vez.';
+    $ignorar = 'Se não foi você que pediu, ignore esta mensagem: a sua senha continua a mesma.';
+    $texto = "$ola\n\n$pedido\n$link\n\n$validade $ignorar\n\nEquipe BioFrequência";
+    $html = htmlDoEmail([$ola, $pedido], 'Criar uma senha nova', $link, "$validade $ignorar Se o botão não abrir, copie este endereço: $link");
+    return [$assunto, $texto, $html];
+}
+
+/** Gera o link de senha nova e manda o e-mail. $conta: id_coordenacao, nome_coordenacao, email_coordenacao. Devolve ENVIO_*. */
+function enviarLinkDeNovaSenha(PDO $conexao, array $conta): string {
+    if (!emailConfigurado()) {
+        return ENVIO_SEM_PROVEDOR;
+    }
+    $codigo = criarCodigoDeConfirmacao($conexao, (int) $conta['id_coordenacao'], $conta['email_coordenacao'], 'redefinir_senha', VALIDADE_LINK_SENHA_HORAS);
+    [$assunto, $texto, $html] = mensagemDeNovaSenha($conta['nome_coordenacao'], linkDeNovaSenha($codigo));
+    return enviarEmail($conta['email_coordenacao'], $assunto, $texto, $html);
+}
+
 /**
  * Quem libera uma conta pendente: a gestão da escola, quando já existe
  * uma conta gestora ativa nela; senão, a equipe do sistema (ADMIN_EMAILS).
@@ -168,8 +201,10 @@ function mensagemDoCadastro(string $email, string $nomeEscola, string $aprovacao
 /** E-mail para quem aprova: alguém confirmou o e-mail e pediu acesso (função pura). */
 function mensagemDePedidoDeAcesso(array $conta, string $link): array {
     $municipio = trim((string) ($conta['municipio'] ?? '')) !== '' ? " ({$conta['municipio']})" : '';
+    $cargo = CARGOS_NA_ESCOLA[$conta['cargo'] ?? ''] ?? null;
+    $comoQuem = $cargo !== null ? ", como $cargo," : '';
     $assunto = "Nova conta aguardando aprovação: {$conta['nome_coordenacao']}";
-    $pedido = "{$conta['nome_coordenacao']} ({$conta['email_coordenacao']}) confirmou o e-mail e pediu acesso ao BioFrequência na {$conta['nome_escola']}$municipio.";
+    $pedido = "{$conta['nome_coordenacao']} ({$conta['email_coordenacao']}) confirmou o e-mail e pediu acesso ao BioFrequência$comoQuem na {$conta['nome_escola']}$municipio.";
     $texto = "$pedido\n\nPara aprovar ou recusar: $link\n\nEquipe BioFrequência";
     return [$assunto, $texto, htmlDoEmail([$pedido], 'Ver o pedido', $link)];
 }
@@ -178,7 +213,7 @@ function mensagemDePedidoDeAcesso(array $conta, string $link): array {
  * Uma conta pendente acabou de confirmar o e-mail: avisa quem aprova (a
  * gestão ativa da escola ou os e-mails de ADMIN_EMAILS). É um extra - sem
  * provedor de e-mail, o pedido aparece no contador do menu de quem aprova.
- * $conta: id_coordenacao, nome_coordenacao, email_coordenacao, id_escola, nome_escola, municipio.
+ * $conta: id_coordenacao, nome_coordenacao, email_coordenacao, cargo, id_escola, nome_escola, municipio.
  */
 function avisarQuemAprova(PDO $conexao, array $conta): void {
     if (!emailConfigurado()) {

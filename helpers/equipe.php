@@ -10,8 +10,18 @@ require_once __DIR__ . '/emailConta.php';
  *
  * Cada conta é de UMA escola (tb_coordenacao.id_escola). Toda conta nova
  * entra como "pendente" e só acessa depois de aprovada - e a aprovação só
- * libera depois que a pessoa confirmou o e-mail (migração 009). Quem é
- * aprovado numa escola ainda sem gestão ativa vira a gestão dela.
+ * libera depois que a pessoa confirmou o e-mail (migração 009).
+ *
+ * Cargo e permissão são coisas diferentes (migração 010):
+ *   - cargo: a função na escola (direção, vice-direção, coordenação,
+ *     secretaria, outro), informada no cadastro - só descritivo;
+ *   - papel: a permissão no sistema. "gestor" (Gestão) configura a escola,
+ *     aprova a equipe e apaga registros; "coordenador" (Coordenação) faz o
+ *     dia a dia.
+ * Quem aprova escolhe a permissão; sem escolha, vale a sugerida pelo cargo
+ * (direção e vice-direção: Gestão). Uma escola pode ter várias contas de
+ * Gestão. Quem é aprovado numa escola ainda sem gestão ativa vira a gestão
+ * dela, qualquer que seja o cargo.
  *
  * A escola nunca fica sem uma conta gestora ativa: desativar ou rebaixar
  * a última é recusado.
@@ -19,10 +29,13 @@ require_once __DIR__ . '/emailConta.php';
 
 const ACOES_EQUIPE = ['aprovar', 'recusar', 'desativar', 'reativar', 'tornar_gestor', 'tornar_coordenador'];
 
+/** Permissões no sistema: Gestão e Coordenação (cargos e sugestão: helpers/escola.php). */
+const PAPEIS = ['gestor', 'coordenador'];
+
 /** Conta de qualquer escola, para as ações da equipe. */
 function membroDaEquipe(PDO $conexao, $idCoordenacao): ?array {
     $stmt = $conexao->prepare("
-        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.id_escola, c.papel, c.situacao,
+        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.id_escola, c.papel, c.situacao, c.cargo,
                c.email_verificado_em IS NOT NULL AS email_verificado, e.nome_escola
         FROM tb_coordenacao c JOIN tb_escola e ON e.id_escola = c.id_escola
         WHERE c.id_coordenacao = ?
@@ -45,10 +58,11 @@ function membroDaEquipe(PDO $conexao, $idCoordenacao): ?array {
  * (ficaria sem gestão se esta deixasse de ser gestora ativa).
  *
  * Aprovar e reativar exigem o e-mail confirmado ($membro['email_verificado']).
- * Quem é aprovado numa escola sem gestão ativa vira gestor; com gestão,
- * coordenador (a gestão promove depois, se quiser).
+ * Na aprovação, $papelEscolhido ('gestor' ou 'coordenador') é a permissão
+ * que quem aprova escolheu; sem escolha, vale a sugerida pelo cargo. Numa
+ * escola sem gestão ativa, a pessoa aprovada é sempre gestor.
  */
-function proximoEstadoDoMembro(array $membro, string $acao, bool $ficaSemGestor): array {
+function proximoEstadoDoMembro(array $membro, string $acao, bool $ficaSemGestor, ?string $papelEscolhido = null): array {
     $situacao = $membro['situacao'];
     $papel = $membro['papel'];
     $semGestor = "A escola precisa de pelo menos uma conta gestora ativa: promova outra pessoa antes.";
@@ -58,7 +72,8 @@ function proximoEstadoDoMembro(array $membro, string $acao, bool $ficaSemGestor)
         case 'aprovar':
             if ($situacao !== 'pendente') return [$situacao, $papel, "Só contas aguardando aprovação podem ser aprovadas."];
             if (!$emailConfirmado) return [$situacao, $papel, $semEmail];
-            return ['ativo', $ficaSemGestor ? 'gestor' : 'coordenador', null];
+            if ($ficaSemGestor) return ['ativo', 'gestor', null];
+            return ['ativo', $papelEscolhido ?? papelSugeridoPeloCargo($membro['cargo'] ?? null), null];
         case 'recusar':
             return $situacao === 'pendente' ? ['recusado', $papel, null] : [$situacao, $papel, "Só contas aguardando aprovação podem ser recusadas."];
         case 'desativar':
@@ -82,11 +97,12 @@ function proximoEstadoDoMembro(array $membro, string $acao, bool $ficaSemGestor)
 /**
  * Aplica a ação e devolve a mensagem de erro (ou null). Conta que deixa
  * de estar ativa perde as sessões abertas na hora. Quem pediu o acesso
- * recebe um e-mail quando é aprovado ou recusado.
+ * recebe um e-mail quando é aprovado ou recusado. $papelEscolhido: a
+ * permissão escolhida na aprovação (ver proximoEstadoDoMembro).
  */
-function aplicarAcaoNaEquipe(PDO $conexao, array $membro, string $acao, int $idQuemFez): ?string {
+function aplicarAcaoNaEquipe(PDO $conexao, array $membro, string $acao, int $idQuemFez, ?string $papelEscolhido = null): ?string {
     $ficaSemGestor = !escolaTemGestor($conexao, $membro['id_escola'], $membro['id_coordenacao']);
-    [$situacao, $papel, $erro] = proximoEstadoDoMembro($membro, $acao, $ficaSemGestor);
+    [$situacao, $papel, $erro] = proximoEstadoDoMembro($membro, $acao, $ficaSemGestor, $papelEscolhido);
     if ($erro !== null) {
         return $erro;
     }
@@ -109,7 +125,7 @@ function aplicarAcaoNaEquipe(PDO $conexao, array $membro, string $acao, int $idQ
 /** Lista da equipe de uma escola (a mais recente primeiro entre as pendentes). */
 function equipeDaEscola(PDO $conexao, int $idEscola): array {
     $stmt = $conexao->prepare("
-        SELECT id_coordenacao, nome_coordenacao, email_coordenacao, papel, situacao, criado_em, aprovado_em,
+        SELECT id_coordenacao, nome_coordenacao, email_coordenacao, papel, cargo, situacao, criado_em, aprovado_em,
                email_verificado_em IS NOT NULL AS email_verificado
         FROM tb_coordenacao
         WHERE id_escola = ?

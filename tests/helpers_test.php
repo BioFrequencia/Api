@@ -26,6 +26,8 @@ require_once __DIR__ . '/../helpers/catalogoEscolas.php';
 require_once __DIR__ . '/../helpers/avisos.php';
 require_once __DIR__ . '/../helpers/equipe.php';
 require_once __DIR__ . '/../helpers/emailConta.php';
+require_once __DIR__ . '/../helpers/senha.php';
+require_once __DIR__ . '/../helpers/tentativas.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -52,11 +54,21 @@ afirmar('emailValido: vazio', emailValido('') === false);
 afirmar('emailValido: null', emailValido(null) === false);
 afirmar('emailValido: com espaço nas pontas', emailValido('  a@b.com  ') === true);
 
-// ---------- senhaForte ----------
-afirmar('senhaForte: 6+ caracteres', senhaForte('senha123') === true);
-afirmar('senhaForte: menos de 6', senhaForte('abc') === false);
+// ---------- senha forte (8+, maiúscula, minúscula, número e especial) ----------
+afirmar('senhaForte: cumpre tudo', senhaForte('Senha@123') === true);
+afirmar('senhaForte: acentos contam como letras', senhaForte('Ação#2026') === true);
+afirmar('senhaForte: só minúsculas e números (a regra antiga aceitava)', senhaForte('senha123') === false);
 afirmar('senhaForte: vazia', senhaForte('') === false);
-afirmar('senhaForte: limite customizado', senhaForte('12345678', 8) === true);
+afirmar('requisitos: curta lista tudo o que falta', requisitosSenhaPendentes('abc') === [
+    'pelo menos 8 caracteres', 'uma letra maiúscula', 'um número', 'um caractere especial (ex.: ! @ # $ %)']);
+afirmar('requisitos: espaço não conta como caractere especial', requisitosSenhaPendentes('Senha 1234') === ['um caractere especial (ex.: ! @ # $ %)']);
+afirmar('requisitos: sem minúscula', requisitosSenhaPendentes('SENHA@123') === ['uma letra minúscula']);
+afirmar('requisitos: mais de 128 caracteres', requisitosSenhaPendentes('Aa1!' . str_repeat('x', 125)) === ['no máximo 128 caracteres']);
+afirmar('requisitos: exatamente 8 é aceito', requisitosSenhaPendentes('Abcde1!x') === []);
+afirmar('mensagem com dois itens', mensagemRequisitosSenha(['uma letra maiúscula', 'um número']) === 'A senha precisa ter uma letra maiúscula e um número.');
+afirmar('mensagem com três itens', mensagemRequisitosSenha(['pelo menos 8 caracteres', 'uma letra maiúscula', 'um número'])
+    === 'A senha precisa ter pelo menos 8 caracteres, uma letra maiúscula e um número.');
+afirmar('mensagem com um item', mensagemRequisitosSenha(['um número']) === 'A senha precisa ter um número.');
 
 // ---------- inteiroValido ----------
 afirmar('inteiroValido: inteiro positivo', inteiroValido(5) === true);
@@ -204,6 +216,20 @@ afirmar('aprovar conta pendente numa escola com gestão: coordenador', proximoEs
 afirmar('aprovar a primeira conta de uma escola sem gestão: vira gestor', proximoEstadoDoMembro($pendente, 'aprovar', true) === ['ativo', 'gestor', null]);
 afirmar('conta pedida como gestora, aprovada quando a escola já tem gestão: coordenador',
     proximoEstadoDoMembro(['papel' => 'gestor'] + $pendente, 'aprovar', false) === ['ativo', 'coordenador', null]);
+// Cargo e permissão (migração 010): quem aprova escolhe; sem escolha, vale a sugerida pelo cargo.
+afirmar('diretora aprovada numa escola que já tem gestão: Gestão (sugerida pelo cargo)',
+    proximoEstadoDoMembro(['cargo' => 'direcao'] + $pendente, 'aprovar', false) === ['ativo', 'gestor', null]);
+afirmar('vice-direção: também Gestão', proximoEstadoDoMembro(['cargo' => 'vice_direcao'] + $pendente, 'aprovar', false)[1] === 'gestor');
+afirmar('coordenadora pedagógica: Coordenação', proximoEstadoDoMembro(['cargo' => 'coordenacao'] + $pendente, 'aprovar', false)[1] === 'coordenador');
+afirmar('quem aprova escolhe Coordenação para a diretora',
+    proximoEstadoDoMembro(['cargo' => 'direcao'] + $pendente, 'aprovar', false, 'coordenador') === ['ativo', 'coordenador', null]);
+afirmar('quem aprova escolhe Gestão para a secretaria',
+    proximoEstadoDoMembro(['cargo' => 'secretaria'] + $pendente, 'aprovar', false, 'gestor') === ['ativo', 'gestor', null]);
+afirmar('escola sem gestão: a pessoa aprovada é gestor mesmo com Coordenação escolhida',
+    proximoEstadoDoMembro(['cargo' => 'secretaria'] + $pendente, 'aprovar', true, 'coordenador') === ['ativo', 'gestor', null]);
+afirmar('cargo: válidos e inválidos', cargoValido('direcao') && cargoValido('outro') && !cargoValido('diretor') && !cargoValido(null) && !cargoValido(''));
+afirmar('cargo: sugestão de permissão', papelSugeridoPeloCargo('direcao') === 'gestor' && papelSugeridoPeloCargo('vice_direcao') === 'gestor'
+    && papelSugeridoPeloCargo('coordenacao') === 'coordenador' && papelSugeridoPeloCargo(null) === 'coordenador');
 $semEmail = ['email_verificado' => false] + $pendente;
 afirmar('aprovar conta que não confirmou o e-mail: recusado, sem mudar nada', proximoEstadoDoMembro($semEmail, 'aprovar', true) === ['pendente', 'coordenador',
     proximoEstadoDoMembro($semEmail, 'aprovar', true)[2]] && str_contains((string) proximoEstadoDoMembro($semEmail, 'aprovar', true)[2], 'e-mail'));
@@ -446,6 +472,43 @@ afirmar('chamado: categoria desconhecida', lerChamado(['categoria' => 'outra', '
 afirmar('chamado: assunto curto demais', lerChamado(['categoria' => 'duvida', 'assunto' => 'Oi', 'mensagem' => 'Mensagem longa o bastante.'])[1] !== null);
 afirmar('chamado: mensagem curta demais', lerChamado(['categoria' => 'duvida', 'assunto' => 'Assunto', 'mensagem' => 'Curta'])[1] !== null);
 afirmar('chamado: mensagem longa demais', lerChamado(['categoria' => 'duvida', 'assunto' => 'Assunto', 'mensagem' => str_repeat('a', 4001)])[1] !== null);
+
+// ---------- hash de senha (helpers/senha.php) ----------
+$comArgon = defined('PASSWORD_ARGON2ID');
+$hashNovo = gerarHashSenha('Senha@123');
+afirmar('hash novo: Argon2id (ou bcrypt num PHP sem argon2)', str_starts_with($hashNovo, $comArgon ? '$argon2id$' : '$2y$'));
+afirmar('hash novo confere e não precisa atualizar', verificarSenhaComMigracao('Senha@123', $hashNovo) === ['valida' => true, 'precisaAtualizar' => false]);
+afirmar('senha errada contra hash novo', verificarSenhaComMigracao('Senha@124', $hashNovo) === ['valida' => false, 'precisaAtualizar' => false]);
+$hashBcrypt = password_hash('Senha@123', PASSWORD_BCRYPT);
+afirmar('hash bcrypt antigo: confere e pede conversão (com argon2)', verificarSenhaComMigracao('Senha@123', $hashBcrypt) === ['valida' => true, 'precisaAtualizar' => $comArgon]);
+afirmar('hash antigo com senha errada: não pede conversão', verificarSenhaComMigracao('errada', $hashBcrypt) === ['valida' => false, 'precisaAtualizar' => false]);
+afirmar('texto puro legado: confere e pede conversão', verificarSenhaComMigracao('antiga', 'antiga') === ['valida' => true, 'precisaAtualizar' => true]);
+afirmar('hash para e-mail inexistente nunca confere', !password_verify('Senha@123', HASH_PARA_EMAIL_INEXISTENTE)
+    && str_starts_with(HASH_PARA_EMAIL_INEXISTENTE, '$argon2id$'));
+
+// ---------- limite de tentativas de login (helpers/tentativas.php) ----------
+afirmar('login: 4 erros com o e-mail ainda deixam tentar', esperaParaNovoLogin([10, 20, 30, 40], []) === null);
+afirmar('login: 5 erros em 15 min bloqueiam até o quinto mais novo sair da janela', esperaParaNovoLogin([10, 20, 30, 40, 50], []) === 850);
+afirmar('login: erro de mais de 15 min não conta', esperaParaNovoLogin([10, 20, 30, 40, 1000], []) === null);
+afirmar('login: com 6 erros, vale o quinto mais novo', esperaParaNovoLogin([60, 10, 50, 20, 40, 30], []) === 850);
+afirmar('login: 19 erros da rede ainda deixam tentar', esperaParaNovoLogin([], array_fill(0, 19, 5)) === null);
+afirmar('login: 20 erros da rede bloqueiam a rede', esperaParaNovoLogin([], array_fill(0, 20, 100)) === 800);
+afirmar('login: com os dois limites, vale a espera maior', esperaParaNovoLogin([1, 2, 3, 4, 5], array_fill(0, 20, 600)) === 895);
+afirmar('login: mensagem em minutos (arredonda para cima)', mensagemDeEsperaDoLogin(61) === 'Muitas tentativas erradas. Por segurança, espere 2 minutos e tente de novo.'
+    && str_contains(mensagemDeEsperaDoLogin(30), 'espere 1 minuto '));
+afirmar('login: e-mail igual com caixa e espaços diferentes = mesma chave', chaveDoEmailDeLogin(' Ana@Escola.test ') === chaveDoEmailDeLogin('ana@escola.test'));
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '1.2.3.4, 203.0.113.9';
+$_SERVER['REMOTE_ADDR'] = '10.0.0.1';
+afirmar('IP: o último do X-Forwarded-For (o que o balanceador acrescentou)', ipDoCliente() === '203.0.113.9');
+$_SERVER['HTTP_X_FORWARDED_FOR'] = 'lixo';
+afirmar('IP: X-Forwarded-For inválido cai no REMOTE_ADDR', ipDoCliente() === '10.0.0.1');
+unset($_SERVER['HTTP_X_FORWARDED_FOR'], $_SERVER['REMOTE_ADDR']);
+
+// ---------- e-mail de senha nova (helpers/emailConta.php) ----------
+[$assuntoSenha, $textoSenha, $htmlSenha] = mensagemDeNovaSenha('Ana Lima', 'https://site.test/redefinir-senha?codigo=abc');
+afirmar('e-mail de senha nova: link, validade de 1 hora e "ignore se não foi você"', str_contains($textoSenha, 'https://site.test/redefinir-senha?codigo=abc')
+    && str_contains($textoSenha, '1 hora') && str_contains($textoSenha, 'ignore') && str_contains($assuntoSenha, 'senha nova')
+    && str_contains($htmlSenha, 'Criar uma senha nova'));
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

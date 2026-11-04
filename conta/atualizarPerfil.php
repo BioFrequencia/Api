@@ -31,6 +31,8 @@ $nome = $texto("nome_coordenacao");
 $email = mb_strtolower($texto("email_coordenacao"));
 $nomeEscola = $texto("nome_escola");
 $senhaAtual = $dados["senha_atual"] ?? null;
+// O cargo é opcional aqui (clientes antigos não mandam): sem ele, fica o que estava.
+$cargo = array_key_exists("cargo", $dados) ? $dados["cargo"] : false;
 
 if ($nome === '' || mb_strlen($nome) > 150) {
     enviarErro("Informe o nome da coordenação (até 150 caracteres).", 422);
@@ -40,6 +42,9 @@ if (!emailValido($email) || mb_strlen($email) > 150) {
 }
 if (mb_strlen($nomeEscola) > 150) {
     enviarErro("O nome da escola deve ter até 150 caracteres.", 422);
+}
+if ($cargo !== false && !cargoValido($cargo)) {
+    enviarErro("Cargo inválido: escolha direção, vice-direção, coordenação pedagógica, secretaria ou outro.", 422);
 }
 
 try {
@@ -84,8 +89,8 @@ try {
     }
 
     $conexao->beginTransaction();
-    $conexao->prepare("UPDATE tb_coordenacao SET nome_coordenacao = ? WHERE id_coordenacao = ?")
-        ->execute([$nome, $idCoordenacao]);
+    $conexao->prepare("UPDATE tb_coordenacao SET nome_coordenacao = ?, cargo = COALESCE(?, cargo) WHERE id_coordenacao = ?")
+        ->execute([$nome, $cargo === false ? null : $cargo, $idCoordenacao]);
     if ($mudarEscola) {
         $conexao->prepare("UPDATE tb_escola SET nome_escola = ? WHERE id_escola = ?")
             ->execute([$nomeEscola, $conta['id_escola']]);

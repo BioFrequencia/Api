@@ -18,6 +18,7 @@ const OBJETOS_POR_MIGRACAO = [
               'tb_atraso.origem', 'tb_responsavel.canal_preferido', 'tb_aluno_responsavel.parentesco', 'tb_aluno.criado_em',
               'tb_notificacao.tipo_aviso'],
     '009' => ['tb_verificacao_email', 'tb_coordenacao.email_verificado_em'],
+    '010' => ['tb_tentativa_login', 'tb_coordenacao.cargo'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */

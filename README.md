@@ -150,8 +150,20 @@ docs/             arquitetura
 
 ## Segurança
 
-- Senhas com `password_hash`/`password_verify` (migração automática de
-  contas antigas em texto puro).
+- Senhas com Argon2id (`helpers/senha.php`, parâmetros mínimos do
+  OWASP); hashes antigos (bcrypt, ou texto puro de antes da primeira
+  correção) viram Argon2id no próximo login certo.
+- Senha forte obrigatória (cadastro, troca e senha nova): 8 a 128
+  caracteres, com maiúscula, minúscula, número e caractere especial. A
+  API responde 422 com a lista do que falta em `dados.requisitos_senha`.
+- Limite de tentativas de login (`helpers/tentativas.php`, migração 010):
+  5 erros com o mesmo e-mail ou 20 da mesma rede em 15 minutos fazem
+  esperar (429 com `Retry-After`). E-mail e IP ficam só como hash, e a
+  resposta leva o mesmo tempo com ou sem conta para o e-mail.
+- "Esqueci minha senha" (`conta/esqueciSenha.php` →
+  `conta/redefinirSenha.php`): link por e-mail que vale 1 hora e uma vez,
+  com resposta igual para e-mail com ou sem conta; a senha nova derruba
+  todos os aparelhos conectados.
 - Autenticação via JWT (`Authorization: Bearer <token>`) obrigatória em
   todo endpoint que expõe dado de aluno/coordenação.
 - Mensagens de erro para o cliente nunca incluem detalhes de exceção/SQL

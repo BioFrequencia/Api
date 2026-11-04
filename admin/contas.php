@@ -42,7 +42,7 @@ try {
     $totalRegistros = (int) $total->fetchColumn();
 
     $stmt = $conexao->prepare("
-        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.papel, c.situacao, c.criado_em,
+        SELECT c.id_coordenacao, c.nome_coordenacao, c.email_coordenacao, c.papel, c.cargo, c.situacao, c.criado_em,
                c.email_verificado_em IS NOT NULL AS email_verificado, e.id_escola, e.nome_escola, e.municipio,
                (SELECT MAX(s.ultimo_acesso) FROM tb_sessao s WHERE s.id_coordenacao = c.id_coordenacao) AS ultimo_acesso
         FROM tb_coordenacao c
