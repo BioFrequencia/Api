@@ -202,6 +202,21 @@ jobs:
             echo "::error::subiu sem as variáveis obrigatórias"; exit 1
           fi
 
+      # firebase/php-jwt 7 recusa chave HS256 com menos de 32 bytes: com
+      # ela ninguém entraria, então o contêiner nem deve subir. O timeout
+      # faz uma regressão (contêiner que sobe) falhar em vez de travar.
+      - name: Falha com JWT_SECRET_KEY curta
+        run: |
+          saida=$(timeout 60 docker run --rm --name api-chave-curta \
+            -e PORT=8082 -e DB_HOST=sem-banco -e DB_PORT=5432 -e DB_NAME=x -e DB_USER=x -e DB_PASSWORD=x \
+            -e JWT_SECRET_KEY=chave-curta-de-31-caracteres-xy biofrequencia-api:ci 2>&1 || true)
+          docker rm -f api-chave-curta > /dev/null 2>&1 || true
+          if printf '%s' "$saida" | grep -q "JWT_SECRET_KEY precisa ter pelo menos 32"; then
+            echo "ok: recusa subir com chave JWT curta"
+          else
+            echo "::error::subiu com JWT_SECRET_KEY curta"; exit 1
+          fi
+
       - name: Health check acusa banco sem migrações (503)
         run: |
           docker run -d --name api-sem-schema --network host \

@@ -19,6 +19,17 @@ if [ -n "$faltando" ]; then
     exit 1
 fi
 
+# A biblioteca de JWT (firebase/php-jwt 7) recusa chave HS256 com menos de
+# 32 bytes, ao criar e ao conferir o token: com chave curta, ninguém
+# entraria. Melhor nem subir - no Render o deploy falha e a versão
+# anterior continua no ar. O log diz só o tamanho mínimo, nunca a chave.
+tamanhoDaChave=$(printf '%s' "$JWT_SECRET_KEY" | wc -c | tr -d ' ')
+if [ "$tamanhoDaChave" -lt 32 ]; then
+    echo "ERRO: JWT_SECRET_KEY precisa ter pelo menos 32 caracteres (bytes)." >&2
+    echo "Gere uma com: php -r \"echo bin2hex(random_bytes(32));\" (trocar a chave encerra as sessões abertas)." >&2
+    exit 1
+fi
+
 # printf com %s e não interpolação direta: uma senha com aspas ou
 # barra invertida quebraria o arquivo PHP gerado.
 {
