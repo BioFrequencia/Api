@@ -28,6 +28,7 @@ require_once __DIR__ . '/../helpers/equipe.php';
 require_once __DIR__ . '/../helpers/emailConta.php';
 require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/tentativas.php';
+require_once __DIR__ . '/../helpers/importacao.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -523,6 +524,104 @@ unset($_SERVER['HTTP_X_FORWARDED_FOR'], $_SERVER['REMOTE_ADDR']);
 afirmar('e-mail de senha nova: link, validade de 1 hora e "ignore se não foi você"', str_contains($textoSenha, 'https://site.test/redefinir-senha?codigo=abc')
     && str_contains($textoSenha, '1 hora') && str_contains($textoSenha, 'ignore') && str_contains($assuntoSenha, 'senha nova')
     && str_contains($htmlSenha, 'Criar uma senha nova'));
+
+// ---------- importação de turmas e alunos por planilha ----------
+afirmar('importação: cabeçalho sem acento e sem diferença de maiúsculas', normalizarTexto('  Período  da AULA ') === 'periodo da aula');
+$cabecalho = mapearCabecalho([1 => 'Nome completo', 2 => 'TURMA', 3 => 'Data de Nascimento', 4 => 'Sexo', 5 => 'Observações'], COLUNAS_ALUNOS, COLUNAS_OBRIGATORIAS['alunos']);
+afirmar('importação: acha as colunas pelos nomes aceitos (Sexo = Gênero)', $cabecalho['mapa'] === ['nome' => 1, 'turma' => 2, 'nascimento' => 3, 'genero' => 4]
+    && $cabecalho['faltando'] === [] && $cabecalho['ignoradas'] === ['Observações']);
+$semGenero = mapearCabecalho([1 => 'Aluno', 2 => 'Sala', 3 => 'Nascimento'], COLUNAS_ALUNOS, COLUNAS_OBRIGATORIAS['alunos']);
+afirmar('importação: diz qual coluna obrigatória falta', $semGenero['faltando'] === ['Genero']);
+afirmar('importação: período por sinônimo', lerPeriodo('manhã') === 'Matutino' && lerPeriodo('TARDE') === 'Vespertino'
+    && lerPeriodo('Noite') === 'Noturno' && lerPeriodo('integral') === 'Integral' && lerPeriodo('Indefinido') === null && lerPeriodo('') === null);
+afirmar('importação: gênero do aluno por letra ou nome', lerGeneroAluno('f') === 'Feminino' && lerGeneroAluno(' MASC ') === 'Masculino' && lerGeneroAluno('X') === null);
+afirmar('importação: canal em branco vale WhatsApp', lerCanal('') === 'whatsapp' && lerCanal('E-mail') === 'email' && lerCanal('Ambos') === 'ambos' && lerCanal('carta') === null);
+afirmar('importação: horário em texto', lerHora('7:05') === ['07:05', null] && lerHora('07h30') === ['07:30', null] && lerHora('13h') === ['13:00', null]);
+afirmar('importação: horário guardado pelo Excel (fração do dia)', lerHora(0.3125) === ['07:30', null] && lerHora(null) === [null, null]);
+afirmar('importação: horário impossível', lerHora('25:00')[1] !== null && lerHora('tarde')[1] !== null);
+afirmar('importação: data guardada pelo Excel (dias desde 30/12/1899)', lerDataDeNascimento(40179) === ['2010-01-01', null] && lerDataDeNascimento('40179') === ['2010-01-01', null]);
+afirmar('importação: data em texto', lerDataDeNascimento('05/03/2014') === ['2014-03-05', null] && lerDataDeNascimento('5-3-2014') === ['2014-03-05', null]
+    && lerDataDeNascimento('2014-03-05') === ['2014-03-05', null]);
+afirmar('importação: data inválida, futura ou em branco', lerDataDeNascimento('31/02/2014')[1] !== null
+    && lerDataDeNascimento(date('d/m/Y', strtotime('+2 days')))[1] !== null && lerDataDeNascimento('')[1] !== null);
+afirmar('importação: célula com número inteiro vira texto sem ".0"', textoDaCelula(12345.0) === '12345' && textoDaCelula('  1º   A ') === '1º A');
+
+$turmaOk = conferirLinhaDeTurma(['turma' => ' 6º  B ', 'periodo' => 'tarde', 'inicio' => '13:00', 'fim' => '18:20']);
+afirmar('importação: turma válida sai arrumada', $turmaOk['erros'] === [] && $turmaOk['nome'] === '6º B' && $turmaOk['periodo'] === 'Vespertino'
+    && $turmaOk['inicio'] === '13:00' && $turmaOk['fim'] === '18:20');
+$turmaRuim = conferirLinhaDeTurma(['turma' => '', 'periodo' => 'madrugada', 'inicio' => '10:00', 'fim' => null]);
+afirmar('importação: turma sem nome, com período desconhecido e só o início', count($turmaRuim['erros']) === 3);
+afirmar('importação: fim da aula antes do início', in_array('o fim da aula precisa ser depois do início',
+    conferirLinhaDeTurma(['turma' => '1º A', 'periodo' => 'Matutino', 'inicio' => '12:00', 'fim' => '07:00'])['erros'], true));
+
+$alunoOk = conferirLinhaDeAluno(['nome' => 'Ana Lima', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F']);
+afirmar('importação: aluno sem responsável', $alunoOk['erros'] === [] && $alunoOk['responsavel'] === null && $alunoOk['nascimento'] === '2015-03-02');
+$comResponsavel = conferirLinhaDeAluno(['nome' => 'Ana Lima', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F',
+    'responsavel' => 'Maria Lima', 'cpf' => 52998224725, 'telefone' => '(11) 98888-7777', 'email' => 'Maria@Escola.test', 'parentesco' => 'Mãe', 'canal' => 'ambos']);
+afirmar('importação: responsável com CPF e telefone só com dígitos e e-mail minúsculo', $comResponsavel['erros'] === []
+    && $comResponsavel['responsavel']['cpf'] === '52998224725' && $comResponsavel['responsavel']['telefone'] === '11988887777'
+    && $comResponsavel['responsavel']['email'] === 'maria@escola.test' && $comResponsavel['responsavel']['canal'] === 'ambos');
+$cpfSemZero = conferirLinhaDeAluno(['nome' => 'Bia', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F',
+    'responsavel' => 'Rui', 'cpf' => 4580213696.0, 'telefone' => '11977776666']);
+afirmar('importação: CPF que o Excel guardou como número volta com o zero da frente', $cpfSemZero['responsavel']['cpf'] === '04580213696' && $cpfSemZero['erros'] === []);
+$responsavelIncompleto = conferirLinhaDeAluno(['nome' => 'Ana', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F', 'email' => 'a@b.test', 'canal' => 'e-mail']);
+afirmar('importação: responsável começado pede nome, CPF e telefone', count($responsavelIncompleto['erros']) === 3);
+afirmar('importação: avisar por e-mail sem e-mail', in_array('para avisar por e-mail, informe o e-mail do responsável', conferirLinhaDeAluno([
+    'nome' => 'Ana', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F', 'responsavel' => 'Rui', 'cpf' => '52998224725',
+    'telefone' => '11977776666', 'canal' => 'E-mail'])['erros'], true));
+
+$escolaVazia = ['turmas' => [], 'alunos' => [], 'responsaveis' => [], 'telefones' => [], 'emails' => []];
+$escola = [
+    'turmas' => ['1o a' => ['id_sala' => 1, 'nome_sala' => '1º A']],
+    'alunos' => ['carla dias|2014-05-01' => true],
+    'responsaveis' => [
+        '52998224725' => ['id_responsavel' => 7, 'nome' => 'Maria Lima', 'telefone' => '11988887777', 'email' => null, 'vinculos' => 1, 'na_escola' => true],
+        '11144477735' => ['id_responsavel' => 8, 'nome' => 'Outra Escola', 'telefone' => '11955554444', 'email' => null, 'vinculos' => 2, 'na_escola' => false],
+    ],
+    'telefones' => ['11988887777' => '52998224725', '11955554444' => '11144477735'],
+    'emails' => [],
+];
+$previa = montarPreviaDaImportacao([
+    'turmas' => [
+        [2, ['turma' => '1º A', 'periodo' => 'Matutino']],
+        [3, ['turma' => '2º B', 'periodo' => 'Vespertino']],
+        [4, ['turma' => '2º  b', 'periodo' => 'Vespertino']],
+        [5, ['turma' => '3º C', 'periodo' => '']],
+    ],
+    'alunos' => [
+        [2, ['nome' => 'Ana Lima', 'turma' => '1º a', 'nascimento' => '02/03/2015', 'genero' => 'F', 'responsavel' => 'Maria', 'cpf' => '52998224725', 'telefone' => '11988887777']],
+        [3, ['nome' => 'Bruno Lima', 'turma' => '2º B', 'nascimento' => '10/10/2013', 'genero' => 'M', 'responsavel' => 'João Souza', 'cpf' => '39053344705', 'telefone' => '11933332222']],
+        [4, ['nome' => 'Caio Lima', 'turma' => '2º B', 'nascimento' => '11/11/2016', 'genero' => 'M', 'responsavel' => 'João Souza', 'cpf' => '39053344705', 'telefone' => '11933332222']],
+        [5, ['nome' => 'Carla Dias', 'turma' => '1º A', 'nascimento' => '01/05/2014', 'genero' => 'F']],
+        [6, ['nome' => 'Davi', 'turma' => '3º C', 'nascimento' => '01/01/2015', 'genero' => 'M']],
+        [7, ['nome' => 'Eva', 'turma' => '9º Z', 'nascimento' => '01/01/2015', 'genero' => 'F']],
+        [8, ['nome' => 'Bruno  LIMA', 'turma' => '2º B', 'nascimento' => '10/10/2013', 'genero' => 'M']],
+        [9, ['nome' => 'Fábio', 'turma' => '1º A', 'nascimento' => '01/01/2015', 'genero' => 'M', 'responsavel' => 'X', 'cpf' => '11144477735', 'telefone' => '11911112222']],
+        [10, ['nome' => 'Gil', 'turma' => '1º A', 'nascimento' => '01/01/2015', 'genero' => 'M', 'responsavel' => 'Y', 'cpf' => '86288366757', 'telefone' => '11955554444']],
+    ],
+], $escola);
+$situacoes = fn(array $linhas) => array_map(fn($l) => $l['linha'] . ':' . $l['situacao'], $linhas);
+afirmar('importação: turma que a escola já tem fica como está; repetida e sem período são erro',
+    $situacoes($previa['turmas']) === ['2:existente', '3:nova', '4:erro', '5:erro']);
+afirmar('importação: alunos novos, irmãos, já cadastrado, turma com erro, turma inexistente, repetido, CPF de outra escola e telefone de outro',
+    $situacoes($previa['alunos']) === ['2:novo', '3:novo', '4:novo', '5:existente', '6:erro', '7:erro', '8:erro', '9:erro', '10:erro']);
+afirmar('importação: o aluno usa o nome da turma como está na escola', $previa['alunos'][0]['turma'] === '1º A');
+afirmar('importação: responsável que já está na escola só é vinculado', $previa['alunos'][0]['responsavel']['situacao'] === 'vincular'
+    && $previa['alunos'][0]['responsavel']['id_responsavel'] === 7);
+afirmar('importação: irmãos com o mesmo CPF - o segundo usa o responsável do primeiro',
+    $previa['alunos'][1]['responsavel']['situacao'] === 'novo' && $previa['alunos'][2]['responsavel']['situacao'] === 'mesmo');
+afirmar('importação: os erros dizem o motivo', str_contains(implode(' ', $previa['alunos'][4]['erros']), 'tem erro na aba Turmas')
+    && str_contains(implode(' ', $previa['alunos'][5]['erros']), 'não existe na escola')
+    && str_contains(implode(' ', $previa['alunos'][6]['erros']), 'repetido na planilha (linha 3)')
+    && str_contains(implode(' ', $previa['alunos'][7]['erros']), 'outra escola')
+    && str_contains(implode(' ', $previa['alunos'][8]['erros']), 'telefone do responsável já é de outro'));
+afirmar('importação: resumo da prévia', $previa['resumo'] === [
+    'turmas_novas' => 1, 'turmas_existentes' => 1, 'turmas_com_erro' => 2,
+    'alunos_novos' => 3, 'alunos_existentes' => 1, 'alunos_com_erro' => 5,
+    'responsaveis_novos' => 1, 'responsaveis_vinculados' => 2,
+]);
+$soAlunos = montarPreviaDaImportacao(['alunos' => [[2, ['nome' => 'Ana', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F']]]], $escolaVazia);
+afirmar('importação: sem a turma na escola nem no arquivo, o aluno não entra', $soAlunos['alunos'][0]['situacao'] === 'erro' && $soAlunos['turmas'] === []);
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

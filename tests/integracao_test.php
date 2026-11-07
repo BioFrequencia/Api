@@ -1572,6 +1572,162 @@ sql("UPDATE tb_verificacao_email SET expira_em = NOW() - INTERVAL '1 minute' WHE
 $r = post('conta/redefinirSenha.php', ['codigo' => $codigoVencido, 'senha_nova' => 'Outra#Senha99']);
 verificar('link vencido: 410', $codigoVencido !== $codigoSenha && $r['status'] === 410, $r['texto']);
 
+// ------------------------------------------------------------ importação por planilha
+secao('Importação de turmas e alunos por planilha');
+require_once '/var/www/html/vendor/autoload.php';
+
+/** Um .xlsx de verdade, gerado aqui: ['Turmas' => [[cabeçalho], [linha], ...], 'Alunos' => [...]]. */
+function planilhaDeTeste(array $abas, string $extensao = 'xlsx'): string {
+    $planilha = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+    $planilha->removeSheetByIndex(0);
+    foreach ($abas as $nome => $linhas) {
+        $aba = $planilha->createSheet();
+        $aba->setTitle($nome);
+        foreach ($linhas as $i => $linha) {
+            foreach (array_values($linha) as $j => $valor) {
+                if ($valor !== null) $aba->setCellValue([$j + 1, $i + 1], $valor);
+            }
+        }
+    }
+    $arquivo = tempnam(sys_get_temp_dir(), 'imp') . '.' . $extensao;
+    \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($planilha, ucfirst($extensao))->save($arquivo);
+    return $arquivo;
+}
+
+/** POST multipart com o arquivo no campo "arquivo" (e outros campos, como o hash). */
+function enviarPlanilha(string $caminho, ?string $arquivoLocal, ?string $token, array $campos = [], ?string $nome = null): array {
+    global $api;
+    $ch = curl_init($api . '/' . $caminho);
+    $corpo = $campos;
+    if ($arquivoLocal !== null) {
+        $corpo['arquivo'] = new CURLFile($arquivoLocal, 'application/octet-stream', $nome ?? basename($arquivoLocal));
+    }
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $corpo,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_HTTPHEADER => $token !== null ? ['Authorization: Bearer ' . $token] : [],
+    ]);
+    $texto = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $tipo = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    curl_close($ch);
+    return ['status' => $status, 'tipo' => $tipo, 'texto' => $texto, 'json' => json_decode($texto, true)];
+}
+
+$tImporta = post('user/selectCoord.php', ['email' => 'coord3@escola.test', 'senha' => 'Senha@123'])['json']['dados']['token'] ?? '';
+verificar('importação: a gestão da Helen entra para importar', $tImporta !== '');
+
+$r = enviarPlanilha('importacao/modelo.php', null, $tImporta);
+$modelo = tempnam(sys_get_temp_dir(), 'modelo') . '.xlsx';
+file_put_contents($modelo, $r['texto']);
+$abasDoModelo = [];
+$cabecalhoAlunos = [];
+$instrucoes = '';
+try {
+    $lido = \PhpOffice\PhpSpreadsheet\IOFactory::load($modelo);
+    $abasDoModelo = $lido->getSheetNames();
+    $cabecalhoAlunos = $lido->getSheetByName('Alunos')->rangeToArray('A1:J1')[0];
+    $instrucoes = implode("\n", array_column($lido->getSheetByName('Instruções')->toArray(), 0));
+} catch (Throwable $erro) {
+    $instrucoes = $erro->getMessage();
+}
+verificar('importação: o modelo é um .xlsx com Instruções, Turmas, Alunos e as listas', $r['status'] === 200
+    && str_contains($r['tipo'], 'spreadsheetml') && $abasDoModelo === ['Instruções', 'Turmas', 'Alunos', 'Listas'], $r['status'] . ' ' . json_encode($abasDoModelo));
+verificar('importação: o modelo tem as colunas do aluno e do responsável', $cabecalhoAlunos === [
+    'Nome completo', 'Turma', 'Data de nascimento', 'Gênero', 'Responsável', 'CPF do responsável',
+    'Telefone do responsável', 'E-mail do responsável', 'Parentesco', 'Avisar por',
+], json_encode($cabecalhoAlunos));
+verificar('importação: o modelo lista as turmas que a escola já tem', str_contains($instrucoes, '3º A') && str_contains($instrucoes, '3º N'), $instrucoes);
+verificar('importação: o modelo pede login', enviarPlanilha('importacao/modelo.php', null, null)['status'] === 401);
+
+$r = enviarPlanilha('importacao/previa.php', null, $tImporta);
+verificar('importação: sem arquivo: 422', $r['status'] === 422, $r['texto']);
+$texto = tempnam(sys_get_temp_dir(), 'txt');
+file_put_contents($texto, "não é planilha");
+$r = enviarPlanilha('importacao/previa.php', $texto, $tImporta, [], 'alunos.txt');
+verificar('importação: extensão que não é de planilha: 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', '.xlsx'), $r['texto']);
+$r = enviarPlanilha('importacao/previa.php', $texto, $tImporta, [], 'alunos.xlsx');
+verificar('importação: .xlsx falso (texto renomeado): 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'de verdade'), $r['texto']);
+$semColunas = planilhaDeTeste(['Alunos' => [['Aluno', 'Classe'], ['Ana', '3º A']]]);
+$r = enviarPlanilha('importacao/previa.php', $semColunas, $tImporta);
+verificar('importação: aba Alunos sem as colunas obrigatórias diz quais faltam', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', 'Turma') && str_contains($r['json']['mensagem'] ?? '', 'Data de nascimento'), $r['texto']);
+
+$cabecalhoTurmas = ['Turma', 'Período', 'Início da aula', 'Fim da aula'];
+$cabecalhoDeAlunos = ['Nome completo', 'Turma', 'Data de nascimento', 'Gênero', 'Responsável', 'CPF do responsável', 'Telefone do responsável', 'E-mail do responsável', 'Parentesco', 'Avisar por'];
+$importacao = planilhaDeTeste([
+    'Turmas' => [
+        $cabecalhoTurmas,
+        ['3º a', 'Matutino', null, null],          // já existe (3º A)
+        ['4º A', 'manhã', '07:10', '12:30'],       // nova, com horário
+        ['4º B', 'Tarde', null, null],             // nova, horário do período
+        ['4º C', 'Madrugada', null, null],         // erro: período
+    ],
+    'Alunos' => [
+        $cabecalhoDeAlunos,
+        ['Paula Planilha', '4º A', 41640, 'F', 'Rosa Planilha', '529.982.247-25', '(11) 97777-1111', 'rosa@familia.test', 'Mãe', 'Ambos'],
+        ['Pedro Planilha', '4º A', '15/06/2013', 'masculino', 'Rosa Planilha', '52998224725', '11977771111', null, 'Mãe', null],
+        ['Quênia Planilha', '3º A', '01/02/2014', 'Feminino', null, null, null, null, null, null],
+        ['Tina Três', '3º A', '10/05/2010', 'F', null, null, null, null, null, null],   // já cadastrada (mesmo nome e nascimento)
+        ['Rui Planilha', '4º C', '01/02/2014', 'M', null, null, null, null, null, null],     // erro: turma com erro
+        ['Sara Planilha', '1T', '01/02/2014', 'F', null, null, null, null, null, null],      // erro: 1T é de outra escola
+        ['Ursula Planilha', '4º B', '31/02/2014', 'F', null, null, null, null, null, null],  // erro: data
+    ],
+]);
+$r = enviarPlanilha('importacao/previa.php', $importacao, $tImporta);
+$previa = $r['json']['dados'] ?? [];
+$situacoes = array_map(fn($l) => $l['linha'] . ':' . $l['situacao'], $previa['alunos'] ?? []);
+verificar('importação: prévia das turmas (existente, duas novas, período desconhecido)', $r['status'] === 200
+    && array_map(fn($l) => $l['situacao'], $previa['turmas'] ?? []) === ['existente', 'nova', 'nova', 'erro'], $r['texto']);
+verificar('importação: prévia dos alunos', $situacoes[0] === '2:novo' && $situacoes[1] === '3:novo' && $situacoes[2] === '4:novo'
+    && $situacoes[3] === '5:existente' && $situacoes[4] === '6:erro' && $situacoes[5] === '7:erro' && $situacoes[6] === '8:erro', json_encode($situacoes));
+verificar('importação: turma de outra escola não serve', str_contains(implode(' ', $previa['alunos'][5]['erros'] ?? []), 'não existe na escola'), json_encode($previa['alunos'][5] ?? null));
+verificar('importação: irmãos com o mesmo CPF: um responsável novo, vinculado aos dois', ($previa['alunos'][0]['responsavel']['situacao'] ?? '') === 'novo'
+    && ($previa['alunos'][1]['responsavel']['situacao'] ?? '') === 'mesmo' && ($previa['resumo']['responsaveis_novos'] ?? 0) === 1);
+verificar('importação: a prévia não grava nada', (int) valor("SELECT COUNT(*) FROM tb_aluno WHERE nome_aluno LIKE '% Planilha'") === 0
+    && (int) valor("SELECT COUNT(*) FROM tb_sala WHERE nome_sala IN ('4º A', '4º B')") === 0);
+$hash = $previa['arquivo']['hash'] ?? '';
+
+$r = enviarPlanilha('importacao/confirmar.php', $importacao, $tImporta, ['hash' => str_repeat('0', 64)]);
+verificar('importação: confirmar com outro arquivo que não o da prévia: 409', $r['status'] === 409, $r['texto']);
+$r = enviarPlanilha('importacao/confirmar.php', $importacao, $tImporta, ['hash' => $hash]);
+verificar('importação: confirmada - 2 turmas, 3 alunos, 1 responsável com 2 vínculos', $r['status'] === 201
+    && ($r['json']['dados']['turmas_criadas'] ?? 0) === 2 && ($r['json']['dados']['alunos_criados'] ?? 0) === 3
+    && ($r['json']['dados']['responsaveis_criados'] ?? 0) === 1 && ($r['json']['dados']['vinculos_criados'] ?? 0) === 2, $r['texto']);
+verificar('importação: turma nova com o horário da planilha, na escola de quem importou', (string) valor(
+    "SELECT horario_inicio || '-' || horario_fim || '-' || periodo_sala || '-' || id_escola FROM tb_sala WHERE nome_sala = '4º A'") === "07:10:00-12:30:00-Matutino-{$idHelen}");
+verificar('importação: aluno na turma nova, com a data de nascimento certa (número do Excel)', (string) valor(
+    "SELECT s.nome_sala || ' ' || a.dta_nasc_aluno || ' ' || a.genero_aluno FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE a.nome_aluno = 'Paula Planilha'") === '4º A 2014-01-01 Feminino');
+verificar('importação: o responsável dos irmãos é um só, com e-mail e canal da primeira linha', (string) valor(
+    "SELECT COUNT(*) || ' ' || MIN(r.email_responsavel) || ' ' || MIN(r.canal_preferido) FROM tb_aluno_responsavel ar
+     JOIN tb_responsavel r ON r.id_responsavel = ar.id_responsavel WHERE r.cpf_responsavel = '52998224725'") === '2 rosa@familia.test ambos');
+
+$r = enviarPlanilha('importacao/previa.php', $importacao, $tImporta);
+verificar('importação: a mesma planilha de novo: tudo o que entrou agora aparece como já cadastrado', $r['status'] === 200
+    && ($r['json']['dados']['resumo']['alunos_novos'] ?? -1) === 0 && ($r['json']['dados']['resumo']['turmas_novas'] ?? -1) === 0
+    && ($r['json']['dados']['resumo']['alunos_existentes'] ?? 0) >= 3, $r['texto']);
+$r = enviarPlanilha('importacao/confirmar.php', $importacao, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? '']);
+verificar('importação: confirmar de novo não duplica nada (422, nada novo)', $r['status'] === 422
+    && (int) valor("SELECT COUNT(*) FROM tb_aluno WHERE nome_aluno = 'Paula Planilha'") === 1, $r['texto']);
+
+// .csv do Excel brasileiro: ponto e vírgula, uma aba só (reconhecida pelo cabeçalho).
+$csv = tempnam(sys_get_temp_dir(), 'csv') . '.csv';
+file_put_contents($csv, "\xEF\xBB\xBFNome completo;Turma;Data de nascimento;Gênero\nVera Csv;4º B;03/04/2014;F\n");
+$r = enviarPlanilha('importacao/previa.php', $csv, $tImporta, [], 'alunos.csv');
+verificar('importação: .csv com ponto e vírgula vira prévia de alunos', $r['status'] === 200
+    && ($r['json']['dados']['alunos'][0]['situacao'] ?? '') === 'novo' && ($r['json']['dados']['alunos'][0]['turma'] ?? '') === '4º B', $r['texto']);
+$r = enviarPlanilha('importacao/confirmar.php', $csv, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? ''], 'alunos.csv');
+verificar('importação: .csv confirmado', $r['status'] === 201 && ($r['json']['dados']['alunos_criados'] ?? 0) === 1, $r['texto']);
+
+// Outra escola não enxerga as turmas nem os alunos importados na Helen.
+$tOutra = post('user/selectCoord.php', ['email' => 'coord2@escola.test', 'senha' => 'Senha@123'])['json']['dados']['token'] ?? '';
+$soAlunos = planilhaDeTeste(['Alunos' => [$cabecalhoDeAlunos, ['Paula Planilha', '4º A', 41640, 'F']]]);
+$r = enviarPlanilha('importacao/previa.php', $soAlunos, $tOutra);
+verificar('importação: em outra escola, a turma 4º A da Helen não existe', $r['status'] === 200
+    && ($r['json']['dados']['alunos'][0]['situacao'] ?? '') === 'erro', $r['texto']);
+
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);
 echo "\nResultado: $passaram/$total verificações passaram.\n";
