@@ -430,7 +430,7 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
             $linha['situacao'] = 'erro';
         } elseif (isset($escola['alunos'][$chaveAluno])) {
             $linha['situacao'] = 'existente';
-            $linha['avisos'] = ['a escola já tem um aluno com este nome e esta data de nascimento: ele fica como está'];
+            $linha['avisos'] = ['a escola já tem um aluno com este nome e esta data de nascimento: o cadastro fica como está'];
         } else {
             $linha['situacao'] = 'novo';
             // Só quem vai entrar "ocupa" o CPF, o telefone e o e-mail para as linhas de baixo.
@@ -462,4 +462,24 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
             'responsaveis_vinculados' => count(array_filter($responsaveis, fn($r) => in_array($r['situacao'], ['vincular', 'mesmo'], true))),
         ],
     ];
+}
+
+/**
+ * A frase do fim da importação, com plural e concordância:
+ * "Importação concluída: 2 turmas, 3 alunos e 1 responsável cadastrados."
+ * Só turmas: "1 turma cadastrada". Só alunos: "1 aluno cadastrado".
+ */
+function mensagemDaImportacao(int $turmas, int $alunos, int $responsaveis): string {
+    $partes = [];
+    if ($turmas > 0) $partes[] = $turmas . ($turmas === 1 ? ' turma' : ' turmas');
+    if ($alunos > 0) $partes[] = $alunos . ($alunos === 1 ? ' aluno' : ' alunos');
+    if ($responsaveis > 0) $partes[] = $responsaveis . ($responsaveis === 1 ? ' responsável' : ' responsáveis');
+    if ($partes === []) {
+        return 'Importação concluída: nada novo foi cadastrado.';
+    }
+    $ultima = array_pop($partes);
+    $lista = $partes === [] ? $ultima : implode(', ', $partes) . ' e ' . $ultima;
+    $soTurmas = $alunos === 0 && $responsaveis === 0;
+    $umaCoisaSo = $turmas + $alunos + $responsaveis === 1;
+    return "Importação concluída: $lista cadastrad" . ($soTurmas ? 'a' : 'o') . ($umaCoisaSo ? '' : 's') . '.';
 }

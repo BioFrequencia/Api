@@ -62,8 +62,5 @@ try {
     enviarErro("Erro no servidor ao importar a planilha. Nada foi cadastrado.", 500, $erro);
 }
 
-$partes = [];
-if ($resultado['turmas_criadas'] > 0) $partes[] = $resultado['turmas_criadas'] . ' turma(s)';
-if ($resultado['alunos_criados'] > 0) $partes[] = $resultado['alunos_criados'] . ' aluno(s)';
-if ($resultado['responsaveis_criados'] > 0) $partes[] = $resultado['responsaveis_criados'] . ' responsável(is)';
-enviarSucesso("Importação concluída: " . implode(', ', $partes) . " cadastrado(s).", $resultado + ['resumo' => $previa['resumo']], 201);
+$mensagem = mensagemDaImportacao($resultado['turmas_criadas'], $resultado['alunos_criados'], $resultado['responsaveis_criados']);
+enviarSucesso($mensagem, $resultado + ['resumo' => $previa['resumo']], 201);

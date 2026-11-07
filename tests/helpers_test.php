@@ -622,6 +622,11 @@ afirmar('importação: resumo da prévia', $previa['resumo'] === [
 ]);
 $soAlunos = montarPreviaDaImportacao(['alunos' => [[2, ['nome' => 'Ana', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F']]]], $escolaVazia);
 afirmar('importação: sem a turma na escola nem no arquivo, o aluno não entra', $soAlunos['alunos'][0]['situacao'] === 'erro' && $soAlunos['turmas'] === []);
+afirmar('importação: mensagem final com plural e "e" antes do último', mensagemDaImportacao(2, 3, 1) === 'Importação concluída: 2 turmas, 3 alunos e 1 responsável cadastrados.');
+afirmar('importação: mensagem final só com turmas concorda no feminino', mensagemDaImportacao(1, 0, 0) === 'Importação concluída: 1 turma cadastrada.'
+    && mensagemDaImportacao(4, 0, 0) === 'Importação concluída: 4 turmas cadastradas.');
+afirmar('importação: mensagem final no singular e sem turmas', mensagemDaImportacao(0, 1, 0) === 'Importação concluída: 1 aluno cadastrado.'
+    && mensagemDaImportacao(0, 2, 2) === 'Importação concluída: 2 alunos e 2 responsáveis cadastrados.');
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);
