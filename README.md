@@ -206,7 +206,7 @@ importa.
 | Variável | Obrigatória | Para quê |
 |---|---|---|
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | sim | Conexão com o PostgreSQL. No Docker, o entrypoint gera `config/config.php` a partir delas. |
-| `JWT_SECRET_KEY` | sim | Assina os tokens de login. Use uma string longa e aleatória, diferente em cada ambiente. |
+| `JWT_SECRET_KEY` | sim | Assina os tokens de login. Use uma string aleatória com **pelo menos 32 caracteres** (ex.: `php -r "echo bin2hex(random_bytes(32));"`), diferente em cada ambiente: a biblioteca de JWT recusa chave menor e, no Docker, a API nem sobe. Trocar a chave encerra as sessões abertas. |
 | `CORS_ORIGENS` | não | Origens liberadas, separadas por vírgula (ex.: `https://biofrequencia.vercel.app`). Barra final e maiúsculas não importam. Um `*` num trecho do host libera os previews da Vercel (`https://site-git-*-equipe.vercel.app`); `https://*.vercel.app` é recusado. Sem ela valem as origens locais de desenvolvimento. |
 | `SITE_URL` | não | Endereço do site nos links dos e-mails (confirmar o e-mail, aprovar contas, entrar). Sem ela, vale a primeira origem fixa de `CORS_ORIGENS`. |
 | `BIOMETRIA_CHAVE` | para a biometria | Chave que cifra os vetores faciais e as digitais no banco: 64 caracteres hexadecimais (ou o base64 do `generateValue` do Render). Sem ela, os endpoints de biometria respondem 503. **Não troque depois de cadastrar alunos**: a biometria gravada com a chave antiga deixa de abrir e precisa ser refeita. |
