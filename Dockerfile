@@ -14,9 +14,13 @@ FROM php:8.3-apache
 # nenhum dos dois o "composer install" abaixo falhava (era o motivo do
 # build da imagem quebrar no CI). O apt é limpo na mesma camada para a
 # imagem não carregar o cache.
+#
+# zip e gd são exigidas pelo PhpSpreadsheet (importação de turmas e alunos
+# por planilha: o .xlsx é um zip de XMLs); libzip-dev e libpng-dev são as
+# bibliotecas para compilá-las.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq-dev unzip \
- && docker-php-ext-install pdo_pgsql \
+ && apt-get install -y --no-install-recommends libpq-dev unzip libzip-dev libpng-dev \
+ && docker-php-ext-install pdo_pgsql zip gd \
  && apt-get purge -y --auto-remove \
  && rm -rf /var/lib/apt/lists/*
 

@@ -13,7 +13,7 @@ encontrados/corrigidos e o que foi testado em cada rodada.
 
 ## Dependências
 
-- PHP >= 8.1 (com extensões `pdo` e `pdo_pgsql`)
+- PHP >= 8.1 (com extensões `pdo` e `pdo_pgsql`; `zip` e `gd` para a importação por planilha)
 - Composer
 - PostgreSQL
 
@@ -144,9 +144,36 @@ ocorrencia/       ocorrências enviadas pelo app e revisão pela coordenação
 notificacao/      fila de mensagens aos responsáveis
 responsavel/      cadastro e vínculo de responsáveis
 relatorio/        exportação XML
+importacao/       importação de turmas e alunos por planilha: modelo .xlsx, prévia e confirmação
 tests/            testes unitários e de integração
 docs/             arquitetura
 ```
+
+## Importação de turmas e alunos por planilha
+
+A coordenação cadastra turmas e alunos em lote a partir de uma planilha
+(Excel `.xlsx`/`.xls`, LibreOffice `.ods` ou `.csv`, até 2 MB), lida com o
+[PhpSpreadsheet](https://github.com/PHPOffice/PhpSpreadsheet):
+
+1. `importacao/modelo.php` devolve o modelo `.xlsx` da escola: abas
+   Instruções, Turmas (turma, período, início e fim da aula) e Alunos
+   (nome completo, turma, data de nascimento, gênero e, opcionalmente, o
+   responsável: nome, CPF, telefone, e-mail, parentesco e "avisar por"),
+   com listas suspensas e as turmas que a escola já tem.
+2. `importacao/previa.php` recebe o arquivo (`multipart/form-data`, campo
+   `arquivo`) e devolve cada linha conferida - `nova`/`novo`, `existente`
+   (a escola já tem: fica como está) ou `erro` (com o motivo) - sem gravar
+   nada, e o `hash` do arquivo.
+3. `importacao/confirmar.php` recebe o mesmo arquivo e o `hash` da prévia,
+   refaz a conferência com o banco de agora e grava as linhas novas numa
+   transação só, com a escola travada (`pg_advisory_xact_lock`): ou tudo
+   entra, ou nada. Importar a mesma planilha de novo não duplica nada.
+
+Os campos são os que o banco já tem (não há matrícula/RA): o aluno
+repetido é reconhecido pelo nome + data de nascimento na escola, e o
+responsável pelo CPF (o que já está na escola só é vinculado; irmãos com
+o mesmo CPF dividem o mesmo responsável). Tudo fica na escola de quem
+importa.
 
 ## Segurança
 

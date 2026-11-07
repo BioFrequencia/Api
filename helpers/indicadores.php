@@ -77,17 +77,30 @@ function situacaoDoAluno(?string $prioridadeAtrasos, ?string $prioridadeSaidas, 
 }
 
 /**
- * Dias de aula de um aluno: os dias letivos a partir do cadastro dele.
+ * Dias de aula de um aluno: os dias letivos a partir do cadastro dele -
+ * ou a partir do primeiro dia letivo em que ele tem registro, se for
+ * antes. Quem tem uma entrada atrasada num dia estava na escola nesse
+ * dia: um registro lançado depois, de um dia anterior ao cadastro (o
+ * aluno importado hoje com ocorrências da semana passada, por exemplo),
+ * conta junto com os dias de aula dele, e a taxa nunca passa de 100%.
  * Aluno sem data de cadastro (os que já existiam antes da migração 008)
  * conta o período todo.
  *
  * @param string[] $diasLetivos Y-m-d
+ * @param string[] $diasComRegistro Y-m-d dos registros do aluno (dias não letivos são ignorados)
  */
-function diasDeAulaDoAluno(array $diasLetivos, ?string $cadastradoEm): int {
+function diasDeAulaDoAluno(array $diasLetivos, ?string $cadastradoEm, array $diasComRegistro = []): int {
     if ($cadastradoEm === null || $cadastradoEm === '') {
         return count($diasLetivos);
     }
-    return count(array_filter($diasLetivos, fn($dia) => $dia >= $cadastradoEm));
+    $letivos = array_flip($diasLetivos);
+    $inicio = $cadastradoEm;
+    foreach ($diasComRegistro as $dia) {
+        if (isset($letivos[$dia]) && $dia < $inicio) {
+            $inicio = $dia;
+        }
+    }
+    return count(array_filter($diasLetivos, fn($dia) => $dia >= $inicio));
 }
 
 /**
@@ -106,7 +119,7 @@ function resumoDoPeriodo(array $alunos, array $diasLetivos, array $atrasos, arra
     $diasSaida = 0;
     foreach ($alunos as $aluno) {
         $id = (int) $aluno['id_aluno'];
-        $diasAluno += diasDeAulaDoAluno($diasLetivos, $aluno['cadastrado_em'] ?? null);
+        $diasAluno += diasDeAulaDoAluno($diasLetivos, $aluno['cadastrado_em'] ?? null, array_merge($atrasos[$id] ?? [], $saidas[$id] ?? []));
         $diasAtraso += count(array_filter($atrasos[$id] ?? [], fn($dia) => isset($letivos[$dia])));
         $diasSaida += count(array_filter($saidas[$id] ?? [], fn($dia) => isset($letivos[$dia])));
     }
@@ -207,7 +220,7 @@ function indicadoresDaJanela(PDO $conexao, int $idEscola, array $config, ?string
     $alunos = [];
     foreach (alunosDaEscola($conexao, $idEscola, $idSala, $idAluno) as $aluno) {
         $id = (int) $aluno['id_aluno'];
-        $dias = diasDeAulaDoAluno($diasLetivos, $aluno['cadastrado_em']);
+        $dias = diasDeAulaDoAluno($diasLetivos, $aluno['cadastrado_em'], array_merge($atrasos[$id] ?? [], $saidas[$id] ?? []));
         $datasAtraso = $emDiaLetivo($atrasos[$id] ?? []);
         $datasSaida = $emDiaLetivo($saidas[$id] ?? []);
         $taxaAtrasos = taxaPercentual(count($datasAtraso), $dias);

@@ -175,6 +175,13 @@ jobs:
           extensions: pdo, pdo_pgsql, mbstring, json, curl, dom, simplexml
           coverage: none
 
+      # O script de testes gera as planilhas da importação com o
+      # PhpSpreadsheet, então precisa do vendor/ no runner. A imagem não
+      # usa este vendor/: o .dockerignore o deixa de fora e o Dockerfile
+      # roda o próprio "composer install --no-dev".
+      - name: Instalar dependências (para o script de testes)
+        run: composer install --no-interaction --no-progress --prefer-dist
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Build
