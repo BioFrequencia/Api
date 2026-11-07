@@ -149,6 +149,20 @@ afirmar('situação do aluno: a pior entre atrasos e saídas', situacaoDoAluno('
 afirmar('situação sem ocorrência: Regular; sem dia de aula: Sem dias de aula', situacaoDoAluno(null, null, 5) === 'Regular' && situacaoDoAluno(null, null, 0) === 'Sem dias de aula');
 afirmar('dias de aula do aluno contam desde o cadastro', diasDeAulaDoAluno(['2026-11-03', '2026-11-04', '2026-11-05'], '2026-11-04') === 2);
 afirmar('aluno sem data de cadastro (antigo) conta o período todo', diasDeAulaDoAluno(['2026-11-03', '2026-11-04'], null) === 2);
+afirmar('registro de um dia de aula antes do cadastro: os dias contam desde ele (taxa nunca passa de 100%)',
+    diasDeAulaDoAluno(['2026-11-03', '2026-11-04', '2026-11-05'], '2026-11-05', ['2026-11-04']) === 2);
+afirmar('registro antigo num domingo não estica os dias de aula do aluno',
+    diasDeAulaDoAluno(['2026-11-03', '2026-11-04'], '2026-11-04', ['2026-11-01']) === 1);
+afirmar('aluno cadastrado num sábado com registros da semana: os dias de aula da semana contam',
+    diasDeAulaDoAluno(['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'], '2026-11-07', ['2026-11-06', '2026-11-04']) === 3);
+$resumoComRegistroAntigo = resumoDoPeriodo(
+    [['id_aluno' => 3, 'cadastrado_em' => '2026-11-06']],
+    ['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'],
+    [3 => ['2026-11-04']],
+    []
+);
+afirmar('resumo: entrada atrasada antes do cadastro conta com os dias de aula desde ela (3 dias, não 1)',
+    $resumoComRegistroAntigo['aluno_dias'] === 3 && $resumoComRegistroAntigo['atrasos'] === 1);
 $resumo = resumoDoPeriodo(
     [['id_aluno' => 1, 'cadastrado_em' => null], ['id_aluno' => 2, 'cadastrado_em' => '2026-11-05']],
     ['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'],
