@@ -1734,6 +1734,137 @@ $r = enviarPlanilha('importacao/previa.php', $soAlunos, $tOutra);
 verificar('importação: em outra escola, a turma 4º A da Helen não existe', $r['status'] === 200
     && ($r['json']['dados']['alunos'][0]['situacao'] ?? '') === 'erro', $r['texto']);
 
+// ------------------------------------------------------------ entradas e saídas sem internet
+secao('Importação de entradas e saídas registradas sem internet');
+// Escola da Helen: Paula e Pedro (4º A, 07:10-12:30, irmãos com a
+// responsável Rosa), Tina (3º A, já com entrada atrasada às 08:00 em $d3)
+// e Vera (4º B, tarde). Antes daqui a gestão zerou a tolerância e marcou
+// o último sábado como aula extra: a tolerância volta a 10 minutos e o
+// sábado sem aula é o da semana anterior.
+$paula = (int) valor("SELECT id_aluno FROM tb_aluno WHERE nome_aluno = 'Paula Planilha'");
+$pedro = (int) valor("SELECT id_aluno FROM tb_aluno WHERE nome_aluno = 'Pedro Planilha'");
+$sabadoSemAula = (new DateTimeImmutable($sabado, $fuso))->modify('-7 days')->format('Y-m-d');
+$br = fn(string $data) => (new DateTimeImmutable($data))->format('d/m/Y');
+$r = post('escola/salvarConfiguracao.php', ['tolerancia_minutos' => 10, 'aviso_automatico' => true, 'aviso_cada_registro' => true], $tImporta);
+verificar('ocorrências: a gestão da Helen liga o aviso a cada registro (importado não avisa)', $r['status'] === 200
+    && ($r['json']['dados']['aviso_cada_registro'] ?? null) === true, $r['texto']);
+
+$r = enviarPlanilha('registro/modeloImportacao.php', null, $tImporta);
+$modeloOc = tempnam(sys_get_temp_dir(), 'modelo') . '.xlsx';
+file_put_contents($modeloOc, $r['texto']);
+$abasOc = [];
+$cabecalhoOc = [];
+$alunosDoModelo = [];
+$formulaNome = '';
+try {
+    $lido = \PhpOffice\PhpSpreadsheet\IOFactory::load($modeloOc);
+    $abasOc = $lido->getSheetNames();
+    $cabecalhoOc = $lido->getSheetByName('Ocorrências')->rangeToArray('A1:J1')[0];
+    $formulaNome = (string) $lido->getSheetByName('Ocorrências')->getCell('B2')->getValue();
+    foreach (array_slice($lido->getSheetByName('Alunos')->toArray(), 1) as $linhaDoModelo) {
+        $alunosDoModelo[(int) $linhaDoModelo[0]] = $linhaDoModelo[1];
+    }
+} catch (Throwable $erro) {
+    $abasOc = [$erro->getMessage()];
+}
+$cabecalhoDeOcorrencias = ['Código do aluno', 'Nome do aluno', 'Turma', 'Data', 'Horário', 'Tipo', 'Motivo / justificativa', 'Justificada?', 'Observação', 'Quem buscou (saída)'];
+verificar('ocorrências: o modelo é um .xlsx com Instruções, Ocorrências e Alunos', $r['status'] === 200
+    && str_contains($r['tipo'], 'spreadsheetml') && $abasOc === ['Instruções', 'Ocorrências', 'Alunos'], $r['status'] . ' ' . json_encode($abasOc));
+verificar('ocorrências: o modelo tem as colunas do pedido e busca o nome pelo código', $cabecalhoOc === $cabecalhoDeOcorrencias
+    && str_contains($formulaNome, 'VLOOKUP'), json_encode($cabecalhoOc) . ' ' . $formulaNome);
+verificar('ocorrências: a aba Alunos traz o código de cada aluno da escola, e só dela', ($alunosDoModelo[$paula] ?? '') === 'Paula Planilha'
+    && ($alunosDoModelo[$tina] ?? '') === 'Tina Três' && !isset($alunosDoModelo[$zeca]), json_encode($alunosDoModelo));
+verificar('ocorrências: o modelo pede login', enviarPlanilha('registro/modeloImportacao.php', null, null)['status'] === 401);
+
+$r = enviarPlanilha('registro/previaImportacao.php', $importacao, $tImporta);
+verificar('ocorrências: a planilha de turmas e alunos aqui diz onde importar', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', 'Turmas e alunos > Importar planilha'), $r['texto']);
+$r = enviarPlanilha('importacao/previa.php', $modeloOc, $tImporta);
+verificar('importação: o modelo de entradas e saídas lá diz onde importar', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', 'Registros > Importar planilha'), $r['texto']);
+$r = enviarPlanilha('registro/previaImportacao.php', $modeloOc, $tImporta);
+verificar('ocorrências: o modelo sem nenhuma linha preenchida: 422 (vazia)', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', 'vazia'), $r['texto']);
+
+$serial = fn(string $data) => \PhpOffice\PhpSpreadsheet\Shared\Date::PHPToExcel(new DateTimeImmutable($data));
+$ocorrencias = planilhaDeTeste(['Ocorrências' => [
+    $cabecalhoDeOcorrencias,
+    [$paula, null, null, $serial($d1), 0.3125, 'Entrada atrasada', 'Ônibus quebrou', 'Sim', 'Avisou pela agenda', null], // 2 nova (data e hora do Excel)
+    [$pedro, 'Pedro Planilha', '4º A', $br($d2), '11:00', 'Saída antecipada', 'Consulta', 'Não', null, 'Rosa (mãe)'],     // 3 nova
+    [$tina, null, null, $br($d3), '08:05', 'Entrada atrasada', null, null, null, null],                                   // 4 já registrada
+    [$zeca, null, null, $br($d1), '07:30', 'Entrada atrasada', null, null, null, null],                                   // 5 aluno de outra escola
+    [$paula, null, null, $br($sabadoSemAula), '08:00', 'Entrada atrasada', null, null, null, null],                       // 6 sábado
+    [$paula, null, null, $br($d4), '07:15', 'Entrada atrasada', null, null, null, null],                                  // 7 na tolerância
+    [$paula, null, null, $br($d1), '07:45', 'Entrada atrasada', null, null, null, null],                                  // 8 repetida
+    [null, 'Paula Planilha', '4º A', $br($d4), '07:40', 'atraso', null, null, null, null],                                // 9 nova, pelo nome
+    [$paula, null, null, $br($d5), '07:50', 'Entrada atrasada', null, null, null, null],                                  // 10 nova
+]]);
+$r = enviarPlanilha('registro/previaImportacao.php', $ocorrencias, $tImporta);
+$previaOc = $r['json']['dados'] ?? [];
+$situacoesOc = array_column($previaOc['linhas'] ?? [], 'situacao', 'linha');
+verificar('ocorrências: prévia de cada linha (novas, já registrada e erros)', $r['status'] === 200 && $situacoesOc === [
+    2 => 'nova', 3 => 'nova', 4 => 'existente', 5 => 'erro', 6 => 'erro', 7 => 'erro', 8 => 'erro', 9 => 'nova', 10 => 'nova',
+], $r['texto']);
+$errosOc = array_map(fn($l) => implode(' | ', $l['erros']), array_column($previaOc['linhas'] ?? [], null, 'linha'));
+verificar('ocorrências: os erros dizem o motivo (outra escola, sábado, tolerância, repetida)', str_contains($errosOc[5] ?? '', "código {$zeca}")
+    && str_contains($errosOc[6] ?? '', 'sábado') && str_contains($errosOc[7] ?? '', 'tolerância') && str_contains($errosOc[8] ?? '', 'linha 2'), json_encode($errosOc));
+verificar('ocorrências: data e hora guardadas pelo Excel são lidas', ($previaOc['linhas'][0]['data'] ?? '') === $d1
+    && ($previaOc['linhas'][0]['hora'] ?? '') === '07:30' && ($previaOc['linhas'][0]['aluno'] ?? '') === 'Paula Planilha', json_encode($previaOc['linhas'][0] ?? null));
+verificar('ocorrências: resumo da prévia', ($previaOc['resumo'] ?? []) === [
+    'novas' => 4, 'existentes' => 1, 'com_erro' => 4, 'atrasos_novos' => 3, 'saidas_novas' => 1,
+], json_encode($previaOc['resumo'] ?? null));
+verificar('ocorrências: a prévia não grava nada', (int) valor("SELECT COUNT(*) FROM tb_atraso WHERE id_aluno = ?", [$paula]) === 0
+    && (int) valor("SELECT COUNT(*) FROM tb_saida_antecipada WHERE id_aluno = ?", [$pedro]) === 0);
+
+$r = enviarPlanilha('registro/confirmarImportacao.php', $ocorrencias, $tImporta, ['hash' => str_repeat('0', 64)]);
+verificar('ocorrências: confirmar com outro arquivo que não o da prévia: 409', $r['status'] === 409, $r['texto']);
+$emailsRegistroAntes = count(emailsComAssunto('rosa@familia.test', 'Entrada atrasada')) + count(emailsComAssunto('rosa@familia.test', 'Saída antecipada'));
+$r = enviarPlanilha('registro/confirmarImportacao.php', $ocorrencias, $tImporta, ['hash' => $previaOc['arquivo']['hash'] ?? '']);
+verificar('ocorrências: confirmada - 3 entradas atrasadas e 1 saída antecipada', $r['status'] === 201
+    && ($r['json']['dados']['atrasos_criados'] ?? 0) === 3 && ($r['json']['dados']['saidas_criadas'] ?? 0) === 1
+    && ($r['json']['mensagem'] ?? '') === 'Importação concluída: 3 entradas atrasadas e 1 saída antecipada registradas.', $r['texto']);
+$atrasoDaPaula = sql("SELECT origem, id_coordenacao, motivo_atraso, justificado_atraso::text AS justificado_atraso, observacao_atraso,
+        to_char(dta_atraso AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD HH24:MI') AS quando
+    FROM tb_atraso WHERE id_aluno = ? ORDER BY dta_atraso DESC LIMIT 1", [$paula])[0] ?? [];
+verificar('ocorrências: entrada atrasada gravada como lançamento da coordenação, com motivo, justificativa e observação',
+    ($atrasoDaPaula['origem'] ?? '') === 'manual' && (int) ($atrasoDaPaula['id_coordenacao'] ?? 0) === $idCoord3
+    && ($atrasoDaPaula['motivo_atraso'] ?? '') === 'Ônibus quebrou' && ($atrasoDaPaula['justificado_atraso'] ?? '') === 'true'
+    && ($atrasoDaPaula['observacao_atraso'] ?? '') === 'Avisou pela agenda' && ($atrasoDaPaula['quando'] ?? '') === "$d1 07:30", json_encode($atrasoDaPaula));
+verificar('ocorrências: saída antecipada com quem buscou', (string) valor(
+    "SELECT retirado_por || '|' || motivo_saida || '|' || justificado_saida FROM tb_saida_antecipada WHERE id_aluno = ?", [$pedro]) === 'Rosa (mãe)|Consulta|false');
+$r = post('registro/listar.php', ['data' => $d1], $tImporta);
+verificar('ocorrências: os registros importados aparecem nos registros do dia', $r['status'] === 200 && str_contains($r['texto'], 'Paula Planilha'), $r['texto']);
+verificar('ocorrências: nenhum aviso por registro importado, mesmo com o aviso a cada registro ligado',
+    count(emailsComAssunto('rosa@familia.test', 'Entrada atrasada')) + count(emailsComAssunto('rosa@familia.test', 'Saída antecipada')) === $emailsRegistroAntes);
+verificar('ocorrências: o aviso de limite continua (Paula com 3 entradas atrasadas em poucos dias)',
+    ($r2 = count(emailsComAssunto('rosa@familia.test', 'Entradas e saídas - Paula Planilha'))) === 1, $r2);
+
+$r = enviarPlanilha('registro/confirmarImportacao.php', $ocorrencias, $tImporta, ['hash' => $previaOc['arquivo']['hash'] ?? '']);
+verificar('ocorrências: confirmar de novo não duplica nada (422, nada novo)', $r['status'] === 422
+    && (int) valor("SELECT COUNT(*) FROM tb_atraso WHERE id_aluno = ?", [$paula]) === 3, $r['texto']);
+$r = enviarPlanilha('registro/previaImportacao.php', $ocorrencias, $tImporta);
+verificar('ocorrências: a mesma planilha de novo: o que entrou aparece como já registrado', $r['status'] === 200
+    && ($r['json']['dados']['resumo']['existentes'] ?? 0) === 5 && ($r['json']['dados']['resumo']['novas'] ?? -1) === 0, $r['texto']);
+
+// .csv do Excel brasileiro, sem o código: o aluno é achado pelo nome e pela turma.
+$csvOc = tempnam(sys_get_temp_dir(), 'csv') . '.csv';
+$d1Br = $br($d1);
+file_put_contents($csvOc, "\xEF\xBB\xBFNome do aluno;Turma;Data;Horário;Tipo;Quem buscou (saída)\nVera Csv;4º B;{$d1Br};14:00;Saída antecipada;Avó\n");
+$r = enviarPlanilha('registro/previaImportacao.php', $csvOc, $tImporta, [], 'saidas.csv');
+verificar('ocorrências: .csv com ponto e vírgula, pelo nome e turma', $r['status'] === 200
+    && ($r['json']['dados']['linhas'][0]['situacao'] ?? '') === 'nova' && ($r['json']['dados']['linhas'][0]['tipo'] ?? '') === 'saida', $r['texto']);
+$r = enviarPlanilha('registro/confirmarImportacao.php', $csvOc, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? ''], 'saidas.csv');
+verificar('ocorrências: .csv confirmado', $r['status'] === 201 && ($r['json']['dados']['saidas_criadas'] ?? 0) === 1, $r['texto']);
+
+// Outra escola: os códigos da Helen não são dela, e o modelo dela só tem os alunos dela.
+$r = enviarPlanilha('registro/previaImportacao.php', $ocorrencias, $tOutra);
+$linhasNaOutra = $r['json']['dados']['linhas'] ?? [];
+// A linha do Zeca (aluno da outra escola) vale lá; nenhuma da Helen pode valer.
+$daHelenAceitas = array_filter($linhasNaOutra, fn($l) => $l['situacao'] !== 'erro' && $l['id_aluno'] !== $zeca);
+verificar('ocorrências: em outra escola, os códigos e nomes da Helen não valem', $r['status'] === 200
+    && count($linhasNaOutra) === 9 && $daHelenAceitas === [], $r['texto']);
+post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => false], $tImporta);
+
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);
 echo "\nResultado: $passaram/$total verificações passaram.\n";

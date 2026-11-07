@@ -29,6 +29,7 @@ require_once __DIR__ . '/../helpers/emailConta.php';
 require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/tentativas.php';
 require_once __DIR__ . '/../helpers/importacao.php';
+require_once __DIR__ . '/../helpers/importacaoOcorrencias.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -627,6 +628,77 @@ afirmar('importação: mensagem final só com turmas concorda no feminino', mens
     && mensagemDaImportacao(4, 0, 0) === 'Importação concluída: 4 turmas cadastradas.');
 afirmar('importação: mensagem final no singular e sem turmas', mensagemDaImportacao(0, 1, 0) === 'Importação concluída: 1 aluno cadastrado.'
     && mensagemDaImportacao(0, 2, 2) === 'Importação concluída: 2 alunos e 2 responsáveis cadastrados.');
+
+// ---------- importação de entradas e saídas registradas sem internet ----------
+afirmar('ocorrências: tipo pelo nome ou pela palavra solta', lerTipoDeOcorrencia('Entrada atrasada') === 'atraso' && lerTipoDeOcorrencia(' ATRASO ') === 'atraso'
+    && lerTipoDeOcorrencia('Saída antecipada') === 'saida' && lerTipoDeOcorrencia('saida') === 'saida' && lerTipoDeOcorrencia('falta') === null);
+afirmar('ocorrências: "Justificada?" em branco é não', lerSimNao(null) === false && lerSimNao('Sim') === true && lerSimNao('NÃO') === false
+    && lerSimNao(true) === true && lerSimNao('talvez') === null);
+afirmar('ocorrências: código do aluno', lerCodigoDoAluno(12.0) === 12 && lerCodigoDoAluno('#7') === 7 && lerCodigoDoAluno('') === null
+    && lerCodigoDoAluno('abc') === false && lerCodigoDoAluno('0') === false);
+afirmar('ocorrências: data com ano de dois dígitos e número do Excel', lerDataDaCelula('05/11/26', true) === '2026-11-05'
+    && lerDataDaCelula('05/11/26') === null && lerDataDaCelula(46331) === '2026-11-05' && lerDataDaCelula('31/02/2026', true) === null);
+$linhaVazia = conferirLinhaDeOcorrencia([]);
+afirmar('ocorrências: linha sem aluno, data, horário e tipo diz tudo o que falta', $linhaVazia['erros'] === [
+    'informe o código ou o nome do aluno', 'falta a data', 'falta o horário', 'falta o tipo (Entrada atrasada ou Saída antecipada)',
+], $linhaVazia['erros']);
+$linhaAtraso = conferirLinhaDeOcorrencia(['codigo' => 3, 'data' => '05/11/2026', 'horario' => 0.3125, 'tipo' => 'Entrada atrasada', 'retirado_por' => 'Mãe']);
+afirmar('ocorrências: "Quem buscou" numa entrada atrasada vira aviso e fica de fora', $linhaAtraso['erros'] === [] && $linhaAtraso['hora'] === '07:30'
+    && $linhaAtraso['retirado_por'] === null && count($linhaAtraso['avisos']) === 1);
+$linhaRuim = conferirLinhaDeOcorrencia(['nome' => 'Ana', 'data' => 'ontem', 'horario' => '25:00', 'tipo' => 'falta', 'motivo' => str_repeat('x', 151), 'justificada' => 'talvez']);
+afirmar('ocorrências: data, horário, tipo, motivo e "Justificada?" inválidos', count($linhaRuim['erros']) === 5, $linhaRuim['erros']);
+
+// Ana (1º A, manhã 07:00-12:20), dois Bruno Lima (1º A e 2º B) e Caio (2º B,
+// 13:30-18:00). Quinta 05/11/2026 é dia de aula; 02/11 é Finados; 31/10 é sábado.
+$escolaDeOcorrencias = [
+    'alunos' => [
+        10 => ['nome' => 'Ana Souza', 'turma' => '1º A', 'periodo' => 'Matutino', 'inicio' => null, 'fim' => null],
+        11 => ['nome' => 'Bruno Lima', 'turma' => '1º A', 'periodo' => 'Matutino', 'inicio' => null, 'fim' => null],
+        12 => ['nome' => 'Bruno Lima', 'turma' => '2º B', 'periodo' => 'Vespertino', 'inicio' => null, 'fim' => null],
+        13 => ['nome' => 'Caio Reis', 'turma' => '2º B', 'periodo' => 'Vespertino', 'inicio' => '13:30', 'fim' => '18:00'],
+    ],
+    'registros' => ['atraso|10|2026-11-04' => '07:45'],
+    'calendario' => [],
+    'tolerancia' => 10,
+];
+$ocorrencia = fn(int $linha, array $valores) => [$linha, $valores + ['data' => '05/11/2026', 'tipo' => 'Entrada atrasada']];
+$previaOc = montarPreviaDeOcorrencias([
+    $ocorrencia(2, ['codigo' => 10, 'horario' => '07:40']),                                           // nova
+    $ocorrencia(3, ['codigo' => 10, 'horario' => '08:00']),                                           // repetida no arquivo
+    $ocorrencia(4, ['codigo' => 10, 'data' => '04/11/2026', 'horario' => '07:50']),                   // já registrada
+    $ocorrencia(5, ['codigo' => 99, 'horario' => '07:40']),                                           // código de outra escola
+    $ocorrencia(6, ['codigo' => 11, 'nome' => 'Ana Souza', 'horario' => '07:40']),                    // código de outro aluno
+    $ocorrencia(7, ['nome' => 'Bruno Lima', 'horario' => '07:40']),                                   // homônimos sem turma
+    $ocorrencia(8, ['nome' => 'bruno  lima', 'turma' => '2º B', 'horario' => '15:00', 'tipo' => 'Saída antecipada', 'retirado_por' => 'Pai']), // nova
+    $ocorrencia(9, ['codigo' => 13, 'data' => '31/10/2026', 'horario' => '14:00', 'tipo' => 'saida']), // sábado
+    $ocorrencia(10, ['codigo' => 13, 'horario' => '13:35']),                                          // dentro da tolerância
+    $ocorrencia(11, ['codigo' => 11, 'data' => '06/11/2026', 'horario' => '11:00']),                  // depois de agora
+    $ocorrencia(12, ['codigo' => 11, 'turma' => '2º B', 'horario' => '10:00', 'tipo' => 'saida']),    // turma errada
+    $ocorrencia(13, ['codigo' => 11, 'horario' => '10:00', 'tipo' => 'Saída antecipada', 'justificada' => 'Sim', 'motivo' => 'Consulta']), // nova
+    $ocorrencia(14, ['codigo' => 13, 'horario' => '10:00']),                                          // fora do horário da turma
+    $ocorrencia(15, ['codigo' => 10, 'data' => '02/11/2026', 'horario' => '08:00']),                  // feriado
+], $escolaDeOcorrencias, '2026-11-06 10:30');
+$situacoesOc = array_column($previaOc['linhas'], 'situacao', 'linha');
+$errosOc = array_map(fn($l) => implode(' | ', $l['erros']), array_column($previaOc['linhas'], null, 'linha'));
+afirmar('ocorrências: situação de cada linha', $situacoesOc === [
+    2 => 'nova', 3 => 'erro', 4 => 'existente', 5 => 'erro', 6 => 'erro', 7 => 'erro', 8 => 'nova', 9 => 'erro',
+    10 => 'erro', 11 => 'erro', 12 => 'erro', 13 => 'nova', 14 => 'erro', 15 => 'erro',
+], $situacoesOc);
+afirmar('ocorrências: os erros dizem o motivo', str_contains($errosOc[3], 'a linha 2 já tem entrada atrasada')
+    && str_contains($errosOc[5], 'código 99') && str_contains($errosOc[6], 'é de Bruno Lima, não de Ana Souza')
+    && str_contains($errosOc[7], 'mais de um aluno') && str_contains($errosOc[9], 'sábado') && str_contains($errosOc[10], 'tolerância')
+    && str_contains($errosOc[11], 'futuro') && str_contains($errosOc[12], 'é da turma 1º A, não da 2º B')
+    && str_contains($errosOc[14], 'das 13:30 às 18:00') && str_contains($errosOc[15], 'feriado'), $errosOc);
+$linha8 = $previaOc['linhas'][6];
+afirmar('ocorrências: sem código, nome e turma acham o aluno (o nome sai como no cadastro)', $linha8['id_aluno'] === 12
+    && $linha8['aluno'] === 'Bruno Lima' && $linha8['tipo'] === 'saida' && $linha8['retirado_por'] === 'Pai');
+afirmar('ocorrências: já registrada no sistema avisa o horário que está lá', str_contains(implode(' ', $previaOc['linhas'][2]['avisos']), '07:45'));
+afirmar('ocorrências: resumo da prévia', $previaOc['resumo'] === [
+    'novas' => 3, 'existentes' => 1, 'com_erro' => 10, 'atrasos_novos' => 1, 'saidas_novas' => 2,
+], $previaOc['resumo']);
+afirmar('ocorrências: mensagem final com plural e concordância', mensagemDaImportacaoDeOcorrencias(3, 1) === 'Importação concluída: 3 entradas atrasadas e 1 saída antecipada registradas.'
+    && mensagemDaImportacaoDeOcorrencias(1, 0) === 'Importação concluída: 1 entrada atrasada registrada.'
+    && mensagemDaImportacaoDeOcorrencias(0, 2) === 'Importação concluída: 2 saídas antecipadas registradas.');
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

@@ -131,7 +131,8 @@ presenca/         presenças registradas pelo app (facial, digital ou manual)
 digital/          check-in pelo celular do próprio aluno (fluxo anterior)
 acompanhamento/   registro de contatos com responsáveis
 user/             coordenação, alunos, turmas, entradas atrasadas e saídas antecipadas, alertas, dashboard
-registro/         registros do dia (entradas atrasadas e saídas) e remoção pela gestão
+registro/         registros do dia (entradas atrasadas e saídas), remoção pela gestão e importação
+                  do que foi anotado sem internet (modelo .xlsx, prévia e confirmação)
 escola/           busca no catálogo de escolas, configuração, horários, calendário e equipe da escola
 admin/            painel da equipe do sistema (ADMIN_EMAILS): escolas, contas, chamados, catálogo
 conta/            minha conta: perfil, senha, preferências, dispositivos conectados,
@@ -174,6 +175,34 @@ repetido é reconhecido pelo nome + data de nascimento na escola, e o
 responsável pelo CPF (o que já está na escola só é vinculado; irmãos com
 o mesmo CPF dividem o mesmo responsável). Tudo fica na escola de quem
 importa.
+
+## Importação de entradas e saídas registradas sem internet
+
+Sem internet, a coordenação anota as entradas atrasadas e as saídas
+antecipadas no Excel; quando a conexão volta, importa a planilha (no site
+ou no programa do computador). É independente da importação de turmas e
+alunos e usa o mesmo leitor seguro de arquivos (`helpers/planilha.php`).
+
+1. `registro/modeloImportacao.php` devolve o modelo `.xlsx`: abas
+   Instruções, Ocorrências (código do aluno, nome, turma, data, horário,
+   tipo, motivo/justificativa, justificada?, observação e quem buscou) e
+   Alunos (código, nome, turma e período de todos os alunos da escola). Na
+   aba Ocorrências, digitar o código traz o nome e a turma (PROCV).
+2. `registro/previaImportacao.php` confere cada linha com as regras do
+   lançamento manual (`helpers/importacaoOcorrencias.php`): aluno da escola
+   (pelo código ou, sem ele, pelo nome e a turma), dia de aula, dentro do
+   horário da turma, entrada atrasada só depois da tolerância, nada no
+   futuro. Devolve `nova`, `existente` (já registrada: fica como está) ou
+   `erro` (com o motivo), sem gravar nada.
+3. `registro/confirmarImportacao.php` recebe o mesmo arquivo e o `hash` da
+   prévia e registra as linhas novas numa transação só, pela mesma função
+   do lançamento manual (uma entrada atrasada e uma saída antecipada por
+   aluno por dia). Importar de novo não duplica nada.
+
+Não há matrícula no banco: o identificador é o código interno do aluno,
+que o modelo traz. Os responsáveis não recebem um aviso por registro
+importado (chegaria horas ou dias depois, vários de uma vez); o aviso de
+limite continua, no máximo um por período, como no lançamento manual.
 
 ## Segurança
 
