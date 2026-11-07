@@ -29,9 +29,16 @@
  */
 
 // Feriados e dias letivos pelas mesmas regras da API (helpers/calendario.php,
-// testada à parte em tests/helpers_test.php): no CI o teste roda na raiz do
-// repositório; no Docker, ao lado do código da imagem.
-require_once is_file(__DIR__ . '/../helpers/calendario.php') ? __DIR__ . '/../helpers/calendario.php' : '/var/www/html/helpers/calendario.php';
+// testada à parte em tests/helpers_test.php) e o PhpSpreadsheet, que gera as
+// planilhas da importação: no CI o teste roda na raiz do repositório (depois
+// do "composer install"); no Docker, ao lado do código da imagem.
+$raizDoCodigo = is_file(__DIR__ . '/../helpers/calendario.php') ? __DIR__ . '/..' : '/var/www/html';
+require_once $raizDoCodigo . '/helpers/calendario.php';
+if (!is_file($raizDoCodigo . '/vendor/autoload.php')) {
+    fwrite(STDERR, "Falta o vendor/ (o PhpSpreadsheet gera as planilhas da importação): rode \"composer install\" antes deste teste.\n");
+    exit(2);
+}
+require_once $raizDoCodigo . '/vendor/autoload.php';
 
 $api = rtrim(getenv('API_URL') ?: 'http://127.0.0.1:8080', '/');
 $dbHost = getenv('DB_HOST') ?: '127.0.0.1';
@@ -1574,7 +1581,6 @@ verificar('link vencido: 410', $codigoVencido !== $codigoSenha && $r['status'] =
 
 // ------------------------------------------------------------ importação por planilha
 secao('Importação de turmas e alunos por planilha');
-require_once '/var/www/html/vendor/autoload.php';
 
 /** Um .xlsx de verdade, gerado aqui: ['Turmas' => [[cabeçalho], [linha], ...], 'Alunos' => [...]]. */
 function planilhaDeTeste(array $abas, string $extensao = 'xlsx'): string {
