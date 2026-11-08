@@ -1955,6 +1955,27 @@ verificar('tentar de novo: manda outra vez e continua "erro"', $r['status'] === 
     && count(enviosWhatsapp('5511988880000')) === $tentativasAntes + 1, $r['texto']);
 verificar('tentar de novo uma mensagem enviada: 409', post('notificacao/reenviar.php', ['id_notificacao' => $idEmailManual], $t1)['status'] === 409);
 verificar('outra escola tentando de novo: 404', post('notificacao/reenviar.php', ['id_notificacao' => $idFalha], $t2)['status'] === 404);
+
+// Mensagens de antes da migração 011: o WhatsApp que falhou ficou gravado
+// como o link wa.me, e nenhuma tinha assunto.
+$textoAntigo = 'Aviso antigo: Gabi passou do limite & 50% dos dias.';
+$idAntigaWhats = (int) valor("
+    INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso)
+    VALUES (?, ?, ?, 'Erro', 'whatsapp', 'limite_atrasos') RETURNING id_notificacao",
+    [$gabi, $respG, 'https://wa.me/5511988880000?text=' . rawurlencode($textoAntigo)]);
+$r = post('notificacao/reenviar.php', ['id_notificacao' => $idAntigaWhats], $t1);
+$tentativasGabi = enviosWhatsapp('5511988880000');
+verificar('tentar de novo um WhatsApp antigo gravado como link: sai o texto, não o link', $r['status'] === 200
+    && (end($tentativasGabi)['texto'] ?? '') === $textoAntigo, end($tentativasGabi) ?: $r['texto']);
+$idAntigoEmail = (int) valor("
+    INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso)
+    VALUES (?, ?, 'Aviso antigo por e-mail.', 'Erro', 'email', 'registro_atraso') RETURNING id_notificacao", [$carla, $respE]);
+$emailsAntes = count(emailsPara('resp.e@exemplo.test'));
+$r = post('notificacao/reenviar.php', ['id_notificacao' => $idAntigoEmail], $t1);
+$emailAntigo = array_values(emailsPara('resp.e@exemplo.test'))[$emailsAntes] ?? [];
+verificar('tentar de novo um e-mail antigo, sem assunto: sai com assunto e fica "enviada"', $r['status'] === 200
+    && ($r['json']['dados']['status'] ?? '') === 'enviada' && ($emailAntigo['assunto'] ?? '') === 'Aviso da escola - Carla Teste'
+    && ($emailAntigo['texto'] ?? '') === 'Aviso antigo por e-mail.', $emailAntigo ?: $r['texto']);
 verificar('outra escola enviando para aluno daqui: 404', post('notificacao/enviar.php', $mensagemManual + ['chave' => 'outra-' . bin2hex(random_bytes(8))], $t2)['status'] === 404);
 
 $r = post('notificacao/listarNotificacoes.php', ['origem' => 'manual'], $t1);

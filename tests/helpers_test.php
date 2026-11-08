@@ -751,6 +751,11 @@ afirmar('prévia: sem telefone, sem e-mail e responsável de outro aluno viram e
 afirmar('mensagem do envio diz o que saiu, o que ficou no link e se repetiu', mensagemDoEnvio(['enviadas' => 2, 'pendentes' => 1, 'erros' => 0, 'repetidas' => 0])
     === 'Mensagem: 2 enviadas, 1 para mandar pelo link (sem envio automático).'
     && str_contains(mensagemDoEnvio(['enviadas' => 1, 'pendentes' => 0, 'erros' => 0, 'repetidas' => 1]), 'nada foi mandado de novo'));
+$textoComSinais = 'Olá, Maria & cia: 50% + 1 = ok? #1';
+afirmar('tentar de novo: a mensagem gravada como link wa.me volta a ser o texto', textoDaMensagemGravada(linkWhatsapp('5511988887777', $textoComSinais)) === $textoComSinais
+    && textoDaMensagemGravada('https://wa.me/5511988887777?text=Ol%C3%A1+Jo%C3%A3o') === 'Olá João'
+    && textoDaMensagemGravada('Texto comum, sem link') === 'Texto comum, sem link'
+    && textoDaMensagemGravada('https://wa.me/5511988887777') === 'https://wa.me/5511988887777');
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

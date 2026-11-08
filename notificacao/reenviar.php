@@ -30,7 +30,7 @@ try {
         FROM tb_aluno a, tb_sala s
         WHERE n.id_notificacao = ? AND n.status_notificacao = ?
           AND a.id_aluno = n.id_aluno AND s.id_sala = a.id_sala AND s.id_escola = ?
-        RETURNING n.id_notificacao, n.id_responsavel, n.canal, n.mensagem, n.assunto
+        RETURNING n.id_notificacao, n.id_responsavel, n.canal, n.mensagem, n.assunto, a.nome_aluno
     ");
     $toma->execute([NOTIFICACAO_PENDENTE, $idNotificacao, NOTIFICACAO_ERRO, $idEscola]);
     $linha = $toma->fetch(PDO::FETCH_ASSOC);
@@ -56,8 +56,14 @@ try {
     enviarErro("Erro no servidor ao tentar de novo.", 500, $erro);
 }
 
+// Mensagens de antes da migração 011: o WhatsApp que falhou ficou gravado
+// como link wa.me, e nenhuma tinha assunto (o e-mail precisa de um).
+$assunto = trim((string) ($linha['assunto'] ?? ''));
+if ($assunto === '') {
+    $assunto = mb_substr("Aviso da escola - {$linha['nome_aluno']}", 0, 150);
+}
 [$resultado, $conteudo] = entregarMensagem(
-    (string) $linha['canal'], $responsavel, (string) $linha['assunto'], (string) $linha['mensagem'],
+    (string) $linha['canal'], $responsavel, $assunto, textoDaMensagemGravada((string) $linha['mensagem']),
     'biofrequencia-notificacao-' . $idNotificacao
 );
 $statusBanco = statusPorResultadoEnvio($resultado);
