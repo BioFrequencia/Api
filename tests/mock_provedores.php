@@ -26,6 +26,7 @@ if (str_starts_with($caminho, '/email')) {
         'assunto' => $dados['subject'] ?? null,
         'texto'   => $dados['text'] ?? null,
         'html'    => $dados['html'] ?? null,
+        'chave'   => $_SERVER['HTTP_IDEMPOTENCY_KEY'] ?? null,
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
     if (array_filter($destinos, fn($destino) => str_ends_with($destino, '@falha.test'))) {
         http_response_code(500);

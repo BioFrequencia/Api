@@ -19,6 +19,7 @@ const OBJETOS_POR_MIGRACAO = [
               'tb_notificacao.tipo_aviso'],
     '009' => ['tb_verificacao_email', 'tb_coordenacao.email_verificado_em'],
     '010' => ['tb_tentativa_login', 'tb_coordenacao.cargo'],
+    '011' => ['tb_notificacao.chave_envio', 'tb_notificacao.id_coordenacao', 'tb_configuracao_escola.aviso_entrada_atrasada'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */

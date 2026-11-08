@@ -70,7 +70,10 @@ em quase todo endpoint, **006** (presença, consentimento e biometria cifrada do
 coordenação), **007** (sessões e dispositivos conectados, preferências
 da conta e chamados de suporte) e **008** (catálogo de escolas, papel e
 aprovação das contas, saída antecipada, horário das turmas, calendário e
-configuração da escola, avisos por limite). Em 30/10/2026 o banco de produção **ainda não
+configuração da escola, avisos por limite), **009** (confirmação do e-mail
+no cadastro), **010** (senhas mais seguras e cargo na equipe) e **011**
+(avisos aos responsáveis por tipo e mensagens da coordenação, com o
+histórico de quem enviou). Em 30/10/2026 o banco de produção **ainda não
 tinha nenhuma das duas**. Para saber se falta alguma migração, abra
 `/health.php`: ele responde 503 com `"schema": "desatualizado"` e a
 lista em `"faltando"`.
@@ -78,7 +81,7 @@ lista em `"faltando"`.
 Alternativamente, os arquivos individuais em `database/migrations/`
 (`001_schema_base.sql` reproduz o schema original de produção, com as
 mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003`,
-`005` a `008` são os que faltavam; `004_responsavel_cpf_unique.sql` é
+`005` a `011` são os que faltavam; `004_responsavel_cpf_unique.sql` é
 opcional). Todos podem ser rodados mais de uma vez sem erro. As tabelas
 novas já saem com RLS ligado e sem política, como as que existem no
 Supabase: só a API (dona das tabelas) as acessa, e não a API REST
@@ -131,7 +134,8 @@ presenca/         presenças registradas pelo app (facial, digital ou manual)
 digital/          check-in pelo celular do próprio aluno (fluxo anterior)
 acompanhamento/   registro de contatos com responsáveis
 user/             coordenação, alunos, turmas, entradas atrasadas e saídas antecipadas, alertas, dashboard
-registro/         registros do dia (entradas atrasadas e saídas) e remoção pela gestão
+registro/         registros do dia (entradas atrasadas e saídas), remoção pela gestão e importação
+                  do que foi anotado sem internet (modelo .xlsx, prévia e confirmação)
 escola/           busca no catálogo de escolas, configuração, horários, calendário e equipe da escola
 admin/            painel da equipe do sistema (ADMIN_EMAILS): escolas, contas, chamados, catálogo
 conta/            minha conta: perfil, senha, preferências, dispositivos conectados,
@@ -141,7 +145,8 @@ helpers/          validação, respostas, calendário escolar, indicadores, aler
 database/         conexão PDO, migrações SQL e o catálogo de escolas (dados/escolas-sp.csv)
 config/           configuração (config.php é local, não versionado)
 ocorrencia/       ocorrências enviadas pelo app e revisão pela coordenação
-notificacao/      fila de mensagens aos responsáveis
+notificacao/      mensagens aos responsáveis: histórico, envio pela coordenação (modelos,
+                  contatos, prévia, envio) e "tentar de novo"
 responsavel/      cadastro e vínculo de responsáveis
 relatorio/        exportação XML
 importacao/       importação de turmas e alunos por planilha: modelo .xlsx, prévia e confirmação
@@ -174,6 +179,84 @@ repetido é reconhecido pelo nome + data de nascimento na escola, e o
 responsável pelo CPF (o que já está na escola só é vinculado; irmãos com
 o mesmo CPF dividem o mesmo responsável). Tudo fica na escola de quem
 importa.
+
+## Importação de entradas e saídas registradas sem internet
+
+Sem internet, a coordenação anota as entradas atrasadas e as saídas
+antecipadas no Excel; quando a conexão volta, importa a planilha (no site
+ou no programa do computador). É independente da importação de turmas e
+alunos e usa o mesmo leitor seguro de arquivos (`helpers/planilha.php`).
+
+1. `registro/modeloImportacao.php` devolve o modelo `.xlsx`: abas
+   Instruções, Ocorrências (código do aluno, nome, turma, data, horário,
+   tipo, motivo/justificativa, justificada?, observação e quem buscou) e
+   Alunos (código, nome, turma e período de todos os alunos da escola). Na
+   aba Ocorrências, digitar o código traz o nome e a turma (PROCV).
+2. `registro/previaImportacao.php` confere cada linha com as regras do
+   lançamento manual (`helpers/importacaoOcorrencias.php`): aluno da escola
+   (pelo código ou, sem ele, pelo nome e a turma), dia de aula, dentro do
+   horário da turma, entrada atrasada só depois da tolerância, nada no
+   futuro. Devolve `nova`, `existente` (já registrada: fica como está) ou
+   `erro` (com o motivo), sem gravar nada.
+3. `registro/confirmarImportacao.php` recebe o mesmo arquivo e o `hash` da
+   prévia e registra as linhas novas numa transação só, pela mesma função
+   do lançamento manual (uma entrada atrasada e uma saída antecipada por
+   aluno por dia). Importar de novo não duplica nada.
+
+Não há matrícula no banco: o identificador é o código interno do aluno,
+que o modelo traz. Os responsáveis não recebem um aviso por registro
+importado (chegaria horas ou dias depois, vários de uma vez); o aviso de
+limite continua, no máximo um por período, como no lançamento manual.
+
+## Avisos e mensagens aos responsáveis
+
+**Avisos automáticos.** Na configuração da escola (`escola/configuracao.php`
+e `escola/salvarConfiguracao.php`), a coordenação liga ou desliga cada
+tipo: entrada atrasada e saída
+antecipada (um aviso a cada registro, desligados por padrão) e limite de
+entradas atrasadas e de saídas antecipadas (no máximo um aviso por
+período, ligados por padrão). As chaves antigas `aviso_cada_registro` e
+`aviso_automatico` continuam valendo para quem ainda as manda (o app e
+versões antigas): mudar uma delas muda os dois tipos dela.
+
+**Mensagem da coordenação.** Para os responsáveis de um aluno, por
+WhatsApp ou e-mail:
+
+1. `notificacao/modelos.php`: os modelos de texto (livre, entrada atrasada,
+   saída antecipada, atrasos e saídas frequentes, pedido de conversa) e
+   as variáveis (`{aluno}`, `{responsavel}`, `{turma}`, `{escola}`, `{data}`).
+2. `notificacao/contatos.php` (`id_aluno`): os responsáveis do aluno, com o
+   telefone e o e-mail de cada um e os canais sugeridos (o preferido).
+3. `notificacao/previa.php`: a mensagem exatamente como vai sair para cada
+   responsável e canal, sem gravar nem enviar nada.
+4. `notificacao/enviar.php` (`id_aluno`, `mensagem`, `destinos`, `chave`):
+   grava e entrega. Devolve, para cada destino, `enviada`, `pendente` (sem
+   provedor: o WhatsApp vem com o link `wa.me` para a coordenação mandar
+   do próprio WhatsApp, e o e-mail fica na fila) ou `erro`.
+5. `notificacao/reenviar.php` (`id_notificacao`): "tentar de novo" uma
+   mensagem com erro.
+
+O histórico (`notificacao/listarNotificacoes.php`) mostra os avisos
+automáticos e as mensagens da coordenação, com quem enviou, quando e a
+situação; filtra por `status` e por `origem` (`manual` ou `automatico`).
+
+**Sem mensagem repetida.** Cada mensagem leva uma `chave` (um UUID criado
+pela tela antes de enviar). A API grava a mensagem antes de entregar, com
+índice único em chave + responsável + canal: o mesmo pedido repetido
+(clique duplo, conexão que caiu no meio) não envia de novo e responde com
+o que já tinha acontecido. "Tentar de novo" só pega mensagem que está com
+erro, numa atualização só, então dois cliques não mandam duas vezes. O
+e-mail vai com `Idempotency-Key` (uma por mensagem), para o provedor
+descartar uma repetição da mesma entrega.
+
+**Provedores oficiais** (variáveis abaixo): e-mail por HTTP no formato do
+[Resend](https://resend.com/docs/api-reference/emails/send-email), e
+WhatsApp pela [WhatsApp Cloud API da Meta](https://developers.facebook.com/docs/whatsapp/cloud-api)
+(ou um provedor autorizado com o mesmo formato). A Meta só entrega
+mensagens iniciadas pela escola com um **modelo aprovado**
+(`WHATSAPP_TEMPLATE`), com uma variável `{{1}}` que recebe o texto. Os
+testes usam provedores falsos (`tests/mock_provedores.php`): nenhuma
+mensagem de verdade sai.
 
 ## Segurança
 

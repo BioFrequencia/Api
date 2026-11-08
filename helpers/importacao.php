@@ -193,24 +193,36 @@ function lerHora($valor): array {
  * 30/12/1899), "dd/mm/aaaa" (ou com "-" e "."), "aaaa-mm-dd" ou um
  * DateTime. Devolve [ "aaaa-mm-dd" ou null, erro ou null ].
  */
+/**
+ * Data de uma célula, como Y-m-d: data do Excel (objeto ou número de dias
+ * desde 30/12/1899), dd/mm/aaaa (com / . ou -) ou aaaa-mm-dd. Com
+ * $anoCurto, também dd/mm/aa (= 20aa). null quando não é uma data que
+ * existe (31/02, por exemplo).
+ */
+function lerDataDaCelula($valor, bool $anoCurto = false): ?string {
+    if ($valor === null || textoDaCelula($valor) === '') return null;
+    if ($valor instanceof DateTimeInterface) return $valor->format('Y-m-d');
+    if (is_int($valor) || is_float($valor) || (is_string($valor) && preg_match('/^\d{4,5}(\.\d+)?$/', trim($valor)))) {
+        $dias = (int) floor((float) $valor);
+        if ($dias < 1 || $dias >= 2958466) return null;
+        return (new DateTimeImmutable('1899-12-30'))->modify("+{$dias} days")->format('Y-m-d');
+    }
+    $texto = trim((string) $valor);
+    if (preg_match('#^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$#', $texto, $p)) {
+        [$ano, $mes, $dia] = [(int) $p[3], (int) $p[2], (int) $p[1]];
+    } elseif ($anoCurto && preg_match('#^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2})$#', $texto, $p)) {
+        [$ano, $mes, $dia] = [2000 + (int) $p[3], (int) $p[2], (int) $p[1]];
+    } elseif (preg_match('#^(\d{4})-(\d{1,2})-(\d{1,2})$#', $texto, $p)) {
+        [$ano, $mes, $dia] = [(int) $p[1], (int) $p[2], (int) $p[3]];
+    } else {
+        return null;
+    }
+    return checkdate($mes, $dia, $ano) ? sprintf('%04d-%02d-%02d', $ano, $mes, $dia) : null;
+}
+
 function lerDataDeNascimento($valor): array {
     if ($valor === null || textoDaCelula($valor) === '') return [null, 'falta a data de nascimento'];
-    $data = null;
-    if ($valor instanceof DateTimeInterface) {
-        $data = $valor->format('Y-m-d');
-    } elseif (is_int($valor) || is_float($valor) || (is_string($valor) && preg_match('/^\d{4,5}(\.0+)?$/', trim($valor)))) {
-        $dias = (int) floor((float) $valor);
-        if ($dias >= 1 && $dias < 2958466) {
-            $data = (new DateTimeImmutable('1899-12-30'))->modify("+{$dias} days")->format('Y-m-d');
-        }
-    } else {
-        $texto = trim((string) $valor);
-        if (preg_match('#^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$#', $texto, $p)) {
-            $data = sprintf('%04d-%02d-%02d', $p[3], $p[2], $p[1]);
-        } elseif (preg_match('#^(\d{4})-(\d{1,2})-(\d{1,2})$#', $texto, $p)) {
-            $data = sprintf('%04d-%02d-%02d', $p[1], $p[2], $p[3]);
-        }
-    }
+    $data = lerDataDaCelula($valor);
     if ($data === null || !dataNascimentoValida($data)) {
         return [null, 'data de nascimento inválida (use dd/mm/aaaa; não pode ser futura)'];
     }

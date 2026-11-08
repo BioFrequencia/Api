@@ -44,8 +44,26 @@ function linkWhatsapp(string $telefoneInternacional, string $mensagem): string {
     return 'https://wa.me/' . $telefoneInternacional . '?text=' . rawurlencode($mensagem);
 }
 
-function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem): string {
-    return enviarEmail($destino, $assunto, $mensagem); // sem provedor: fica na fila
+/**
+ * O texto de uma mensagem gravada. Sem provedor, o WhatsApp fica gravado
+ * como o link wa.me (com o texto dentro) - e, antes da migração 011, também
+ * quando o provedor falhava: "Tentar de novo" manda o texto, não o link.
+ */
+function textoDaMensagemGravada(string $mensagem): string {
+    if (!str_starts_with($mensagem, 'https://wa.me/')) {
+        return $mensagem;
+    }
+    $consulta = parse_url($mensagem, PHP_URL_QUERY);
+    if (!is_string($consulta)) {
+        return $mensagem;
+    }
+    parse_str($consulta, $parametros);
+    $texto = $parametros['text'] ?? null;
+    return is_string($texto) && trim($texto) !== '' ? $texto : $mensagem;
+}
+
+function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem, ?string $chave = null): string {
+    return enviarEmail($destino, $assunto, $mensagem, null, $chave); // sem provedor: fica na fila
 }
 
 /**

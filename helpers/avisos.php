@@ -6,16 +6,20 @@ require_once __DIR__ . '/indicadores.php';
  * Avisos automáticos aos responsáveis, pelos canais de cada um (WhatsApp,
  * e-mail ou os dois - tb_responsavel.canal_preferido).
  *
- * Dois gatilhos, ligados e desligados pela gestão em Configurações da
- * escola:
- *  - limite (padrão: ligado): o aluno passou do limite da escola (padrão:
- *    20% dos dias de aula dos últimos 30 dias, com pelo menos 3
- *    ocorrências). Os responsáveis recebem UMA mensagem, e outra só
- *    depois do intervalo da escola (padrão: 7 dias) se a situação
- *    continuar. Avaliado logo depois de cada registro - não depende de
- *    alguém abrir uma tela - e de novo quando a tela de alertas abre;
+ * Dois gatilhos, cada um ligado e desligado por tipo pela gestão em
+ * Configurações da escola (helpers/configuracaoEscola.php):
+ *  - limite (padrão: ligado para entradas atrasadas e para saídas
+ *    antecipadas): o aluno passou do limite da escola (padrão: 20% dos
+ *    dias de aula dos últimos 30 dias, com pelo menos 3 ocorrências). Os
+ *    responsáveis recebem UMA mensagem, e outra só depois do intervalo da
+ *    escola (padrão: 7 dias) se a situação continuar. Avaliado logo depois
+ *    de cada registro - não depende de alguém abrir uma tela - e de novo
+ *    quando a tela de alertas abre;
  *  - cada registro (padrão: desligado): mensagem a cada entrada atrasada
- *    ou saída antecipada.
+ *    e/ou a cada saída antecipada.
+ *
+ * A coordenação também manda mensagens pela tela "Enviar mensagem"
+ * (helpers/mensagemManual.php); a entrega é a mesma (entregarMensagem).
  *
  * O que sai de fato depende do provedor (helpers/contatoResponsavel.php):
  * sem ele, a mensagem fica em Notificações com o link do WhatsApp pronto.
@@ -90,16 +94,44 @@ function mensagemAvisoRegistro(string $escola, string $aluno, string $tipo, stri
 }
 
 /**
+ * Manda uma mensagem por um canal ao responsável e devolve o resultado
+ * (ENVIO_*) e o que fica guardado em tb_notificacao: no WhatsApp sem
+ * envio automático, o link wa.me pronto para a coordenação mandar pelo
+ * WhatsApp dela. $chave vai ao provedor de e-mail como chave de
+ * idempotência (o mesmo pedido repetido não manda duas vezes).
+ *
+ * @return array{0: string, 1: string}
+ */
+function entregarMensagem(string $canal, array $responsavel, string $assunto, string $mensagem, ?string $chave = null): array {
+    if ($canal === 'whatsapp') {
+        $telefone = telefoneParaWhatsapp($responsavel['telefone_responsavel'] ?? null);
+        if ($telefone === null) {
+            return [ENVIO_FALHOU, $mensagem];
+        }
+        $resultado = enviarWhatsappResponsavel($telefone, $mensagem);
+        // Sem provedor, o link wa.me pronto; se o provedor falhou, o texto
+        // (para "Tentar de novo" - a tela também monta o link, se quiser).
+        return [$resultado, $resultado === ENVIO_SEM_PROVEDOR ? linkWhatsapp($telefone, $mensagem) : $mensagem];
+    }
+    $email = trim((string) ($responsavel['email_responsavel'] ?? ''));
+    if ($email === '') {
+        return [ENVIO_FALHOU, $mensagem];
+    }
+    return [enviarEmailResponsavel($email, $assunto, $mensagem, $chave), $mensagem];
+}
+
+/**
  * Envia (ou deixa na fila) a mensagem para os responsáveis e grava cada
- * envio em tb_notificacao, com o canal e o motivo do aviso.
+ * envio em tb_notificacao, com o canal e o motivo do aviso. Aviso
+ * automático: sem conta da coordenação (id_coordenacao vazio).
  *
  * @return array{responsaveis:int, enviados:int, na_fila:int, falhas:int, sem_contato:int}
  */
 function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, string $assunto, string $mensagem, string $tipoAviso): array {
     $resumo = ['responsaveis' => count($responsaveis), 'enviados' => 0, 'na_fila' => 0, 'falhas' => 0, 'sem_contato' => 0];
     $insert = $conexao->prepare("
-        INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, data_envio_notificacao)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, data_envio_notificacao, assunto)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ");
     foreach ($responsaveis as $responsavel) {
         $canais = canaisDoResponsavel($responsavel);
@@ -108,19 +140,11 @@ function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, 
             continue;
         }
         foreach ($canais as $canal) {
-            if ($canal === 'whatsapp') {
-                $telefone = telefoneParaWhatsapp($responsavel['telefone_responsavel']);
-                $resultado = enviarWhatsappResponsavel($telefone, $mensagem);
-                // Sem envio automático, a mensagem guardada já é o link
-                // clicável para a coordenação mandar pelo WhatsApp dela.
-                $conteudo = $resultado === ENVIO_OK ? $mensagem : linkWhatsapp($telefone, $mensagem);
-            } else {
-                $resultado = enviarEmailResponsavel($responsavel['email_responsavel'], $assunto, $mensagem);
-                $conteudo = $mensagem;
-            }
+            [$resultado, $conteudo] = entregarMensagem($canal, $responsavel, $assunto, $mensagem);
             $insert->execute([
                 $idAluno, $responsavel['id_responsavel'], $conteudo, statusPorResultadoEnvio($resultado), $canal, $tipoAviso,
                 $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null,
+                $canal === 'email' ? mb_substr($assunto, 0, 150) : null,
             ]);
             match ($resultado) {
                 ENVIO_OK     => $resumo['enviados']++,
@@ -152,7 +176,8 @@ function nomeDaEscolaParaAviso(PDO $conexao, int $idEscola): string {
  * @return array<string, array> tipo => resumo (ou ['ja_avisado' => true] / ['sem_responsavel' => true])
  */
 function avisarSeAtingiuLimite(PDO $conexao, int $idEscola, int $idAluno, array $config, ?array $indicador = null): array {
-    if (!$config['aviso_automatico']) {
+    $ligado = ['atrasos' => $config['aviso_limite_atrasos'], 'saidas' => $config['aviso_limite_saidas']];
+    if (!in_array(true, $ligado, true)) {
         return [];
     }
     if ($indicador === null) {
@@ -166,7 +191,7 @@ function avisarSeAtingiuLimite(PDO $conexao, int $idEscola, int $idAluno, array 
     $responsaveis = null;
     $escola = null;
     foreach (array_keys(NOMES_TIPO_AVISO) as $tipo) {
-        if (!in_array($indicador["prioridade_$tipo"], ['media', 'alta'], true)) {
+        if (!$ligado[$tipo] || !in_array($indicador["prioridade_$tipo"], ['media', 'alta'], true)) {
             continue;
         }
         $responsaveis = $responsaveis ?? responsaveisDoAluno($conexao, $idAluno);
@@ -215,7 +240,7 @@ function avisosDepoisDoRegistro(
     try {
         $config = configuracaoDaEscola($conexao, $idEscola);
         $registro = null;
-        if ($config['aviso_cada_registro']) {
+        if ($tipo === 'atraso' ? $config['aviso_entrada_atrasada'] : $config['aviso_saida_antecipada']) {
             $responsaveis = responsaveisDoAluno($conexao, $idAluno);
             if (!empty($responsaveis)) {
                 $local = (new DateTimeImmutable($momentoUtc, new DateTimeZone('UTC')))->setTimezone(fusoEscola());
