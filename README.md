@@ -223,7 +223,7 @@ versões antigas): mudar uma delas muda os dois tipos dela.
 WhatsApp ou e-mail:
 
 1. `notificacao/modelos.php`: os modelos de texto (livre, entrada atrasada,
-   saída antecipada, atrasos e saídas frequentes, convite para conversa) e
+   saída antecipada, atrasos e saídas frequentes, pedido de conversa) e
    as variáveis (`{aluno}`, `{responsavel}`, `{turma}`, `{escola}`, `{data}`).
 2. `notificacao/contatos.php` (`id_aluno`): os responsáveis do aluno, com o
    telefone e o e-mail de cada um e os canais sugeridos (o preferido).
