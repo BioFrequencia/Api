@@ -16,11 +16,20 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * status (opcional): "pendente" | "enviada" | "erro". O banco guarda
  * 'Pendente'/'Enviado'/'Erro' (ver helpers/notificacao.php); a resposta
  * continua no formato que o site e o desktop já usam.
+ *
+ * origem (opcional): "manual" (enviadas pela coordenação) | "automatico".
+ * É também o histórico: cada mensagem diz quem enviou (enviado_por; vazio
+ * = aviso automático), quando foi criada (criado_em) e quando o provedor
+ * aceitou (data_envio_notificacao).
  */
 $idCoordenacao = autenticar();
 
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 $status = $dados["status"] ?? null;
+$origem = $dados["origem"] ?? null;
+if ($origem !== null && $origem !== '' && !in_array($origem, ['manual', 'automatico'], true)) {
+    enviarErro("Origem inválida (use manual ou automatico).", 422);
+}
 $pagina = max(1, (int) ($dados["pagina"] ?? 1));
 $porPagina = max(1, min(100, (int) ($dados["por_pagina"] ?? 20)));
 $offset = ($pagina - 1) * $porPagina;
@@ -42,24 +51,31 @@ try {
         $where .= " AND n.status_notificacao = ?";
         $params[] = $statusBanco;
     }
-    $origem = "
+    if ($origem === 'manual') {
+        $where .= " AND n.id_coordenacao IS NOT NULL";
+    } elseif ($origem === 'automatico') {
+        $where .= " AND n.id_coordenacao IS NULL";
+    }
+    $de = "
         FROM tb_notificacao n
         JOIN tb_aluno al ON al.id_aluno = n.id_aluno
         JOIN tb_sala  s  ON s.id_sala   = al.id_sala
         JOIN tb_responsavel r ON r.id_responsavel = n.id_responsavel
+        LEFT JOIN tb_coordenacao c ON c.id_coordenacao = n.id_coordenacao
         $where
     ";
 
-    $stmtTotal = $conexao->prepare("SELECT COUNT(*) $origem");
+    $stmtTotal = $conexao->prepare("SELECT COUNT(*) $de");
     $stmtTotal->execute($params);
     $total = (int) $stmtTotal->fetchColumn();
 
     $stmt = $conexao->prepare("
         SELECT n.id_notificacao, n.id_aluno, al.nome_aluno, n.id_responsavel, r.nome_responsavel,
                r.telefone_responsavel, r.email_responsavel, n.mensagem, n.status_notificacao,
-               n.data_envio_notificacao, n.canal, n.nivel_alerta, n.tipo_aviso
-        $origem
-        ORDER BY n.id_notificacao DESC
+               n.data_envio_notificacao, n.canal, n.nivel_alerta, n.tipo_aviso,
+               n.criado_em, n.assunto, n.id_coordenacao, c.nome_coordenacao AS enviado_por
+        $de
+        ORDER BY COALESCE(n.criado_em, n.data_envio_notificacao) DESC NULLS LAST, n.id_notificacao DESC
         LIMIT ? OFFSET ?
     ");
     $indice = 1;
@@ -72,6 +88,7 @@ try {
     $notificacoes = array_map(function ($n) {
         $n['status_notificacao'] = statusNotificacaoParaApi($n['status_notificacao']);
         $n['nivel_alerta'] = $n['nivel_alerta'] !== null ? (int) $n['nivel_alerta'] : null;
+        $n['id_coordenacao'] = $n['id_coordenacao'] !== null ? (int) $n['id_coordenacao'] : null;
         return $n;
     }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 

@@ -1865,6 +1865,108 @@ verificar('ocorrências: em outra escola, os códigos e nomes da Helen não vale
     && count($linhasNaOutra) === 9 && $daHelenAceitas === [], $r['texto']);
 post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => false], $tImporta);
 
+// ------------------------------------------------------------ avisos por tipo e mensagens da coordenação
+secao('Avisos automáticos por tipo');
+// As sessões das contas 1 e 2 já caíram nos testes de conta (senha nova
+// desconecta todos os aparelhos): tokens novos, sem sessão, que valem até
+// vencer - o login em si já foi testado lá em cima.
+$tokenNovo = fn(int $idCoordenacao) => jwtHs256(['iss' => 'biofrequencia-api', 'iat' => time(), 'exp' => time() + 3600, 'sub' => $idCoordenacao], $jwtSecret);
+$t1 = $tokenNovo($idCoord1);
+$t2 = $tokenNovo($idCoord2);
+// Escola 1. Carla tem a responsável A (WhatsApp 11 99999-0001) e a E (e-mail
+// resp.e@exemplo.test); o último dia letivo da lista ($diasLetivos[5]) está livre.
+$d6 = $diasLetivos[5];
+$r = post('escola/salvarConfiguracao.php', ['aviso_entrada_atrasada' => true, 'aviso_saida_antecipada' => false], $t1);
+verificar('a gestão liga só o aviso de entrada atrasada', $r['status'] === 200 && ($r['json']['dados']['aviso_entrada_atrasada'] ?? null) === true
+    && ($r['json']['dados']['aviso_saida_antecipada'] ?? null) === false && ($r['json']['dados']['aviso_cada_registro'] ?? null) === true, $r['texto']);
+$avisosDaCarla = fn(string $tipo) => (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ? AND tipo_aviso = ?", [$carla, $tipo]);
+[$atrasosAntes, $saidasAntes] = [$avisosDaCarla('registro_atraso'), $avisosDaCarla('registro_saida')];
+$atraso($carla, "$d6 07:40", $t1);
+$saida($carla, "$d6 10:00", $t1);
+verificar('entrada atrasada avisa e saída antecipada não (cada tipo com a sua chave)', $avisosDaCarla('registro_atraso') > $atrasosAntes
+    && $avisosDaCarla('registro_saida') === $saidasAntes, [$atrasosAntes, $avisosDaCarla('registro_atraso'), $saidasAntes, $avisosDaCarla('registro_saida')]);
+$r = post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => false], $t1);
+verificar('programa antigo desligando "a cada registro" desliga os dois tipos', ($r['json']['dados']['aviso_entrada_atrasada'] ?? null) === false
+    && ($r['json']['dados']['aviso_saida_antecipada'] ?? null) === false, $r['texto']);
+$r = post('escola/configuracao.php', [], $t1);
+verificar('a tela da escola recebe os quatro tipos e o padrão de cada um', array_key_exists('aviso_limite_saidas', $r['json']['dados']['configuracao'] ?? [])
+    && ($r['json']['dados']['padroes']['aviso_limite_atrasos'] ?? null) === true, $r['texto']);
+
+secao('Mensagens que a coordenação envia');
+$r = post('notificacao/modelos.php', [], $t1);
+verificar('modelos prontos, variáveis e provedores', $r['status'] === 200 && in_array('entrada_atrasada', array_column($r['json']['dados']['modelos'] ?? [], 'chave'), true)
+    && ($r['json']['dados']['maximo'] ?? 0) === 1000 && ($r['json']['dados']['provedores'] ?? []) === ['whatsapp' => true, 'email' => true], $r['texto']);
+$r = post('notificacao/contatos.php', ['id_aluno' => $carla], $t1);
+$contatosCarla = array_column($r['json']['dados']['responsaveis'] ?? [], null, 'id_responsavel');
+verificar('contatos da Carla: os responsáveis e por onde falar com cada um', $r['status'] === 200
+    && ($contatosCarla[$respA]['whatsapp'] ?? null) === true && ($contatosCarla[$respE]['email_disponivel'] ?? null) === true
+    && ($contatosCarla[$respE]['sugeridos'] ?? []) === ['email'], $r['texto']);
+verificar('contatos de aluno de outra escola: 404', post('notificacao/contatos.php', ['id_aluno' => $zeca], $t1)['status'] === 404);
+
+$mensagemManual = ['id_aluno' => $carla, 'mensagem' => 'Olá, {responsavel}. Mensagem de teste sobre {aluno} ({turma}).',
+    'destinos' => [['id_responsavel' => $respA, 'canal' => 'whatsapp'], ['id_responsavel' => $respE, 'canal' => 'email']]];
+$r = post('notificacao/previa.php', $mensagemManual, $t1);
+$previaManual = $r['json']['dados']['envios'] ?? [];
+verificar('prévia: a mensagem montada para cada responsável, sem enviar nada', $r['status'] === 200 && count($previaManual) === 2
+    && str_contains($previaManual[0]['mensagem'] ?? '', 'sobre Carla Teste (1A)') && ($previaManual[1]['como'] ?? '') === 'automatico'
+    && (int) valor("SELECT count(*) FROM tb_notificacao WHERE tipo_aviso = 'manual'") === 0, $r['texto']);
+verificar('prévia sem texto: 422', post('notificacao/previa.php', ['mensagem' => '  '] + $mensagemManual, $t1)['status'] === 422);
+verificar('prévia para o responsável de outro aluno: 422', post('notificacao/previa.php',
+    ['destinos' => [['id_responsavel' => $respC, 'canal' => 'whatsapp']]] + $mensagemManual, $t1)['status'] === 422);
+
+$chave = 'teste-' . bin2hex(random_bytes(8));
+$whatsAntes = count(enviosWhatsapp('5511999990001'));
+$emailsAntes = count(emailsPara('resp.e@exemplo.test'));
+verificar('enviar sem a chave do envio: 422', post('notificacao/enviar.php', $mensagemManual, $t1)['status'] === 422);
+$r = post('notificacao/enviar.php', $mensagemManual + ['chave' => $chave], $t1);
+verificar('enviada pelos dois canais', $r['status'] === 200 && ($r['json']['dados']['resumo'] ?? []) === ['enviadas' => 2, 'pendentes' => 0, 'erros' => 0, 'repetidas' => 0], $r['texto']);
+verificar('o WhatsApp e o e-mail saíram uma vez cada', count(enviosWhatsapp('5511999990001')) === $whatsAntes + 1
+    && count(emailsPara('resp.e@exemplo.test')) === $emailsAntes + 1);
+$ultimoEmail = array_values(emailsPara('resp.e@exemplo.test'))[$emailsAntes] ?? [];
+$idEmailManual = (int) valor("SELECT id_notificacao FROM tb_notificacao WHERE chave_envio = ? AND canal = 'email'", [$chave]);
+verificar('o e-mail leva assunto e a chave de idempotência da mensagem', str_contains((string) ($ultimoEmail['assunto'] ?? ''), 'mensagem sobre Carla Teste')
+    && ($ultimoEmail['chave'] ?? '') === "biofrequencia-notificacao-$idEmailManual", $ultimoEmail);
+$linhaManual = sql("SELECT id_coordenacao, tipo_aviso, status_notificacao, criado_em IS NOT NULL AS tem_data FROM tb_notificacao WHERE chave_envio = ? AND canal = 'whatsapp'", [$chave])[0] ?? [];
+verificar('histórico: quem enviou, quando, o tipo e a situação', (int) ($linhaManual['id_coordenacao'] ?? 0) === $idCoord1
+    && ($linhaManual['tipo_aviso'] ?? '') === 'manual' && ($linhaManual['status_notificacao'] ?? '') === 'Enviado' && !empty($linhaManual['tem_data']), $linhaManual);
+
+$r = post('notificacao/enviar.php', $mensagemManual + ['chave' => $chave], $t1);
+verificar('o mesmo envio de novo (conexão que caiu): nada sai outra vez', $r['status'] === 200
+    && ($r['json']['dados']['resumo']['repetidas'] ?? 0) === 2 && count(enviosWhatsapp('5511999990001')) === $whatsAntes + 1
+    && count(emailsPara('resp.e@exemplo.test')) === $emailsAntes + 1
+    && (int) valor("SELECT count(*) FROM tb_notificacao WHERE chave_envio = ?", [$chave]) === 2, $r['texto']);
+$chaveCorrida = 'corrida-' . bin2hex(random_bytes(8));
+$soWhatsapp = ['destinos' => [['id_responsavel' => $respA, 'canal' => 'whatsapp']], 'chave' => $chaveCorrida] + $mensagemManual;
+$corridaEnvio = paralelo(array_fill(0, 4, ['notificacao/enviar.php', $soWhatsapp, $t1]));
+verificar('4 cliques ao mesmo tempo: uma mensagem só', array_column($corridaEnvio, 'status') === [200, 200, 200, 200]
+    && (int) valor("SELECT count(*) FROM tb_notificacao WHERE chave_envio = ?", [$chaveCorrida]) === 1
+    && count(enviosWhatsapp('5511999990001')) === $whatsAntes + 2, array_column($corridaEnvio, 'texto'));
+
+// Gabi: o número do responsável simula falha do provedor (termina em 0000).
+$falha = ['id_aluno' => $gabi, 'mensagem' => 'Teste de falha', 'destinos' => [['id_responsavel' => $respG, 'canal' => 'whatsapp']],
+    'chave' => 'falha-' . bin2hex(random_bytes(8))];
+$r = post('notificacao/enviar.php', $falha, $t1);
+$idFalha = (int) ($r['json']['dados']['resultados'][0]['id_notificacao'] ?? 0);
+verificar('falha do provedor: o resultado diz "erro"', $r['status'] === 200 && ($r['json']['dados']['resultados'][0]['status'] ?? '') === 'erro'
+    && ($r['json']['dados']['resumo']['erros'] ?? 0) === 1, $r['texto']);
+$tentativasAntes = count(enviosWhatsapp('5511988880000'));
+$r = post('notificacao/reenviar.php', ['id_notificacao' => $idFalha], $t1);
+verificar('tentar de novo: manda outra vez e continua "erro"', $r['status'] === 200 && ($r['json']['dados']['status'] ?? '') === 'erro'
+    && count(enviosWhatsapp('5511988880000')) === $tentativasAntes + 1, $r['texto']);
+verificar('tentar de novo uma mensagem enviada: 409', post('notificacao/reenviar.php', ['id_notificacao' => $idEmailManual], $t1)['status'] === 409);
+verificar('outra escola tentando de novo: 404', post('notificacao/reenviar.php', ['id_notificacao' => $idFalha], $t2)['status'] === 404);
+verificar('outra escola enviando para aluno daqui: 404', post('notificacao/enviar.php', $mensagemManual + ['chave' => 'outra-' . bin2hex(random_bytes(8))], $t2)['status'] === 404);
+
+$r = post('notificacao/listarNotificacoes.php', ['origem' => 'manual'], $t1);
+$historico = $r['json']['dados']['notificacoes'] ?? [];
+$nomeCoord1 = (string) valor("SELECT nome_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord1]);
+verificar('histórico das mensagens da coordenação: quem enviou e quando', $r['status'] === 200 && count($historico) === 4
+    && ($historico[0]['enviado_por'] ?? '') === $nomeCoord1 && !empty($historico[0]['criado_em']) && ($historico[0]['tipo_aviso'] ?? '') === 'manual', $r['texto']);
+$r = post('notificacao/listarNotificacoes.php', ['origem' => 'automatico'], $t1);
+verificar('histórico dos avisos automáticos: sem "enviado por"', $r['status'] === 200 && ($r['json']['dados']['total_registros'] ?? 0) > 0
+    && array_filter($r['json']['dados']['notificacoes'] ?? [], fn($n) => $n['enviado_por'] !== null) === [], $r['texto']);
+verificar('origem desconhecida no filtro: 422', post('notificacao/listarNotificacoes.php', ['origem' => 'sms'], $t1)['status'] === 422);
+
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);
 echo "\nResultado: $passaram/$total verificações passaram.\n";

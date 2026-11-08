@@ -20,7 +20,7 @@ const ENVIO_SEM_PROVEDOR = 'sem_provedor';
 const ENVIO_FALHOU = 'falhou';
 
 /** POST JSON autenticado no provedor; só o código HTTP vai para o log. */
-function postarNoProvedor(string $url, string $token, array $corpo, string $canal): string {
+function postarNoProvedor(string $url, string $token, array $corpo, string $canal, array $cabecalhos = []): string {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -30,6 +30,7 @@ function postarNoProvedor(string $url, string $token, array $corpo, string $cana
         CURLOPT_HTTPHEADER => [
             'Authorization: Bearer ' . $token,
             'Content-Type: application/json',
+            ...$cabecalhos,
         ],
         CURLOPT_POSTFIELDS => json_encode($corpo),
     ]);
@@ -56,7 +57,7 @@ function emailConfigurado(): bool {
  * Envia um e-mail em texto (e, se vier, também em HTML - o provedor HTTP
  * manda os dois e o programa de e-mail escolhe).
  */
-function enviarEmail(string $destino, string $assunto, string $texto, ?string $html = null): string {
+function enviarEmail(string $destino, string $assunto, string $texto, ?string $html = null, ?string $chaveDeIdempotencia = null): string {
     $url = getenv('EMAIL_API_URL');
     $token = getenv('EMAIL_API_TOKEN');
     $remetente = getenv('EMAIL_REMETENTE');
@@ -70,7 +71,10 @@ function enviarEmail(string $destino, string $assunto, string $texto, ?string $h
         if ($html !== null) {
             $corpo['html'] = $html;
         }
-        return postarNoProvedor($url, $token, $corpo, 'e-mail');
+        // O Resend não manda de novo um pedido com a mesma chave (24 h):
+        // a conexão que cai depois do envio e a nova tentativa não duplicam.
+        $cabecalhos = $chaveDeIdempotencia !== null ? ['Idempotency-Key: ' . $chaveDeIdempotencia] : [];
+        return postarNoProvedor($url, $token, $corpo, 'e-mail', $cabecalhos);
     }
 
     $remetenteSmtp = getenv('SMTP_REMETENTE');

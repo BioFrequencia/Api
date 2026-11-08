@@ -14,10 +14,17 @@ require_once __DIR__ . '/sessao.php';
  *                              em 2 dias de aula não é "50%" de nada)
  *   janela_alerta_dias         olhando os últimos N dias
  *   intervalo_aviso_dias       no máximo um aviso automático a cada N dias
- *   aviso_automatico           avisar o responsável ao passar do limite
- *   aviso_cada_registro        avisar também a cada registro
  *   atraso_pela_presenca       presença registrada pelo app depois da
  *                              tolerância já vira entrada atrasada
+ *
+ * Avisos automáticos aos responsáveis, um por tipo (migração 011):
+ *   aviso_entrada_atrasada     a cada entrada atrasada
+ *   aviso_saida_antecipada     a cada saída antecipada
+ *   aviso_limite_atrasos       ao passar do limite de entradas atrasadas
+ *   aviso_limite_saidas        ao passar do limite de saídas antecipadas
+ * As duas chaves de antes continuam para os programas antigos:
+ * aviso_cada_registro (algum aviso por registro ligado) e aviso_automatico
+ * (algum aviso de limite ligado).
  */
 
 const CONFIGURACAO_PADRAO = [
@@ -26,10 +33,29 @@ const CONFIGURACAO_PADRAO = [
     'minimo_ocorrencias_alerta' => 3,
     'janela_alerta_dias'        => 30,
     'intervalo_aviso_dias'      => 7,
+    'aviso_entrada_atrasada'    => false,
+    'aviso_saida_antecipada'    => false,
+    'aviso_limite_atrasos'      => true,
+    'aviso_limite_saidas'       => true,
     'aviso_automatico'          => true,
     'aviso_cada_registro'       => false,
     'atraso_pela_presenca'      => true,
 ];
+
+/** Cada tipo de aviso e a chave antiga que ele substituiu. */
+const AVISOS_POR_TIPO = [
+    'aviso_entrada_atrasada' => 'aviso_cada_registro',
+    'aviso_saida_antecipada' => 'aviso_cada_registro',
+    'aviso_limite_atrasos'   => 'aviso_automatico',
+    'aviso_limite_saidas'    => 'aviso_automatico',
+];
+
+/** As duas chaves antigas, tiradas dos tipos: ligadas se algum tipo delas estiver. */
+function comChavesAntigas(array $config): array {
+    $config['aviso_cada_registro'] = $config['aviso_entrada_atrasada'] || $config['aviso_saida_antecipada'];
+    $config['aviso_automatico'] = $config['aviso_limite_atrasos'] || $config['aviso_limite_saidas'];
+    return $config;
+}
 
 /** Faixa aceita de cada campo numérico (as mesmas restrições CHECK do banco). */
 const FAIXAS_CONFIGURACAO = [
@@ -49,7 +75,13 @@ function normalizarConfiguracao(?array $linha): array {
         }
         $config[$campo] = is_bool($padrao) ? valorBooleano($linha[$campo]) : (int) $linha[$campo];
     }
-    return $config;
+    // Linha sem os tipos (banco sem a migração 011): valem as chaves antigas.
+    foreach (AVISOS_POR_TIPO as $tipo => $antiga) {
+        if ($linha !== null && ($linha[$tipo] ?? null) === null && ($linha[$antiga] ?? null) !== null) {
+            $config[$tipo] = valorBooleano($linha[$antiga]);
+        }
+    }
+    return comChavesAntigas($config);
 }
 
 /**
@@ -74,16 +106,29 @@ function lerConfiguracao(array $dados, array $atual): array {
         }
         $nova[$campo] = $valor;
     }
-    foreach (['aviso_automatico', 'aviso_cada_registro', 'atraso_pela_presenca'] as $campo) {
-        if (!array_key_exists($campo, $dados)) {
-            continue;
-        }
-        if (!is_bool($dados[$campo])) {
+    $booleanos = [...array_keys(AVISOS_POR_TIPO), 'aviso_automatico', 'aviso_cada_registro', 'atraso_pela_presenca'];
+    foreach ($booleanos as $campo) {
+        if (array_key_exists($campo, $dados) && !is_bool($dados[$campo])) {
             return [$atual, "Valor inválido em $campo (use verdadeiro ou falso)."];
         }
-        $nova[$campo] = $dados[$campo];
     }
-    return [$nova, null];
+    // Programa antigo: só conhece as duas chaves e manda todas a cada
+    // "Salvar". Elas valem para os dois tipos só quando MUDARAM - senão a
+    // escolha por tipo feita no site seria desfeita a cada gravação.
+    $tiposDaAntiga = ['aviso_cada_registro' => ['aviso_entrada_atrasada', 'aviso_saida_antecipada'],
+                      'aviso_automatico' => ['aviso_limite_atrasos', 'aviso_limite_saidas']];
+    foreach ($tiposDaAntiga as $antiga => $tipos) {
+        $mandouTipo = array_key_exists($tipos[0], $dados) || array_key_exists($tipos[1], $dados);
+        if (array_key_exists($antiga, $dados) && !$mandouTipo && $dados[$antiga] !== $atual[$antiga]) {
+            $nova[$tipos[0]] = $nova[$tipos[1]] = $dados[$antiga];
+        }
+    }
+    foreach ([...array_keys(AVISOS_POR_TIPO), 'atraso_pela_presenca'] as $campo) {
+        if (array_key_exists($campo, $dados)) {
+            $nova[$campo] = $dados[$campo];
+        }
+    }
+    return [comChavesAntigas($nova), null];
 }
 
 function configuracaoDaEscola(PDO $conexao, int $idEscola): array {
@@ -98,8 +143,9 @@ function salvarConfiguracaoDaEscola(PDO $conexao, int $idEscola, array $config, 
     $stmt = $conexao->prepare("
         INSERT INTO tb_configuracao_escola (
             id_escola, tolerancia_minutos, limite_alerta_percentual, minimo_ocorrencias_alerta, janela_alerta_dias,
-            intervalo_aviso_dias, aviso_automatico, aviso_cada_registro, atraso_pela_presenca, atualizado_em, atualizado_por
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
+            intervalo_aviso_dias, aviso_automatico, aviso_cada_registro, atraso_pela_presenca,
+            aviso_entrada_atrasada, aviso_saida_antecipada, aviso_limite_atrasos, aviso_limite_saidas, atualizado_em, atualizado_por
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
         ON CONFLICT (id_escola) DO UPDATE SET
             tolerancia_minutos = EXCLUDED.tolerancia_minutos,
             limite_alerta_percentual = EXCLUDED.limite_alerta_percentual,
@@ -109,9 +155,14 @@ function salvarConfiguracaoDaEscola(PDO $conexao, int $idEscola, array $config, 
             aviso_automatico = EXCLUDED.aviso_automatico,
             aviso_cada_registro = EXCLUDED.aviso_cada_registro,
             atraso_pela_presenca = EXCLUDED.atraso_pela_presenca,
+            aviso_entrada_atrasada = EXCLUDED.aviso_entrada_atrasada,
+            aviso_saida_antecipada = EXCLUDED.aviso_saida_antecipada,
+            aviso_limite_atrasos = EXCLUDED.aviso_limite_atrasos,
+            aviso_limite_saidas = EXCLUDED.aviso_limite_saidas,
             atualizado_em = NOW(),
             atualizado_por = EXCLUDED.atualizado_por
     ");
+    $config = comChavesAntigas($config);
     $stmt->execute([
         $idEscola,
         $config['tolerancia_minutos'],
@@ -122,6 +173,10 @@ function salvarConfiguracaoDaEscola(PDO $conexao, int $idEscola, array $config, 
         $texto($config['aviso_automatico']),
         $texto($config['aviso_cada_registro']),
         $texto($config['atraso_pela_presenca']),
+        $texto($config['aviso_entrada_atrasada']),
+        $texto($config['aviso_saida_antecipada']),
+        $texto($config['aviso_limite_atrasos']),
+        $texto($config['aviso_limite_saidas']),
         $idCoordenacao,
     ]);
 }

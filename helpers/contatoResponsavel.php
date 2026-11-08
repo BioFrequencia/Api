@@ -44,8 +44,8 @@ function linkWhatsapp(string $telefoneInternacional, string $mensagem): string {
     return 'https://wa.me/' . $telefoneInternacional . '?text=' . rawurlencode($mensagem);
 }
 
-function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem): string {
-    return enviarEmail($destino, $assunto, $mensagem); // sem provedor: fica na fila
+function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem, ?string $chave = null): string {
+    return enviarEmail($destino, $assunto, $mensagem, null, $chave); // sem provedor: fica na fila
 }
 
 /**

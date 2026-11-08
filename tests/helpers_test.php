@@ -30,6 +30,7 @@ require_once __DIR__ . '/../helpers/senha.php';
 require_once __DIR__ . '/../helpers/tentativas.php';
 require_once __DIR__ . '/../helpers/importacao.php';
 require_once __DIR__ . '/../helpers/importacaoOcorrencias.php';
+require_once __DIR__ . '/../helpers/mensagemManual.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -190,6 +191,24 @@ afirmar('tolerância acima de 60 minutos: recusada', lerConfiguracao(['toleranci
 afirmar('limite de 0%: recusado', lerConfiguracao(['limite_alerta_percentual' => 0], CONFIGURACAO_PADRAO)[1] !== null);
 afirmar('booleano em texto: recusado', lerConfiguracao(['aviso_automatico' => 'sim'], CONFIGURACAO_PADRAO)[1] !== null);
 afirmar('número decimal: recusado', lerConfiguracao(['janela_alerta_dias' => 30.5], CONFIGURACAO_PADRAO)[1] !== null);
+$porTipo = normalizarConfiguracao(['aviso_cada_registro' => 't', 'aviso_automatico' => 'f', 'aviso_entrada_atrasada' => 't',
+    'aviso_saida_antecipada' => 'f', 'aviso_limite_atrasos' => 't', 'aviso_limite_saidas' => 'f']);
+afirmar('avisos por tipo vindos do banco; as chaves antigas saem deles', $porTipo['aviso_entrada_atrasada'] === true
+    && $porTipo['aviso_saida_antecipada'] === false && $porTipo['aviso_limite_atrasos'] === true && $porTipo['aviso_limite_saidas'] === false
+    && $porTipo['aviso_cada_registro'] === true && $porTipo['aviso_automatico'] === true);
+$semTipos = normalizarConfiguracao(['aviso_cada_registro' => 't', 'aviso_automatico' => 'f']);
+afirmar('banco sem a migração 011: os tipos vêm das chaves antigas', $semTipos['aviso_entrada_atrasada'] === true
+    && $semTipos['aviso_saida_antecipada'] === true && $semTipos['aviso_limite_atrasos'] === false && $semTipos['aviso_limite_saidas'] === false);
+[$soEntrada] = lerConfiguracao(['aviso_entrada_atrasada' => true], CONFIGURACAO_PADRAO);
+afirmar('liga só o aviso de entrada atrasada', $soEntrada['aviso_entrada_atrasada'] === true && $soEntrada['aviso_saida_antecipada'] === false
+    && $soEntrada['aviso_cada_registro'] === true);
+[$programaAntigo] = lerConfiguracao(['tolerancia_minutos' => 12, 'aviso_cada_registro' => true, 'aviso_automatico' => true], $soEntrada);
+afirmar('programa antigo salvando sem mudar as chaves antigas não desfaz a escolha por tipo', $programaAntigo['tolerancia_minutos'] === 12
+    && $programaAntigo['aviso_entrada_atrasada'] === true && $programaAntigo['aviso_saida_antecipada'] === false);
+[$antigoDesliga] = lerConfiguracao(['aviso_cada_registro' => false], $soEntrada);
+afirmar('programa antigo desligando "a cada registro" desliga os dois tipos', $antigoDesliga['aviso_entrada_atrasada'] === false
+    && $antigoDesliga['aviso_saida_antecipada'] === false && $antigoDesliga['aviso_cada_registro'] === false);
+afirmar('tipo de aviso em texto: recusado', lerConfiguracao(['aviso_limite_saidas' => 'nao'], CONFIGURACAO_PADRAO)[1] !== null);
 
 // ---------- catálogo de escolas (helpers/catalogoEscolas.php) ----------
 afirmar('nome de exibição: escola estadual ganha "E.E."', nomeDeExibicaoEscola('FLEURIDES CAVALLINI MENECHINO PROFA', 8) === 'E.E. Fleurides Cavallini Menechino Profa.');
@@ -699,6 +718,39 @@ afirmar('ocorrências: resumo da prévia', $previaOc['resumo'] === [
 afirmar('ocorrências: mensagem final com plural e concordância', mensagemDaImportacaoDeOcorrencias(3, 1) === 'Importação concluída: 3 entradas atrasadas e 1 saída antecipada registradas.'
     && mensagemDaImportacaoDeOcorrencias(1, 0) === 'Importação concluída: 1 entrada atrasada registrada.'
     && mensagemDaImportacaoDeOcorrencias(0, 2) === 'Importação concluída: 2 saídas antecipadas registradas.');
+
+// ---------- mensagens que a coordenação envia (helpers/mensagemManual.php) ----------
+afirmar('mensagem: as variáveis viram os dados (a desconhecida fica)', montarMensagem('Olá, {responsavel}. {aluno} ({turma}) - {escola}, {data}. {outra}', [
+    'responsavel' => 'Maria', 'aluno' => 'Ana Souza', 'turma' => '1º A', 'escola' => 'E.E. Teste', 'data' => '06/11/2026',
+]) === 'Olá, Maria. Ana Souza (1º A) - E.E. Teste, 06/11/2026. {outra}');
+afirmar('mensagem: primeiro nome do responsável', primeiroNomeDoResponsavel('  Maria  da Silva ') === 'Maria');
+afirmar('mensagem: vazia ou longa demais é recusada', conferirTextoDaMensagem('   ')[1] !== null
+    && conferirTextoDaMensagem(str_repeat('x', 1001))[1] !== null && conferirTextoDaMensagem(" Oi\r\ntudo bem ")[0] === "Oi\ntudo bem");
+[$destinosLidos, $erroDestinos] = lerDestinos([['id_responsavel' => 5, 'canal' => 'whatsapp'], ['id_responsavel' => '5', 'canal' => 'whatsapp'],
+    ['id_responsavel' => 5, 'canal' => 'email']]);
+afirmar('mensagem: destinos sem repetidos', $erroDestinos === null && count($destinosLidos) === 2);
+afirmar('mensagem: canal desconhecido ou nenhum destino é recusado', lerDestinos([['id_responsavel' => 5, 'canal' => 'sms']])[1] !== null
+    && lerDestinos([])[1] !== null);
+afirmar('mensagem: chave do envio', chaveDeEnvioValida('9b2c1d5e-3f4a-4b6c-8d7e-1f2a3b4c5d6e') && !chaveDeEnvioValida('curta')
+    && !chaveDeEnvioValida('abc def ghi') && !chaveDeEnvioValida(null));
+$responsaveisTeste = [
+    5 => ['nome_responsavel' => 'Maria da Silva', 'telefone_responsavel' => '(11) 98888-7777', 'email_responsavel' => 'maria@familia.test', 'parentesco' => 'Mãe'],
+    6 => ['nome_responsavel' => 'João Souza', 'telefone_responsavel' => '123', 'email_responsavel' => null, 'parentesco' => 'Pai'],
+];
+$envios = montarEnvios(['nome' => 'Ana Souza', 'turma' => '1º A'], $responsaveisTeste,
+    [['id_responsavel' => 5, 'canal' => 'whatsapp'], ['id_responsavel' => 5, 'canal' => 'email']],
+    'Olá, {responsavel}: {aluno}.', 'E.E. Teste', '2026-11-06', ['whatsapp' => false, 'email' => true]);
+afirmar('prévia: a mensagem montada para cada responsável e canal', $envios['erros'] === [] && count($envios['envios']) === 2
+    && $envios['envios'][0]['mensagem'] === 'Olá, Maria: Ana Souza.' && $envios['envios'][0]['contato'] === '5511988887777');
+afirmar('prévia: WhatsApp sem provedor vira link; e-mail com provedor sai sozinho, com assunto', $envios['envios'][0]['como'] === 'link'
+    && $envios['envios'][1]['como'] === 'automatico' && $envios['envios'][1]['assunto'] === 'E.E. Teste: mensagem sobre Ana Souza');
+$semContato = montarEnvios(['nome' => 'Ana Souza', 'turma' => '1º A'], $responsaveisTeste,
+    [['id_responsavel' => 6, 'canal' => 'whatsapp'], ['id_responsavel' => 6, 'canal' => 'email'], ['id_responsavel' => 99, 'canal' => 'email']],
+    'Oi', 'E.E. Teste', '2026-11-06', ['whatsapp' => true, 'email' => true]);
+afirmar('prévia: sem telefone, sem e-mail e responsável de outro aluno viram erro', $semContato['envios'] === [] && count($semContato['erros']) === 3);
+afirmar('mensagem do envio diz o que saiu, o que ficou no link e se repetiu', mensagemDoEnvio(['enviadas' => 2, 'pendentes' => 1, 'erros' => 0, 'repetidas' => 0])
+    === 'Mensagem: 2 enviadas, 1 para mandar pelo link (sem envio automático).'
+    && str_contains(mensagemDoEnvio(['enviadas' => 1, 'pendentes' => 0, 'erros' => 0, 'repetidas' => 1]), 'nada foi mandado de novo'));
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);
