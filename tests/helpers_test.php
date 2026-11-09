@@ -238,10 +238,16 @@ afirmar('mensagem do registro: data, hora, motivo e quem buscou', str_contains($
 afirmar('WhatsApp sem modelo configurado: texto livre', corpoWhatsapp('5511999990001', 'Oi')['type'] === 'text');
 putenv('WHATSAPP_TEMPLATE=aviso_escola');
 $corpoModelo = corpoWhatsapp('5511999990001', 'Oi');
+$corpoVariasLinhas = corpoWhatsapp('5511999990001', "Olá, Maria.\r\n\nA reunião é amanhã.\tAté     logo.\n");
 putenv('WHATSAPP_TEMPLATE');
 afirmar('WhatsApp com modelo aprovado: a mensagem vai na variável do modelo', $corpoModelo['type'] === 'template'
     && $corpoModelo['template']['name'] === 'aviso_escola' && $corpoModelo['template']['language']['code'] === 'pt_BR'
     && $corpoModelo['template']['components'][0]['parameters'][0]['text'] === 'Oi');
+// A Meta recusa variável de modelo com quebra de linha, tabulação ou mais de 4 espaços seguidos (erro 132018).
+afirmar('WhatsApp com modelo: mensagem de várias linhas vai numa linha só, sem tabulação nem espaços repetidos',
+    $corpoVariasLinhas['template']['components'][0]['parameters'][0]['text'] === 'Olá, Maria. A reunião é amanhã. Até logo.');
+afirmar('WhatsApp sem modelo: o texto livre mantém as quebras de linha',
+    corpoWhatsapp('5511999990001', "Linha 1\nLinha 2")['text']['body'] === "Linha 1\nLinha 2");
 
 // ---------- equipe da escola (helpers/equipe.php) ----------
 // Toda conta nova é pendente; a aprovação exige o e-mail confirmado (migração 009).
