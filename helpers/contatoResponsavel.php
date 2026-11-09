@@ -69,6 +69,9 @@ function enviarEmailResponsavel(string $destino, string $assunto, string $mensag
 /**
  * Corpo da mensagem no formato da Meta Cloud API: texto livre ou, com
  * WHATSAPP_TEMPLATE, o modelo aprovado com a mensagem na variável {{1}}.
+ * A Meta recusa variável de modelo com quebra de linha, tabulação ou mais
+ * de 4 espaços seguidos (erro 132018); lá o texto vai numa linha só. O
+ * texto livre continua com as quebras de linha.
  */
 function corpoWhatsapp(string $telefone, string $mensagem): array {
     $modelo = getenv('WHATSAPP_TEMPLATE');
@@ -82,7 +85,7 @@ function corpoWhatsapp(string $telefone, string $mensagem): array {
                 'language' => ['code' => getenv('WHATSAPP_TEMPLATE_IDIOMA') ?: 'pt_BR'],
                 'components' => [[
                     'type' => 'body',
-                    'parameters' => [['type' => 'text', 'text' => $mensagem]],
+                    'parameters' => [['type' => 'text', 'text' => textoParaVariavelDoModelo($mensagem)]],
                 ]],
             ],
         ];
@@ -93,6 +96,18 @@ function corpoWhatsapp(string $telefone, string $mensagem): array {
         'type' => 'text',
         'text' => ['body' => $mensagem],
     ];
+}
+
+/** "Olá.\n\nAté\tlogo." -> "Olá. Até logo.": uma linha, sem tabulação nem espaços repetidos. */
+function textoParaVariavelDoModelo(string $mensagem): string {
+    $partes = [];
+    foreach (preg_split('/\R/u', $mensagem) ?: [$mensagem] as $linha) {
+        $linha = trim(preg_replace('/[\t ]+/u', ' ', $linha) ?? str_replace("\t", ' ', $linha));
+        if ($linha !== '') {
+            $partes[] = $linha;
+        }
+    }
+    return implode(' ', $partes);
 }
 
 function enviarWhatsappResponsavel(string $telefone, string $mensagem): string {
