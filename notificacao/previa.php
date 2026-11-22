@@ -33,7 +33,8 @@ if ($erro !== null) {
 
 try {
     $aluno = alunoParaMensagem($conexao, (int) $dados['id_aluno'], $idEscola);
-    $escola = nomeDaEscolaParaAviso($conexao, $idEscola);
+    // O contato que vai na mensagem é o da escola do aluno.
+    $escola = $aluno === null ? null : escolaDoAlunoParaAviso($conexao, $aluno['id']);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao montar a prévia.", 500, $erro);
 }

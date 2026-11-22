@@ -60,7 +60,7 @@ function dadosDaEscolaParaOcorrencias(PDO $conexao, int $idEscola, array $linhas
                 FROM {$c['tabela']} r
                 JOIN tb_aluno a ON a.id_aluno = r.id_aluno
                 JOIN tb_sala s ON s.id_sala = a.id_sala
-                WHERE s.id_escola = ? AND {$dia} BETWEEN ?::date AND ?::date
+                WHERE s.id_escola = ? AND r.cancelado_em IS NULL AND {$dia} BETWEEN ?::date AND ?::date
                 ORDER BY r.{$c['id']}
             ");
             $busca->execute([$idEscola, $inicio, $fim]);

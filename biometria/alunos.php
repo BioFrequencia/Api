@@ -29,7 +29,7 @@ try {
         JOIN tb_sala s ON s.id_sala = a.id_sala
         LEFT JOIN tb_biometria_facial bf ON bf.id_aluno = a.id_aluno
         LEFT JOIN tb_consentimento_biometria c ON c.id_aluno = a.id_aluno
-        LEFT JOIN tb_presenca p ON p.id_aluno = a.id_aluno AND p.dia_letivo = ?
+        LEFT JOIN tb_presenca p ON p.id_aluno = a.id_aluno AND p.dia_letivo = ? AND p.cancelado_em IS NULL
         WHERE s.id_escola = ?
         ORDER BY a.nome_aluno
     ");

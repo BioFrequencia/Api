@@ -126,7 +126,15 @@ function provedoresConfigurados(): array {
  * @param array $responsaveis id => ['nome_responsavel', 'telefone_responsavel', 'email_responsavel', 'parentesco'] (só os do aluno)
  * @return array{envios: array, erros: string[]}
  */
-function montarEnvios(array $aluno, array $responsaveis, array $destinos, string $texto, string $escola, string $hojeLocal, array $provedores): array {
+/**
+ * $escola: o nome, ou [nome, email, telefone] da escola do aluno
+ * (escolaDoAlunoParaAviso) - com contato, a mensagem ganha a assinatura da
+ * escola e o e-mail vai com "responder para" o contato dela. A prévia é
+ * montada aqui também: o que aparece nela é o que sai.
+ */
+function montarEnvios(array $aluno, array $responsaveis, array $destinos, string $texto, string|array $escola, string $hojeLocal, array $provedores): array {
+    $dadosEscola = is_array($escola) ? $escola : ['nome' => $escola, 'email' => null, 'telefone' => null];
+    $escola = $dadosEscola['nome'];
     $envios = [];
     $erros = [];
     foreach ($destinos as ['id_responsavel' => $id, 'canal' => $canal]) {
@@ -149,13 +157,14 @@ function montarEnvios(array $aluno, array $responsaveis, array $destinos, string
             'canal' => $canal,
             'contato' => $contato,
             'assunto' => $canal === 'email' ? mb_substr("{$escola}: mensagem sobre {$aluno['nome']}", 0, 150) : null,
-            'mensagem' => montarMensagem($texto, [
+            'mensagem' => comAssinaturaDaEscola(montarMensagem($texto, [
                 'responsavel' => primeiroNomeDoResponsavel($responsavel['nome_responsavel']),
                 'aluno' => $aluno['nome'],
                 'turma' => $aluno['turma'],
                 'escola' => $escola,
                 'data' => dataBr($hojeLocal),
-            ]),
+            ]), $dadosEscola),
+            'responder_para' => $canal === 'email' ? $dadosEscola['email'] : null,
             'como' => $provedores[$canal] ? 'automatico' : ($canal === 'whatsapp' ? 'link' : 'fila'),
         ];
     }
@@ -261,18 +270,21 @@ function registrarEEntregar(PDO $conexao, int $idAluno, int $idCoordenacao, stri
     // Só agora sai: se o servidor cair no meio, a linha fica 'pendente' com a
     // chave e a nova tentativa não manda de novo.
     $atualiza = $conexao->prepare("
-        UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ? WHERE id_notificacao = ?
+        UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ?, erro_envio = ? WHERE id_notificacao = ?
     ");
     $resumo = ['enviadas' => 0, 'pendentes' => 0, 'erros' => 0, 'repetidas' => 0];
     $resultados = [];
     foreach ($linhas as $linha) {
         if (!$linha['repetido']) {
-            [$resultado, $conteudo] = entregarMensagem(
+            [$resultado, $conteudo, $motivo] = entregarMensagem(
                 $linha['canal'], $responsaveis[$linha['id_responsavel']], (string) $linha['assunto'], $linha['mensagem'],
-                'biofrequencia-notificacao-' . $linha['id_notificacao']
+                'biofrequencia-notificacao-' . $linha['id_notificacao'], $linha['responder_para'] ?? null
             );
             $statusBanco = statusPorResultadoEnvio($resultado);
-            $atualiza->execute([$statusBanco, $conteudo, $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null, $linha['id_notificacao']]);
+            $linha['erro'] = $resultado === ENVIO_FALHOU ? $motivo : null;
+            $atualiza->execute([
+                $statusBanco, $conteudo, $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null, $linha['erro'], $linha['id_notificacao'],
+            ]);
             $linha['status'] = statusNotificacaoParaApi($statusBanco);
             $linha['conteudo'] = $conteudo;
         } else {
@@ -290,6 +302,8 @@ function registrarEEntregar(PDO $conexao, int $idAluno, int $idCoordenacao, stri
             'canal' => $linha['canal'],
             'contato' => $linha['contato'],
             'status' => $linha['status'],
+            // Por que falhou (o que o provedor respondeu, sem contato nem texto).
+            'erro' => $linha['erro'] ?? null,
             'repetido' => $linha['repetido'],
             // WhatsApp sem envio automático: o link pronto para a coordenação mandar.
             'link' => str_starts_with((string) $linha['conteudo'], 'https://wa.me/') ? $linha['conteudo'] : null,

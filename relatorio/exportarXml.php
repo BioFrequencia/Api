@@ -110,11 +110,11 @@ try {
             SELECT 'entrada_atrasada' AS tipo, t.dta_atraso AS momento, a.nome_aluno, s.nome_sala, t.motivo_atraso AS motivo,
                    t.justificado_atraso AS justificado, t.origem, NULL AS retirado_por
             FROM tb_atraso t JOIN tb_aluno a ON a.id_aluno = t.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala
-            WHERE s.id_escola = ? AND t.dta_atraso >= ?
+            WHERE s.id_escola = ? AND t.dta_atraso >= ? AND t.cancelado_em IS NULL
             UNION ALL
             SELECT 'saida_antecipada', r.dta_saida, a.nome_aluno, s.nome_sala, r.motivo_saida, r.justificado_saida, NULL, r.retirado_por
             FROM tb_saida_antecipada r JOIN tb_aluno a ON a.id_aluno = r.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala
-            WHERE s.id_escola = ? AND r.dta_saida >= ?
+            WHERE s.id_escola = ? AND r.dta_saida >= ? AND r.cancelado_em IS NULL
             ORDER BY momento DESC
         ");
         $stmt->execute([$idEscola, $desde, $idEscola, $desde]);

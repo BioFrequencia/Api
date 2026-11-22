@@ -35,6 +35,24 @@ const MARGEM_MINIMA_FACIAL = 0.06;
 /** Máximo de amostras por aluno no cadastro. */
 const MAXIMO_AMOSTRAS_FACIAIS = 5;
 
+/**
+ * Registro SEM confirmação (migração 012): só bem abaixo do limite de
+ * "parece" (DISTANCIA_MAXIMA_FACIAL) e com folga sobre o segundo mais
+ * parecido. Entre um limite e o outro o aluno é só um CANDIDATO: nada é
+ * gravado e quem está no tablet confirma olhando para o aluno. Antes, uma
+ * foto só dentro de 0,5 já gravava a presença - e um irmão, um primo ou
+ * uma foto escura gravavam a presença (e a entrada atrasada) no nome
+ * errado. Calibrar com fotos reais da escola antes de mexer nestes números.
+ */
+const DISTANCIA_AUTOMATICA_FACIAL = 0.42;
+const MARGEM_AUTOMATICA_FACIAL = 0.10;
+/** Com uma foto só (app de antes das fotos em sequência), exige ainda mais. */
+const DISTANCIA_AUTOMATICA_UMA_FOTO = 0.38;
+/** Fotos seguidas por identificação: todas precisam concordar. */
+const MAXIMO_FOTOS_IDENTIFICACAO = 3;
+/** Por quanto tempo uma identificação incerta pode ser confirmada no tablet. */
+const SEGUNDOS_PARA_CONFIRMAR_IDENTIFICACAO = 120;
+
 function distanciaEuclidiana(array $a, array $b): float {
     if (count($a) !== count($b) || count($a) === 0) {
         return INF;
@@ -156,6 +174,105 @@ function identificarRosto(
         "distancia" => $distancia,
         "segunda_distancia" => $segunda,
     ];
+}
+
+/**
+ * Menor distância de uma foto até cada aluno, do mais parecido ao menos.
+ *
+ * @return array<int, float> id_aluno => distância
+ */
+function distanciasPorAluno(array $foto, array $cadastros): array {
+    $distancias = [];
+    foreach ($cadastros as $idAluno => $amostrasDoAluno) {
+        $menor = INF;
+        foreach ($amostrasDoAluno as $cadastrada) {
+            $menor = min($menor, distanciaEuclidiana($foto, $cadastrada));
+        }
+        if (is_finite($menor)) {
+            $distancias[(int) $idAluno] = $menor;
+        }
+    }
+    asort($distancias);
+    return $distancias;
+}
+
+/**
+ * Decide a identificação a partir de 1 a MAXIMO_FOTOS_IDENTIFICACAO fotos
+ * seguidas, tiradas pelo app no mesmo instante:
+ *
+ *  - 'reconhecido': todas as fotos apontam o MESMO aluno, a mais distante
+ *    delas fica dentro de DISTANCIA_AUTOMATICA_FACIAL (uma foto só:
+ *    DISTANCIA_AUTOMATICA_UMA_FOTO) e com folga de MARGEM_AUTOMATICA_FACIAL
+ *    sobre o segundo mais parecido - a presença é gravada sozinha;
+ *  - 'incerto': há um candidato (as fotos que se parecem com alguém apontam
+ *    o mesmo aluno, dentro de DISTANCIA_MAXIMA_FACIAL e MARGEM_MINIMA_FACIAL),
+ *    mas sem a certeza acima - nada é gravado; o app pergunta "É Fulano?";
+ *  - 'nao_reconhecido': ninguém parecido o bastante, ou fotos que apontam
+ *    alunos diferentes - nova tentativa ou registro manual.
+ *
+ * Função pura.
+ *
+ * @param list<array> $fotos vetores já normalizados
+ * @return array{situacao: string, id_aluno: ?int, distancia: ?float, segunda_distancia: ?float, fotos: int, motivo: ?string}
+ */
+function decidirIdentificacao(array $fotos, array $cadastros): array {
+    $resultado = fn(string $situacao, ?int $id, ?float $distancia, ?float $segunda, ?string $motivo) => [
+        'situacao' => $situacao, 'id_aluno' => $id, 'distancia' => $distancia,
+        'segunda_distancia' => $segunda, 'fotos' => count($fotos), 'motivo' => $motivo,
+    ];
+    if ($fotos === [] || $cadastros === []) {
+        return $resultado('nao_reconhecido', null, null, null, 'sem_cadastros');
+    }
+
+    $porFoto = [];
+    foreach ($fotos as $foto) {
+        $distancias = distanciasPorAluno($foto, $cadastros);
+        $ids = array_keys($distancias);
+        $porFoto[] = [
+            'id'      => $ids[0] ?? null,
+            'melhor'  => isset($ids[0]) ? $distancias[$ids[0]] : INF,
+            'segunda' => isset($ids[1]) ? $distancias[$ids[1]] : null,
+        ];
+    }
+
+    // Cada foto que se parece com alguém precisa apontar o mesmo aluno.
+    $parecidas = array_values(array_filter($porFoto, fn($f) => $f['id'] !== null && $f['melhor'] <= DISTANCIA_MAXIMA_FACIAL));
+    $idsApontados = array_values(array_unique(array_map(fn($f) => $f['id'], $parecidas)));
+    $pior = max(array_map(fn($f) => $f['melhor'], $porFoto));
+    $segundas = array_filter(array_map(fn($f) => $f['segunda'], $porFoto), fn($s) => $s !== null);
+    $menorSegunda = $segundas === [] ? null : min($segundas);
+    if (count($idsApontados) > 1) {
+        return $resultado('nao_reconhecido', null, is_finite($pior) ? $pior : null, $menorSegunda, 'fotos_divergentes');
+    }
+    $candidato = $idsApontados[0] ?? null;
+    $validas = array_filter($parecidas, fn($f) => $f['segunda'] === null || $f['segunda'] - $f['melhor'] >= MARGEM_MINIMA_FACIAL);
+    if ($candidato === null || $validas === []) {
+        $melhorDeTodas = min(array_map(fn($f) => $f['melhor'], $porFoto));
+        $motivo = $candidato === null ? 'sem_semelhanca' : 'parecido_com_outro';
+        return $resultado('nao_reconhecido', null, is_finite($melhorDeTodas) ? $melhorDeTodas : null, $menorSegunda, $motivo);
+    }
+
+    $limite = count($fotos) >= 2 ? DISTANCIA_AUTOMATICA_FACIAL : DISTANCIA_AUTOMATICA_UMA_FOTO;
+    $todasDoCandidato = count($parecidas) === count($porFoto);
+    $menorFolga = min(array_map(fn($f) => $f['segunda'] === null ? INF : $f['segunda'] - $f['melhor'], $porFoto));
+    $distancia = is_finite($pior) ? $pior : null;
+    if ($todasDoCandidato && $pior <= $limite && $menorFolga >= MARGEM_AUTOMATICA_FACIAL) {
+        return $resultado('reconhecido', $candidato, $distancia, $menorSegunda, null);
+    }
+    $motivo = !$todasDoCandidato ? 'fotos_insuficientes' : ($menorFolga < MARGEM_AUTOMATICA_FACIAL ? 'parecido_com_outro' : 'pouca_semelhanca');
+    return $resultado('incerto', $candidato, $distancia, $menorSegunda, $motivo);
+}
+
+/** O que dizer na tela sobre o motivo da dúvida (ou da recusa). Função pura. */
+function textoDoMotivoFacial(?string $motivo): string {
+    return match ($motivo) {
+        'parecido_com_outro'  => 'O rosto ficou parecido com o de outro aluno.',
+        'pouca_semelhanca'    => 'A semelhança com o cadastro não foi alta o bastante.',
+        'fotos_insuficientes' => 'Nem todas as fotos mostraram o rosto com nitidez.',
+        'fotos_divergentes'   => 'As fotos apontaram alunos diferentes.',
+        'sem_semelhanca'      => 'Ninguém da escola ficou parecido o bastante.',
+        default               => 'Não foi possível ter certeza de quem é.',
+    };
 }
 
 /**

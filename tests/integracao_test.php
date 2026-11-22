@@ -302,7 +302,7 @@ $pdo->exec("
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
              tb_sala, tb_sessao, tb_preferencia_coordenacao, tb_chamado_suporte, tb_coordenacao,
              tb_saida_antecipada, tb_aviso_limite, tb_calendario_escola, tb_configuracao_escola, tb_catalogo_escolas,
-             tb_verificacao_email
+             tb_verificacao_email, tb_auditoria_registro
              RESTART IDENTITY CASCADE
 ");
 $pdo->exec("DELETE FROM tb_escola WHERE id_escola <> 1");
@@ -1036,11 +1036,15 @@ post('escola/salvarConfiguracao.php', ['atraso_pela_presenca' => true, 'toleranc
 
 $idAtrasoIvo = (int) valor("SELECT id_atraso FROM tb_atraso WHERE id_aluno = ?", [$ivo]);
 $r = post('registro/remover.php', ['tipo' => 'atraso', 'id' => $idAtrasoIvo], $t1);
-verificar('outra escola apagando registro: 404', $r['status'] === 404, $r['texto']);
+verificar('outra escola cancelando registro: 404', $r['status'] === 404, $r['texto']);
 $r = post('registro/remover.php', ['tipo' => 'atraso', 'id' => $idAtrasoIvo], $t4);
-verificar('coordenador(a) não apaga registro: 403', $r['status'] === 403, $r['texto']);
+verificar('coordenador(a) não cancela registro feito por outra pessoa: 403', $r['status'] === 403, $r['texto']);
 $r = post('registro/remover.php', ['tipo' => 'atraso', 'id' => $idAtrasoIvo], $t3);
-verificar('a gestão apaga um registro feito por engano', $r['status'] === 200 && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ?", [$ivo]) === 0, $r['texto']);
+// Desde a migração 012 o registro não é apagado: fica cancelado (exclusão
+// lógica), fora das contas, com quem cancelou - ver a seção de cancelamento.
+verificar('a gestão cancela um registro feito por engano (sem apagar)', $r['status'] === 200
+    && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ? AND cancelado_em IS NULL", [$ivo]) === 0
+    && (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ? AND cancelado_em IS NOT NULL", [$ivo]) === 1, $r['texto']);
 
 // ------------------------------------------------------------ administração
 secao('Administração do sistema (equipe)');
@@ -1987,6 +1991,270 @@ $r = post('notificacao/listarNotificacoes.php', ['origem' => 'automatico'], $t1)
 verificar('histórico dos avisos automáticos: sem "enviado por"', $r['status'] === 200 && ($r['json']['dados']['total_registros'] ?? 0) > 0
     && array_filter($r['json']['dados']['notificacoes'] ?? [], fn($n) => $n['enviado_por'] !== null) === [], $r['texto']);
 verificar('origem desconhecida no filtro: 422', post('notificacao/listarNotificacoes.php', ['origem' => 'sms'], $t1)['status'] === 422);
+
+// ------------------------------------------------------------ migração 012
+secao('Contato próprio de cada escola');
+// Contas: gestão da escola 1 e da escola 2, e uma coordenadora (sem ser
+// gestão) da escola 1 - a coord7, que a equipe moveu para cá.
+$pdo->prepare("UPDATE tb_coordenacao SET papel = 'gestor', situacao = 'ativo' WHERE id_coordenacao IN (?, ?)")->execute([$idCoord1, $idCoord2]);
+$pdo->prepare("UPDATE tb_coordenacao SET id_escola = 1, papel = 'coordenador', situacao = 'ativo' WHERE id_coordenacao = ?")->execute([$idCoord7]);
+$tGestao1 = $tokenNovo($idCoord1);
+$tGestao2 = $tokenNovo($idCoord2);
+$tComum1 = $tokenNovo($idCoord7);
+$nomeCoord7 = (string) valor("SELECT nome_coordenacao FROM tb_coordenacao WHERE id_coordenacao = ?", [$idCoord7]);
+$nomeEscola1 = (string) valor("SELECT nome_escola FROM tb_escola WHERE id_escola = 1");
+
+$r = post('escola/salvarContato.php', ['email_contato' => 'contato@escolaa.test', 'telefone_contato' => '(11) 99999-1111'], $tComum1);
+verificar('coordenação (sem ser gestão) não altera o contato da escola: 403', $r['status'] === 403, $r['texto']);
+$r = post('escola/salvarContato.php', ['email_contato' => ' Contato@EscolaA.test ', 'telefone_contato' => '(11) 99999-1111'], $tGestao1);
+verificar('a gestão da escola 1 cadastra o contato dela', $r['status'] === 200 && ($r['json']['dados']['email'] ?? '') === 'contato@escolaa.test'
+    && ($r['json']['dados']['telefone'] ?? '') === '11999991111', $r['texto']);
+$r = post('escola/salvarContato.php', ['email_contato' => 'contato@escolab.test', 'telefone_contato' => '11 99999-2222'], $tGestao2);
+verificar('a gestão da escola 2 cadastra outro contato', $r['status'] === 200 && ($r['json']['dados']['telefone'] ?? '') === '11999992222', $r['texto']);
+verificar('cada escola guarda o próprio contato, sem compartilhar',
+    valor("SELECT email_contato || '|' || telefone_contato FROM tb_escola WHERE id_escola = 1") === 'contato@escolaa.test|11999991111'
+    && valor("SELECT email_contato || '|' || telefone_contato FROM tb_escola WHERE id_escola = ?", [$escola2]) === 'contato@escolab.test|11999992222');
+verificar('a tela Escola mostra o contato de cada uma', (post('escola/configuracao.php', [], $tComum1)['json']['dados']['contato']['email'] ?? '') === 'contato@escolaa.test'
+    && (post('escola/configuracao.php', [], $tGestao2)['json']['dados']['contato']['email'] ?? '') === 'contato@escolab.test');
+verificar('contato inválido: 422 (e-mail sem @, telefone sem DDD)', post('escola/salvarContato.php', ['email_contato' => 'sem-arroba'], $tGestao1)['status'] === 422
+    && post('escola/salvarContato.php', ['telefone_contato' => '9999-1111'], $tGestao1)['status'] === 422);
+
+$emailsAntes = count(emailsPara('resp.e@exemplo.test'));
+$whatsAntes = count(enviosWhatsapp('5511999990001'));
+$r = post('notificacao/enviar.php', ['id_aluno' => $carla, 'mensagem' => 'Olá, {responsavel}. Teste de contato.',
+    'destinos' => [['id_responsavel' => $respE, 'canal' => 'email'], ['id_responsavel' => $respA, 'canal' => 'whatsapp']],
+    'chave' => 'contato-a-' . bin2hex(random_bytes(8))], $tGestao1);
+$emailA = array_values(emailsPara('resp.e@exemplo.test'))[$emailsAntes] ?? [];
+$whatsA = array_values(enviosWhatsapp('5511999990001'))[$whatsAntes] ?? [];
+verificar('mensagem da escola 1: e-mail com "responder para" o contato da escola 1 e a assinatura com o telefone dela', $r['status'] === 200
+    && ($emailA['reply_to'] ?? null) === 'contato@escolaa.test'
+    && str_contains((string) ($emailA['texto'] ?? ''), "Contato da $nomeEscola1: (11) 99999-1111 · contato@escolaa.test.")
+    && !str_contains((string) ($emailA['texto'] ?? ''), '99999-2222'), $emailA ?: $r['texto']);
+verificar('...e o WhatsApp também leva o contato da escola 1', str_contains((string) ($whatsA['texto'] ?? ''), '(11) 99999-1111'), $whatsA);
+
+$respZeca = (int) ($addResp($tGestao2, $zeca, gerarCpf(91), '(11) 97777-0091', 'Outro',
+    ['email_responsavel' => 'resp.zeca@exemplo.test', 'canal_preferido' => 'email'])['json']['dados']['id_responsavel'] ?? 0);
+$r = post('notificacao/enviar.php', ['id_aluno' => $zeca, 'mensagem' => 'Olá, {responsavel}.',
+    'destinos' => [['id_responsavel' => $respZeca, 'canal' => 'email']], 'chave' => 'contato-b-' . bin2hex(random_bytes(8))], $tGestao2);
+$emailB = array_values(emailsPara('resp.zeca@exemplo.test'))[0] ?? [];
+verificar('mensagem da escola 2: o contato da escola 2, nunca o da escola 1', $r['status'] === 200 && ($emailB['reply_to'] ?? null) === 'contato@escolab.test'
+    && str_contains((string) ($emailB['texto'] ?? ''), '(11) 99999-2222') && !str_contains((string) ($emailB['texto'] ?? ''), 'escolaa'), $emailB ?: $r['texto']);
+
+// Aviso automático (a cada entrada atrasada) da escola 2: o contato vem da turma do aluno.
+post('escola/salvarConfiguracao.php', ['aviso_entrada_atrasada' => true], $tGestao2);
+$diaZeca = null;
+foreach ($diasLetivos as $diaLivre) {
+    if ((int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ? AND cancelado_em IS NULL AND " . dia('dta_atraso') . " = ?::date", [$zeca, $diaLivre]) === 0) {
+        $diaZeca = $diaLivre;
+        break;
+    }
+}
+$emailsZecaAntes = count(emailsPara('resp.zeca@exemplo.test'));
+$r = $atraso($zeca, "$diaZeca 07:45", $tGestao2);
+$avisoZeca = array_values(emailsPara('resp.zeca@exemplo.test'))[$emailsZecaAntes] ?? [];
+verificar('aviso automático da escola 2 sai com o contato da escola 2', $r['status'] === 200 && ($avisoZeca['reply_to'] ?? null) === 'contato@escolab.test'
+    && str_contains((string) ($avisoZeca['texto'] ?? ''), 'Contato da Escola Vizinha: (11) 99999-2222'), $avisoZeca ?: $r['texto']);
+
+secao('Falha no envio: o motivo fica gravado e o sistema não finge que enviou');
+$respRecusado = (int) ($addResp($tGestao1, $fabio, gerarCpf(92), '(11) 97777-0092', 'Outro',
+    ['email_responsavel' => 'familia@recusado.test', 'canal_preferido' => 'email'])['json']['dados']['id_responsavel'] ?? 0);
+$r = post('notificacao/enviar.php', ['id_aluno' => $fabio, 'mensagem' => 'Olá, {responsavel}.',
+    'destinos' => [['id_responsavel' => $respRecusado, 'canal' => 'email']], 'chave' => 'recusa-' . bin2hex(random_bytes(8))], $tGestao1);
+$resultadoRecusa = $r['json']['dados']['resultados'][0] ?? [];
+$idRecusada = (int) ($resultadoRecusa['id_notificacao'] ?? 0);
+verificar('provedor recusou: "erro", com o código e a explicação do provedor, sem o endereço', $r['status'] === 200
+    && ($resultadoRecusa['status'] ?? '') === 'erro' && str_contains((string) ($resultadoRecusa['erro'] ?? ''), 'HTTP 403')
+    && str_contains((string) ($resultadoRecusa['erro'] ?? ''), 'testing emails')
+    && !str_contains((string) ($resultadoRecusa['erro'] ?? ''), 'familia@recusado.test')
+    && !str_contains((string) valor("SELECT erro_envio FROM tb_notificacao WHERE id_notificacao = ?", [$idRecusada]), 'recusado.test'), $r['texto']);
+verificar('no banco: Erro, sem data de envio, com o motivo', valor("SELECT status_notificacao || '|' || (data_envio_notificacao IS NULL)::text
+    || '|' || (erro_envio LIKE '%HTTP 403%')::text FROM tb_notificacao WHERE id_notificacao = ?", [$idRecusada]) === 'Erro|true|true');
+$daLista = fn(int $id, string $token) => array_values(array_filter(post('notificacao/listarNotificacoes.php', ['por_pagina' => 100], $token)['json']['dados']['notificacoes'] ?? [],
+    fn($n) => (int) $n['id_notificacao'] === $id))[0] ?? [];
+$linhaRecusada = $daLista($idRecusada, $tGestao1);
+verificar('a lista de notificações mostra por que falhou', str_contains((string) ($linhaRecusada['erro_envio'] ?? ''), 'HTTP 403')
+    && ($linhaRecusada['status_notificacao'] ?? '') === 'erro' && array_key_exists('forma_envio', $linhaRecusada) && $linhaRecusada['forma_envio'] === null, $linhaRecusada);
+$r = post('notificacao/reenviar.php', ['id_notificacao' => $idRecusada], $tGestao1);
+verificar('tentar de novo e falhar de novo: continua "erro", com o motivo', ($r['json']['dados']['status'] ?? '') === 'erro'
+    && str_contains((string) ($r['json']['dados']['erro'] ?? ''), 'HTTP 403'), $r['texto']);
+$idAdmin = (int) valor("SELECT id_coordenacao FROM tb_coordenacao WHERE email_coordenacao = 'admin@escola.test'");
+$r = post('admin/diagnosticoEnvio.php', [], $tokenNovo($idAdmin));
+verificar('diagnóstico do envio (equipe): o que está configurado e o último erro do e-mail, sem nenhum segredo', $r['status'] === 200
+    && ($r['json']['dados']['email']['configurado'] ?? null) === true && ($r['json']['dados']['whatsapp']['configurado'] ?? null) === true
+    && str_contains((string) ($r['json']['dados']['ultimos_30_dias']['email']['ultimo_erro'] ?? ''), 'HTTP 403')
+    && !str_contains($r['texto'], 'token-email-somente-teste') && !str_contains($r['texto'], 'token-somente-teste'), $r['texto']);
+verificar('diagnóstico do envio: outras contas não veem (404)', post('admin/diagnosticoEnvio.php', [], $tGestao1)['status'] === 404);
+$r = post('notificacao/marcarEnviada.php', ['id_notificacao' => $idRecusada], $tComum1);
+$linhaMarcada = $daLista($idRecusada, $tGestao1);
+verificar('"avisado por fora": vira enviada, mas marcada como manual e com quem confirmou', $r['status'] === 200
+    && ($linhaMarcada['status_notificacao'] ?? '') === 'enviada' && ($linhaMarcada['forma_envio'] ?? '') === 'manual'
+    && ($linhaMarcada['confirmado_por'] ?? '') === $nomeCoord7, $linhaMarcada);
+$idEnviadaPeloSistema = (int) valor("SELECT id_notificacao FROM tb_notificacao WHERE id_responsavel = ? AND status_notificacao = 'Enviado' ORDER BY id_notificacao DESC LIMIT 1", [$respZeca]);
+verificar('enviada pelo provedor aparece como "sistema"', ($daLista($idEnviadaPeloSistema, $tGestao2)['forma_envio'] ?? '') === 'sistema');
+
+secao('Cancelamento de registros, com histórico de auditoria');
+$hugo = (int) ($novoAluno($tGestao1, $sala1, 'Hugo Teste')['json']['dados']['id_aluno'] ?? 0);
+// Aluno "antigo" na escola, para os dias de aula da janela contarem.
+$pdo->prepare("UPDATE tb_aluno SET criado_em = NOW() - INTERVAL '60 days' WHERE id_aluno = ?")->execute([$hugo]);
+$dC = $diasLetivos[2];
+$idAtrasoHugo = (int) ($atraso($hugo, "$dC 07:45", $tComum1)['json']['dados']['id_atraso'] ?? 0);
+$idSaidaHugo = (int) ($saida($hugo, "$dC 10:00", $tGestao1)['json']['dados']['id_saida'] ?? 0);
+verificar('preparo: entrada atrasada (pela coordenadora) e saída antecipada (pela gestão) do Hugo', $idAtrasoHugo > 0 && $idSaidaHugo > 0, [$idAtrasoHugo, $idSaidaHugo]);
+$atrasosNoIndicador = fn() => (int) (post('user/historicoAluno.php', ['id_aluno' => $hugo], $tGestao1)['json']['dados']['indicador']['atrasos'] ?? -1);
+$antesDoCancelamento = $atrasosNoIndicador();
+
+$cancelar = fn(string $tipo, int $id, string $token, ?string $motivo = 'Registro feito por engano') => post('registro/remover.php',
+    ['tipo' => $tipo, 'id' => $id] + ($motivo === null ? [] : ['motivo' => $motivo]), $token);
+$restaurar = fn(string $tipo, int $id, string $token) => post('registro/restaurar.php', ['tipo' => $tipo, 'id' => $id, 'motivo' => 'Cancelado por engano'], $token);
+verificar('a coordenação não cancela registro de outra pessoa: 403', $cancelar('saida', $idSaidaHugo, $tComum1)['status'] === 403);
+verificar('outra escola não cancela: 404', $cancelar('atraso', $idAtrasoHugo, $tGestao2)['status'] === 404);
+verificar('tipo desconhecido: 422', $cancelar('falta', $idAtrasoHugo, $tGestao1)['status'] === 422);
+$r = $cancelar('atraso', $idAtrasoHugo, $tComum1, 'Aluno errado');
+verificar('quem registrou desfaz nos primeiros minutos', $r['status'] === 200
+    && ($r['json']['dados']['cancelados'] ?? []) === [['tipo' => 'atraso', 'id' => $idAtrasoHugo]], $r['texto']);
+$linhaAtraso = sql("SELECT cancelado_em, cancelado_por, motivo_cancelamento FROM tb_atraso WHERE id_atraso = ?", [$idAtrasoHugo])[0] ?? [];
+verificar('nada é apagado: o registro fica, cancelado, com quem, quando e o motivo', !empty($linhaAtraso['cancelado_em'])
+    && (int) ($linhaAtraso['cancelado_por'] ?? 0) === $idCoord7 && ($linhaAtraso['motivo_cancelamento'] ?? '') === 'Aluno errado', $linhaAtraso);
+$auditoria = sql("SELECT acao, id_coordenacao, motivo, antes->>'cancelado_em' AS antes_cancelado, depois->>'cancelado_em' AS depois_cancelado,
+    antes->>'id_atraso' AS id_antes FROM tb_auditoria_registro WHERE tipo = 'atraso' AND id_registro = ?", [$idAtrasoHugo]);
+verificar('auditoria: quem fez, qual registro, quando e como estava antes', count($auditoria) === 1 && $auditoria[0]['acao'] === 'cancelar'
+    && (int) $auditoria[0]['id_coordenacao'] === $idCoord7 && $auditoria[0]['antes_cancelado'] === null && $auditoria[0]['depois_cancelado'] !== null
+    && (int) $auditoria[0]['id_antes'] === $idAtrasoHugo && $auditoria[0]['motivo'] === 'Aluno errado', $auditoria);
+$apagou = true;
+try {
+    $pdo->exec("DELETE FROM tb_auditoria_registro");
+} catch (PDOException $e) {
+    $apagou = false;
+}
+$alterou = true;
+try {
+    $pdo->exec("UPDATE tb_auditoria_registro SET motivo = 'mudado'");
+} catch (PDOException $e) {
+    $alterou = false;
+}
+verificar('o histórico de auditoria só aceita inclusões (o banco recusa UPDATE e DELETE)', !$apagou && !$alterou);
+verificar('o cancelado sai do indicador do aluno (alertas e avisos)', $antesDoCancelamento === 1 && $atrasosNoIndicador() === 0, [$antesDoCancelamento, $atrasosNoIndicador()]);
+
+$doHugo = fn(array $registros) => array_values(array_filter($registros, fn($x) => (int) $x['id_aluno'] === $hugo));
+$r = post('registro/listar.php', ['data' => $dC], $tGestao1);
+verificar('o cancelado sai da lista do dia', array_column($doHugo($r['json']['dados']['registros'] ?? []), 'tipo') === ['saida'], $r['texto']);
+$r = post('registro/listar.php', ['data' => $dC, 'incluir_cancelados' => true], $tComum1);
+$canceladoNaLista = array_values(array_filter($doHugo($r['json']['dados']['registros'] ?? []), fn($x) => $x['tipo'] === 'atraso'))[0] ?? [];
+verificar('com incluir_cancelados: aparece marcado, com quem cancelou e o motivo, e sem poder cancelar de novo', ($canceladoNaLista['cancelado'] ?? false) === true
+    && ($canceladoNaLista['cancelado_por'] ?? '') === $nomeCoord7 && ($canceladoNaLista['motivo_cancelamento'] ?? '') === 'Aluno errado'
+    && ($canceladoNaLista['pode_cancelar'] ?? true) === false && ($r['json']['dados']['pode_restaurar'] ?? true) === false, $canceladoNaLista);
+$r = post('user/historicoAluno.php', ['id_aluno' => $hugo, 'data_inicio' => $dC, 'data_fim' => $dC, 'incluir_cancelados' => true], $tGestao1);
+verificar('a ficha do aluno guarda o histórico: o cancelado aparece, marcado', count($r['json']['dados']['atrasos'] ?? []) === 1
+    && ($r['json']['dados']['atrasos'][0]['cancelado'] ?? false) === true && ($r['json']['dados']['pode_restaurar'] ?? false) === true, $r['texto']);
+
+$r = $atraso($hugo, "$dC 07:50", $tComum1);
+$idAtrasoHugo2 = (int) ($r['json']['dados']['id_atraso'] ?? 0);
+verificar('com o errado cancelado, o certo pode ser lançado no mesmo dia', $r['status'] === 200 && $idAtrasoHugo2 > 0 && $idAtrasoHugo2 !== $idAtrasoHugo, $r['texto']);
+verificar('só a gestão restaura: 403 para a coordenação', $restaurar('atraso', $idAtrasoHugo, $tComum1)['status'] === 403);
+verificar('restaurar com outro ativo no mesmo dia: 409', $restaurar('atraso', $idAtrasoHugo, $tGestao1)['status'] === 409);
+verificar('cancelar de novo um cancelado: 409', $cancelar('atraso', $idAtrasoHugo, $tGestao1)['status'] === 409);
+$pdo->prepare("UPDATE tb_atraso SET criado_em = NOW() - INTERVAL '20 minutes' WHERE id_atraso = ?")->execute([$idAtrasoHugo2]);
+$r = $cancelar('atraso', $idAtrasoHugo2, $tComum1);
+verificar('passados 10 minutos, quem registrou não cancela mais: 403 explicando o prazo', $r['status'] === 403
+    && str_contains($r['json']['mensagem'] ?? '', 'prazo'), $r['texto']);
+verificar('a gestão cancela a qualquer momento', $cancelar('atraso', $idAtrasoHugo2, $tGestao1, 'Lançado em dobro')['status'] === 200);
+$r = $restaurar('atraso', $idAtrasoHugo, $tGestao1);
+verificar('a gestão restaura o primeiro: volta a contar, e a restauração também vai para a auditoria', $r['status'] === 200
+    && valor("SELECT cancelado_em IS NULL FROM tb_atraso WHERE id_atraso = ?", [$idAtrasoHugo]) === true
+    && (int) valor("SELECT count(*) FROM tb_auditoria_registro WHERE tipo = 'atraso' AND id_registro = ? AND acao = 'restaurar'", [$idAtrasoHugo]) === 1
+    && $atrasosNoIndicador() === 1, $r['texto']);
+$r = post('registro/historicoCorrecoes.php', ['id_aluno' => $hugo], $tGestao1);
+$correcoes = $r['json']['dados']['correcoes'] ?? [];
+verificar('histórico de correções (gestão): cada ação, quem fez, quando, o motivo e o registro', $r['status'] === 200 && count($correcoes) === 3
+    && ($correcoes[0]['acao'] ?? '') === 'restaurar' && ($correcoes[2]['feito_por'] ?? '') === $nomeCoord7
+    && ($correcoes[2]['motivo'] ?? '') === 'Aluno errado' && !empty($correcoes[2]['antes']['momento']) && ($correcoes[2]['antes']['cancelado'] ?? true) === false
+    && ($correcoes[2]['depois']['cancelado'] ?? false) === true && ($correcoes[2]['registrado_por'] ?? '') === $nomeCoord7, $r['texto']);
+verificar('histórico de correções: só a gestão (403 para a coordenação)', post('registro/historicoCorrecoes.php', [], $tComum1)['status'] === 403);
+
+// Presença cancelada leva junto a entrada atrasada que ela gerou.
+$r = post('presenca/registrar.php', ['id_aluno' => $hugo, 'metodo' => 'manual'], $tGestao1);
+$idPresencaHugo = (int) ($r['json']['dados']['presenca']['id_presenca'] ?? 0);
+$momentoPresenca = (string) valor("SELECT registrada_em FROM tb_presenca WHERE id_presenca = ?", [$idPresencaHugo]);
+$derivadosAtivos = fn() => (int) valor("SELECT count(*) FROM tb_atraso WHERE id_aluno = ? AND origem = 'presenca' AND cancelado_em IS NULL
+    AND " . dia('dta_atraso') . " = " . dia('?::timestamp'), [$hugo, $momentoPresenca]);
+if ($derivadosAtivos() === 0) {
+    // Fora do horário da turma a presença não vira atraso sozinha; aqui o
+    // teste cria a entrada atrasada "da presença" para conferir a cascata.
+    $pdo->prepare("INSERT INTO tb_atraso (id_aluno, id_coordenacao, dta_atraso, origem, observacao_atraso) VALUES (?, ?, ?, 'presenca', 'Pela presença')")
+        ->execute([$hugo, $idCoord1, $momentoPresenca]);
+}
+$r = $cancelar('presenca', $idPresencaHugo, $tGestao1, 'Reconhecimento apontou o aluno errado');
+$tiposCancelados = array_column($r['json']['dados']['cancelados'] ?? [], 'tipo');
+verificar('cancelar a presença cancela junto a entrada atrasada que ela gerou (e audita as duas)', $r['status'] === 200
+    && $tiposCancelados[0] === 'presenca' && in_array('atraso', $tiposCancelados, true) && $derivadosAtivos() === 0
+    && (int) valor("SELECT count(*) FROM tb_auditoria_registro WHERE tipo = 'presenca' AND id_registro = ?", [$idPresencaHugo]) === 1, $r['texto']);
+$r = post('presenca/registrar.php', ['id_aluno' => $hugo, 'metodo' => 'manual'], $tGestao1);
+verificar('a presença cancelada não impede a presença certa do mesmo dia', $r['status'] === 201
+    && (int) ($r['json']['dados']['presenca']['id_presenca'] ?? 0) !== $idPresencaHugo, $r['texto']);
+$presentesHugo = array_values(array_filter(post('presenca/listar.php', [], $tGestao1)['json']['dados']['presentes'] ?? [], fn($p) => (int) $p['id_aluno'] === $hugo));
+verificar('a lista de presenças mostra só a ativa, e a gestão pode cancelá-la', count($presentesHugo) === 1 && ($presentesHugo[0]['pode_cancelar'] ?? false) === true);
+
+secao('Reconhecimento facial: só grava com certeza; na dúvida, pede confirmação');
+$lara = (int) ($novoAluno($tGestao1, $sala1, 'Lara Facial')['json']['dados']['id_aluno'] ?? 0);
+$kaio = (int) ($novoAluno($tGestao1, $sala1, 'Kaio Facial')['json']['dados']['id_aluno'] ?? 0);
+post('biometria/consentimento.php', ['id_aluno' => $lara, 'nome_responsavel' => 'Mãe da Lara'], $tGestao1);
+post('biometria/consentimento.php', ['id_aluno' => $kaio, 'nome_responsavel' => 'Pai do Kaio'], $tGestao1);
+$rostoLara = $vetor(404);
+$rostoKaio = $vetor(505);
+verificar('cadastrar o rosto da Lara e do Kaio', $cadastrarFacial($lara, [$variacao($rostoLara, 21), $variacao($rostoLara, 22), $variacao($rostoLara, 23)], $tGestao1)['status'] === 200
+    && $cadastrarFacial($kaio, [$variacao($rostoKaio, 31), $variacao($rostoKaio, 32)], $tGestao1)['status'] === 200);
+$identificarFotos = fn(array $fotos, string $token) => post('biometria/identificarFacial.php', ['embeddings' => $fotos, 'modelo' => 'faceapi-resnet34-128'], $token);
+$confirmarIdentificacao = fn(int $id, bool $sim, string $token) => post('biometria/confirmarIdentificacao.php', ['id_identificacao' => $id, 'confirmar' => $sim], $token);
+// Uma foto "a 0,42 do rosto" (luz ruim, ângulo): parece, mas sem certeza.
+$poucoParecida = function (array $base, int $semente) use ($vetor): array {
+    $direcao = $vetor($semente);
+    return array_map(fn($x, $d) => $x + 0.42 * $d, $base, $direcao);
+};
+$presencasDe = fn(int $aluno) => (int) valor("SELECT count(*) FROM tb_presenca WHERE id_aluno = ? AND cancelado_em IS NULL", [$aluno]);
+
+$r = $identificarFotos([$poucoParecida($rostoLara, 601), $poucoParecida($rostoLara, 602)], $tComum1);
+$confirmacao = $r['json']['dados']['confirmacao'] ?? [];
+$idIncerta = (int) ($confirmacao['id_identificacao'] ?? 0);
+verificar('semelhança sem certeza: NÃO grava presença; devolve o candidato para quem está no tablet confirmar', $r['status'] === 200
+    && ($r['json']['dados']['reconhecido'] ?? null) === false && ($confirmacao['aluno']['id_aluno'] ?? 0) === $lara
+    && $presencasDe($lara) === 0 && !empty($confirmacao['motivo']), $r['texto']);
+$tentativa = sql("SELECT situacao, id_candidato, id_aluno, amostras FROM tb_identificacao_biometrica WHERE id_identificacao = ?", [$idIncerta])[0] ?? [];
+verificar('a tentativa fica registrada como incerta, com o candidato, sem aluno reconhecido e sem dado biométrico', ($tentativa['situacao'] ?? '') === 'incerto'
+    && (int) ($tentativa['id_candidato'] ?? 0) === $lara && $tentativa['id_aluno'] === null && (int) ($tentativa['amostras'] ?? 0) === 2, $tentativa);
+verificar('outra conta não confirma a tentativa de quem está no tablet: 409', $confirmarIdentificacao($idIncerta, true, $tGestao1)['status'] === 409);
+$r = $confirmarIdentificacao($idIncerta, true, $tComum1);
+verificar('"Sim, é a Lara": grava a presença dela, como facial', $r['status'] === 200 && ($r['json']['dados']['aluno']['id_aluno'] ?? 0) === $lara
+    && $presencasDe($lara) === 1 && valor("SELECT situacao FROM tb_identificacao_biometrica WHERE id_identificacao = ?", [$idIncerta]) === 'confirmado'
+    && valor("SELECT metodo FROM tb_presenca WHERE id_aluno = ? AND cancelado_em IS NULL", [$lara]) === 'facial', $r['texto']);
+verificar('confirmar de novo: 409 (não grava duas vezes)', $confirmarIdentificacao($idIncerta, true, $tComum1)['status'] === 409 && $presencasDe($lara) === 1);
+
+$r = $identificarFotos([$poucoParecida($rostoKaio, 701), $poucoParecida($rostoKaio, 702)], $tComum1);
+$idRecusa = (int) ($r['json']['dados']['confirmacao']['id_identificacao'] ?? 0);
+$r = $confirmarIdentificacao($idRecusa, false, $tComum1);
+verificar('"Não é": nada é gravado e a tentativa fica como recusada', $r['status'] === 200 && ($r['json']['dados']['registrado'] ?? null) === false
+    && $presencasDe($kaio) === 0 && valor("SELECT situacao FROM tb_identificacao_biometrica WHERE id_identificacao = ?", [$idRecusa]) === 'recusado', $r['texto']);
+$r = $identificarFotos([$poucoParecida($rostoKaio, 703), $poucoParecida($rostoKaio, 704)], $tComum1);
+$idVencida = (int) ($r['json']['dados']['confirmacao']['id_identificacao'] ?? 0);
+$pdo->prepare("UPDATE tb_identificacao_biometrica SET criado_em = NOW() - INTERVAL '5 minutes' WHERE id_identificacao = ?")->execute([$idVencida]);
+verificar('confirmação depois do prazo: 409, nada gravado', $idVencida > 0 && $confirmarIdentificacao($idVencida, true, $tComum1)['status'] === 409 && $presencasDe($kaio) === 0);
+$r = $identificarFotos([$variacao($rostoLara, 41), $variacao($rostoKaio, 42)], $tComum1);
+verificar('fotos que apontam alunos diferentes: não reconhecido, sem candidato, nada gravado', $r['status'] === 200
+    && ($r['json']['dados']['reconhecido'] ?? null) === false && !isset($r['json']['dados']['confirmacao']) && $presencasDe($kaio) === 0, $r['texto']);
+verificar('mais de 3 fotos: 422', $identificarFotos(array_fill(0, 4, $rostoKaio), $tComum1)['status'] === 422);
+
+$r = $identificarFotos([$variacao($rostoKaio, 43), $variacao($rostoKaio, 44)], $tComum1);
+$idPresencaKaio = (int) ($r['json']['dados']['presenca']['id_presenca'] ?? 0);
+verificar('duas fotos que concordam, com semelhança alta: grava sozinho e oferece desfazer', $r['status'] === 200
+    && ($r['json']['dados']['reconhecido'] ?? null) === true && ($r['json']['dados']['aluno']['id_aluno'] ?? 0) === $kaio
+    && ($r['json']['dados']['pode_desfazer'] ?? null) === true && $idPresencaKaio > 0, $r['texto']);
+verificar('a tentativa reconhecida aponta a presença que gerou', (int) valor("SELECT id_presenca FROM tb_identificacao_biometrica
+    WHERE situacao = 'reconhecido' AND id_aluno = ? ORDER BY id_identificacao DESC LIMIT 1", [$kaio]) === $idPresencaKaio);
+$r = $cancelar('presenca', $idPresencaKaio, $tComum1, 'Não era o Kaio');
+verificar('"Não é este aluno" logo depois: quem estava no tablet desfaz a presença', $r['status'] === 200 && $presencasDe($kaio) === 0, $r['texto']);
+$r = $identificar($variacao($rostoKaio, 45), $tComum1);
+verificar('app antigo (uma foto em "embedding"): continua reconhecendo quando a semelhança é alta', $r['status'] === 200
+    && ($r['json']['dados']['reconhecido'] ?? null) === true && ($r['json']['dados']['aluno']['id_aluno'] ?? 0) === $kaio
+    && ($r['json']['dados']['presenca']['nova'] ?? null) === true, $r['texto']);
 
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);

@@ -4,10 +4,11 @@ require_once __DIR__ . '/avisos.php';
 
 /**
  * Presença registrada pelo app da coordenação (reconhecimento facial,
- * digital ou manual). Uma por aluno por dia letivo - garantido pela
- * restrição UNIQUE (id_aluno, dia_letivo) da migração 006, não só por esta
- * função: dois tablets reconhecendo o mesmo aluno ao mesmo tempo gravam
- * uma linha só.
+ * digital ou manual). Uma por aluno por dia letivo - garantido pelo
+ * índice único uq_presenca_aluno_dia_ativa (migração 012, só entre as não
+ * canceladas), não só por esta função: dois tablets reconhecendo o mesmo
+ * aluno ao mesmo tempo gravam uma linha só. Uma presença cancelada (ex.: o
+ * reconhecimento apontou o aluno errado) não impede a certa no mesmo dia.
  */
 
 const METODOS_PRESENCA = ['facial', 'digital', 'manual'];
@@ -22,29 +23,35 @@ function registrarPresenca(PDO $conexao, int $idAluno, int $idCoordenacao, strin
     $insere = $conexao->prepare("
         INSERT INTO tb_presenca (id_aluno, dia_letivo, metodo, id_coordenacao, distancia)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (id_aluno, dia_letivo) DO NOTHING
+        ON CONFLICT (id_aluno, dia_letivo) WHERE cancelado_em IS NULL DO NOTHING
         RETURNING id_presenca, registrada_em, metodo
     ");
-    $insere->bindValue(1, $idAluno);
-    $insere->bindValue(2, $dia);
-    $insere->bindValue(3, $metodo);
-    $insere->bindValue(4, $idCoordenacao);
-    $insere->bindValue(5, $distancia === null ? null : round($distancia, 5));
-    $insere->execute();
-    $nova = $insere->fetch(PDO::FETCH_ASSOC);
-
-    if ($nova) {
-        return ["nova" => true] + normalizarPresenca($nova);
-    }
-
     $existente = $conexao->prepare("
         SELECT id_presenca, registrada_em, metodo FROM tb_presenca
-        WHERE id_aluno = ? AND dia_letivo = ?
+        WHERE id_aluno = ? AND dia_letivo = ? AND cancelado_em IS NULL
     ");
-    $existente->bindValue(1, $idAluno);
-    $existente->bindValue(2, $dia);
-    $existente->execute();
-    return ["nova" => false] + normalizarPresenca($existente->fetch(PDO::FETCH_ASSOC));
+    // Duas voltas: se a presença que impediu esta for cancelada no meio do
+    // caminho, a segunda inserção passa.
+    for ($tentativa = 0; $tentativa < 2; $tentativa++) {
+        $insere->bindValue(1, $idAluno);
+        $insere->bindValue(2, $dia);
+        $insere->bindValue(3, $metodo);
+        $insere->bindValue(4, $idCoordenacao);
+        $insere->bindValue(5, $distancia === null ? null : round($distancia, 5));
+        $insere->execute();
+        $nova = $insere->fetch(PDO::FETCH_ASSOC);
+        if ($nova) {
+            return ["nova" => true] + normalizarPresenca($nova);
+        }
+        $existente->bindValue(1, $idAluno);
+        $existente->bindValue(2, $dia);
+        $existente->execute();
+        $linha = $existente->fetch(PDO::FETCH_ASSOC);
+        if ($linha) {
+            return ["nova" => false] + normalizarPresenca($linha);
+        }
+    }
+    throw new PDOException('Presença não registrada: conflito com outra gravação ao mesmo tempo.');
 }
 
 function normalizarPresenca(array $linha): array {

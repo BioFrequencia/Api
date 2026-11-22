@@ -21,6 +21,12 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * É também o histórico: cada mensagem diz quem enviou (enviado_por; vazio
  * = aviso automático), quando foi criada (criado_em) e quando o provedor
  * aceitou (data_envio_notificacao).
+ *
+ * Desde a migração 012: erro_envio (por que o provedor recusou - sem o
+ * contato nem o texto) e forma_envio, que separa "o sistema enviou"
+ * ('sistema') de "a coordenação avisou por fora e marcou como enviada"
+ * ('manual', com confirmado_por e confirmado_em). Antes as duas viravam
+ * "enviada" e a tela não tinha como saber qual foi.
  */
 $idCoordenacao = autenticar();
 
@@ -62,6 +68,7 @@ try {
         JOIN tb_sala  s  ON s.id_sala   = al.id_sala
         JOIN tb_responsavel r ON r.id_responsavel = n.id_responsavel
         LEFT JOIN tb_coordenacao c ON c.id_coordenacao = n.id_coordenacao
+        LEFT JOIN tb_coordenacao cf ON cf.id_coordenacao = n.confirmado_por
         $where
     ";
 
@@ -73,7 +80,8 @@ try {
         SELECT n.id_notificacao, n.id_aluno, al.nome_aluno, n.id_responsavel, r.nome_responsavel,
                r.telefone_responsavel, r.email_responsavel, n.mensagem, n.status_notificacao,
                n.data_envio_notificacao, n.canal, n.nivel_alerta, n.tipo_aviso,
-               n.criado_em, n.assunto, n.id_coordenacao, c.nome_coordenacao AS enviado_por
+               n.criado_em, n.assunto, n.id_coordenacao, c.nome_coordenacao AS enviado_por,
+               n.erro_envio, n.confirmado_em, cf.nome_coordenacao AS confirmado_por
         $de
         ORDER BY COALESCE(n.criado_em, n.data_envio_notificacao) DESC NULLS LAST, n.id_notificacao DESC
         LIMIT ? OFFSET ?
@@ -89,6 +97,7 @@ try {
         $n['status_notificacao'] = statusNotificacaoParaApi($n['status_notificacao']);
         $n['nivel_alerta'] = $n['nivel_alerta'] !== null ? (int) $n['nivel_alerta'] : null;
         $n['id_coordenacao'] = $n['id_coordenacao'] !== null ? (int) $n['id_coordenacao'] : null;
+        $n['forma_envio'] = $n['status_notificacao'] !== 'enviada' ? null : ($n['confirmado_em'] !== null ? 'manual' : 'sistema');
         return $n;
     }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
