@@ -24,6 +24,12 @@
 --
 -- Aditiva e idempotente: nenhum dado é apagado ou alterado, e rodar de
 -- novo não muda nada.
+--
+-- Atenção na implantação: (a) troca a restrição única uq_presenca_aluno_dia
+-- por um índice parcial (só entre as presenças não canceladas). A versão
+-- anterior da API grava presença com ON CONFLICT (id_aluno, dia_letivo),
+-- que para de funcionar sem a restrição: aplique esta migração fora do
+-- horário de aula e publique a API nova logo em seguida.
 
 BEGIN;
 
