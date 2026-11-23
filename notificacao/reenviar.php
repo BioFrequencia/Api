@@ -30,7 +30,7 @@ try {
         FROM tb_aluno a, tb_sala s
         WHERE n.id_notificacao = ? AND n.status_notificacao = ?
           AND a.id_aluno = n.id_aluno AND s.id_sala = a.id_sala AND s.id_escola = ?
-        RETURNING n.id_notificacao, n.id_responsavel, n.canal, n.mensagem, n.assunto, a.nome_aluno
+        RETURNING n.id_notificacao, n.id_responsavel, n.id_aluno, n.canal, n.mensagem, n.assunto, a.nome_aluno
     ");
     $toma->execute([NOTIFICACAO_PENDENTE, $idNotificacao, NOTIFICACAO_ERRO, $idEscola]);
     $linha = $toma->fetch(PDO::FETCH_ASSOC);
@@ -52,6 +52,8 @@ try {
     ");
     $busca->execute([$linha['id_responsavel']]);
     $responsavel = $busca->fetch(PDO::FETCH_ASSOC) ?: [];
+    // O contato da escola do aluno: "responder para" no e-mail.
+    $escolaDoAluno = escolaDoAlunoParaAviso($conexao, (int) $linha['id_aluno']);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao tentar de novo.", 500, $erro);
 }
@@ -62,14 +64,15 @@ $assunto = trim((string) ($linha['assunto'] ?? ''));
 if ($assunto === '') {
     $assunto = mb_substr("Aviso da escola - {$linha['nome_aluno']}", 0, 150);
 }
-[$resultado, $conteudo] = entregarMensagem(
+[$resultado, $conteudo, $motivo] = entregarMensagem(
     (string) $linha['canal'], $responsavel, $assunto, textoDaMensagemGravada((string) $linha['mensagem']),
-    'biofrequencia-notificacao-' . $idNotificacao
+    'biofrequencia-notificacao-' . $idNotificacao, $escolaDoAluno['email'] ?? null
 );
 $statusBanco = statusPorResultadoEnvio($resultado);
+$erroEnvio = $resultado === ENVIO_FALHOU ? $motivo : null;
 try {
-    $conexao->prepare("UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ? WHERE id_notificacao = ?")
-        ->execute([$statusBanco, $conteudo, $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null, $idNotificacao]);
+    $conexao->prepare("UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ?, erro_envio = ? WHERE id_notificacao = ?")
+        ->execute([$statusBanco, $conteudo, $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null, $erroEnvio, $idNotificacao]);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao gravar o resultado do envio.", 500, $erro);
 }
@@ -80,4 +83,4 @@ $mensagem = match ($status) {
     'erro' => "O envio falhou de novo. Confira o contato do responsável ou tente mais tarde.",
     default => "Sem envio automático agora: a mensagem ficou para você mandar pelo link.",
 };
-enviarSucesso($mensagem, ['id_notificacao' => $idNotificacao, 'status' => $status]);
+enviarSucesso($mensagem, ['id_notificacao' => $idNotificacao, 'status' => $status, 'erro' => $erroEnvio]);

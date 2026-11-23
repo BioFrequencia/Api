@@ -9,7 +9,9 @@
  * Cada envio vira uma linha JSON no log (WHATSAPP_LOG ou EMAIL_LOG), que o
  * teste lê para conferir o que saiu - inclusive os links de confirmação
  * de e-mail. Números de WhatsApp terminados em 0000 e e-mails para
- * @falha.test simulam falha do provedor (HTTP 500).
+ * @falha.test simulam falha do provedor (HTTP 500); e-mails para
+ * @recusado.test, a recusa do Resend em modo de teste (HTTP 403, com o
+ * destino ecoado na resposta - a API não pode gravá-lo).
  */
 $dados = json_decode(file_get_contents('php://input'), true) ?? [];
 $caminho = (string) parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
@@ -27,10 +29,18 @@ if (str_starts_with($caminho, '/email')) {
         'texto'   => $dados['text'] ?? null,
         'html'    => $dados['html'] ?? null,
         'chave'   => $_SERVER['HTTP_IDEMPOTENCY_KEY'] ?? null,
+        'reply_to' => $dados['reply_to'] ?? null,
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
     if (array_filter($destinos, fn($destino) => str_ends_with($destino, '@falha.test'))) {
         http_response_code(500);
         echo json_encode(['message' => 'falha simulada']);
+        return;
+    }
+    $recusados = array_values(array_filter($destinos, fn($destino) => str_ends_with($destino, '@recusado.test')));
+    if ($recusados !== []) {
+        http_response_code(403);
+        echo json_encode(['statusCode' => 403, 'name' => 'validation_error',
+            'message' => "You can only send testing emails to your own email address ({$recusados[0]})."]);
         return;
     }
     echo json_encode(['id' => 'email-teste-' . bin2hex(random_bytes(4))]);

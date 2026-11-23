@@ -25,6 +25,11 @@ require_once __DIR__ . '/indicadores.php';
  * sem ele, a mensagem fica em Notificações com o link do WhatsApp pronto.
  * Um aviso nunca derruba o registro: tudo aqui é chamado depois do
  * COMMIT, e um erro só vai para o log.
+ *
+ * Cada escola tem o próprio contato (tb_escola.email_contato e
+ * telefone_contato, migração 012): ele vai no fim da mensagem e, no
+ * e-mail, como "responder para". A escola é sempre a da turma do aluno -
+ * nunca a de quem está logado nem um contato único do sistema.
  */
 
 const NOMES_TIPO_AVISO = [
@@ -71,6 +76,63 @@ function canaisDoResponsavel(array $responsavel): array {
     return $canais;
 }
 
+/**
+ * A escola do aluno (pela turma) e o contato dela: [nome, email, telefone].
+ * null quando o aluno não existe.
+ *
+ * @return ?array{nome: string, email: ?string, telefone: ?string}
+ */
+function escolaDoAlunoParaAviso(PDO $conexao, int $idAluno): ?array {
+    $stmt = $conexao->prepare("
+        SELECT e.nome_escola, e.email_contato, e.telefone_contato
+        FROM tb_aluno a
+        JOIN tb_sala s ON s.id_sala = a.id_sala
+        JOIN tb_escola e ON e.id_escola = s.id_escola
+        WHERE a.id_aluno = ?
+    ");
+    $stmt->execute([$idAluno]);
+    $linha = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$linha) {
+        return null;
+    }
+    return [
+        'nome' => (string) $linha['nome_escola'],
+        'email' => $linha['email_contato'] !== null && $linha['email_contato'] !== '' ? $linha['email_contato'] : null,
+        'telefone' => $linha['telefone_contato'] !== null && $linha['telefone_contato'] !== '' ? $linha['telefone_contato'] : null,
+    ];
+}
+
+/** "(11) 99999-1111": telefone da escola só com dígitos -> formato de leitura. Função pura. */
+function telefoneDeContatoBr(string $digitos): string {
+    $d = preg_replace('/\D/', '', $digitos) ?? '';
+    if (strlen($d) === 11) {
+        return sprintf('(%s) %s-%s', substr($d, 0, 2), substr($d, 2, 5), substr($d, 7));
+    }
+    if (strlen($d) === 10) {
+        return sprintf('(%s) %s-%s', substr($d, 0, 2), substr($d, 2, 4), substr($d, 6));
+    }
+    return $digitos;
+}
+
+/**
+ * A linha com o contato da escola, no fim da mensagem: "Contato da E.E.
+ * Exemplo: (11) 99999-1111 · contato@escola.br". Vazia se a escola não
+ * cadastrou contato. Função pura.
+ */
+function assinaturaDaEscola(array $escola): string {
+    $contatos = array_values(array_filter([
+        $escola['telefone'] !== null ? telefoneDeContatoBr($escola['telefone']) : null,
+        $escola['email'],
+    ]));
+    return $contatos === [] ? '' : "Contato da {$escola['nome']}: " . implode(' · ', $contatos) . '.';
+}
+
+/** A mensagem com a assinatura da escola numa linha separada (se houver contato). Função pura. */
+function comAssinaturaDaEscola(string $mensagem, array $escola): string {
+    $assinatura = assinaturaDaEscola($escola);
+    return $assinatura === '' ? $mensagem : rtrim($mensagem) . "\n\n" . $assinatura;
+}
+
 function mensagemAvisoLimite(string $escola, string $aluno, string $tipo, int $ocorrencias, int $diasDeAula, ?float $taxa, int $janela): string {
     [$singular, $plural] = NOMES_TIPO_AVISO[$tipo];
     return sprintf(
@@ -95,29 +157,31 @@ function mensagemAvisoRegistro(string $escola, string $aluno, string $tipo, stri
 
 /**
  * Manda uma mensagem por um canal ao responsável e devolve o resultado
- * (ENVIO_*) e o que fica guardado em tb_notificacao: no WhatsApp sem
- * envio automático, o link wa.me pronto para a coordenação mandar pelo
- * WhatsApp dela. $chave vai ao provedor de e-mail como chave de
- * idempotência (o mesmo pedido repetido não manda duas vezes).
+ * (ENVIO_*), o que fica guardado em tb_notificacao (no WhatsApp sem envio
+ * automático, o link wa.me pronto para a coordenação mandar pelo WhatsApp
+ * dela) e o motivo da falha, quando falhou. $chave vai ao provedor de
+ * e-mail como chave de idempotência (o mesmo pedido repetido não manda
+ * duas vezes); $responderPara é o e-mail de contato da escola.
  *
- * @return array{0: string, 1: string}
+ * @return array{0: string, 1: string, 2: ?string}
  */
-function entregarMensagem(string $canal, array $responsavel, string $assunto, string $mensagem, ?string $chave = null): array {
+function entregarMensagem(string $canal, array $responsavel, string $assunto, string $mensagem, ?string $chave = null, ?string $responderPara = null): array {
     if ($canal === 'whatsapp') {
         $telefone = telefoneParaWhatsapp($responsavel['telefone_responsavel'] ?? null);
         if ($telefone === null) {
-            return [ENVIO_FALHOU, $mensagem];
+            return [ENVIO_FALHOU, $mensagem, 'WhatsApp: o responsável não tem telefone com DDD.'];
         }
-        $resultado = enviarWhatsappResponsavel($telefone, $mensagem);
+        [$resultado, $motivo] = enviarWhatsappResponsavel($telefone, $mensagem);
         // Sem provedor, o link wa.me pronto; se o provedor falhou, o texto
         // (para "Tentar de novo" - a tela também monta o link, se quiser).
-        return [$resultado, $resultado === ENVIO_SEM_PROVEDOR ? linkWhatsapp($telefone, $mensagem) : $mensagem];
+        return [$resultado, $resultado === ENVIO_SEM_PROVEDOR ? linkWhatsapp($telefone, $mensagem) : $mensagem, $motivo];
     }
     $email = trim((string) ($responsavel['email_responsavel'] ?? ''));
     if ($email === '') {
-        return [ENVIO_FALHOU, $mensagem];
+        return [ENVIO_FALHOU, $mensagem, 'e-mail: o responsável não tem e-mail cadastrado.'];
     }
-    return [enviarEmailResponsavel($email, $assunto, $mensagem, $chave), $mensagem];
+    [$resultado, $motivo] = enviarEmailResponsavel($email, $assunto, $mensagem, $chave, $responderPara);
+    return [$resultado, $mensagem, $motivo];
 }
 
 /**
@@ -127,11 +191,11 @@ function entregarMensagem(string $canal, array $responsavel, string $assunto, st
  *
  * @return array{responsaveis:int, enviados:int, na_fila:int, falhas:int, sem_contato:int}
  */
-function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, string $assunto, string $mensagem, string $tipoAviso): array {
+function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, string $assunto, string $mensagem, string $tipoAviso, ?string $responderPara = null): array {
     $resumo = ['responsaveis' => count($responsaveis), 'enviados' => 0, 'na_fila' => 0, 'falhas' => 0, 'sem_contato' => 0];
     $insert = $conexao->prepare("
-        INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, data_envio_notificacao, assunto)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, data_envio_notificacao, assunto, erro_envio)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ");
     foreach ($responsaveis as $responsavel) {
         $canais = canaisDoResponsavel($responsavel);
@@ -140,11 +204,12 @@ function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, 
             continue;
         }
         foreach ($canais as $canal) {
-            [$resultado, $conteudo] = entregarMensagem($canal, $responsavel, $assunto, $mensagem);
+            [$resultado, $conteudo, $motivo] = entregarMensagem($canal, $responsavel, $assunto, $mensagem, null, $responderPara);
             $insert->execute([
                 $idAluno, $responsavel['id_responsavel'], $conteudo, statusPorResultadoEnvio($resultado), $canal, $tipoAviso,
                 $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null,
                 $canal === 'email' ? mb_substr($assunto, 0, 150) : null,
+                $resultado === ENVIO_FALHOU ? $motivo : null,
             ]);
             match ($resultado) {
                 ENVIO_OK     => $resumo['enviados']++,
@@ -214,13 +279,13 @@ function avisarSeAtingiuLimite(PDO $conexao, int $idEscola, int $idAluno, array 
             continue;
         }
 
-        $escola = $escola ?? nomeDaEscolaParaAviso($conexao, $idEscola);
-        $mensagem = mensagemAvisoLimite(
-            $escola, $indicador['nome_aluno'], $tipo, $indicador[$tipo], $indicador['dias_letivos'],
+        $escola = $escola ?? (escolaDoAlunoParaAviso($conexao, $idAluno) ?? ['nome' => nomeDaEscolaParaAviso($conexao, $idEscola), 'email' => null, 'telefone' => null]);
+        $mensagem = comAssinaturaDaEscola(mensagemAvisoLimite(
+            $escola['nome'], $indicador['nome_aluno'], $tipo, $indicador[$tipo], $indicador['dias_letivos'],
             $indicador["taxa_$tipo"], $config['janela_alerta_dias']
-        );
+        ), $escola);
         $avisos[$tipo] = enviarAosResponsaveis(
-            $conexao, $idAluno, $responsaveis, "Entradas e saídas - {$indicador['nome_aluno']}", $mensagem, "limite_$tipo"
+            $conexao, $idAluno, $responsaveis, "Entradas e saídas - {$indicador['nome_aluno']}", $mensagem, "limite_$tipo", $escola['email']
         );
     }
     return $avisos;
@@ -244,12 +309,13 @@ function avisosDepoisDoRegistro(
             $responsaveis = responsaveisDoAluno($conexao, $idAluno);
             if (!empty($responsaveis)) {
                 $local = (new DateTimeImmutable($momentoUtc, new DateTimeZone('UTC')))->setTimezone(fusoEscola());
-                $mensagem = mensagemAvisoRegistro(
-                    nomeDaEscolaParaAviso($conexao, $idEscola), $nomeAluno, $tipo,
+                $escola = escolaDoAlunoParaAviso($conexao, $idAluno) ?? ['nome' => nomeDaEscolaParaAviso($conexao, $idEscola), 'email' => null, 'telefone' => null];
+                $mensagem = comAssinaturaDaEscola(mensagemAvisoRegistro(
+                    $escola['nome'], $nomeAluno, $tipo,
                     $local->format('Y-m-d'), $local->format('H:i'), $motivo, $retiradoPor
-                );
+                ), $escola);
                 $assunto = ($tipo === 'atraso' ? 'Entrada atrasada' : 'Saída antecipada') . " - $nomeAluno";
-                $registro = enviarAosResponsaveis($conexao, $idAluno, $responsaveis, $assunto, $mensagem, "registro_$tipo");
+                $registro = enviarAosResponsaveis($conexao, $idAluno, $responsaveis, $assunto, $mensagem, "registro_$tipo", $escola['email']);
             }
         }
         return ['registro' => $registro, 'limite' => avisarSeAtingiuLimite($conexao, $idEscola, $idAluno, $config)];

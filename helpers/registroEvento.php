@@ -147,10 +147,12 @@ function registrarEventoFrequencia(
     $trava = $conexao->prepare("SELECT pg_advisory_xact_lock(?, ?)");
     $trava->execute([$c['trava'], $idAluno]);
 
+    // Registro cancelado (migração 012) não conta: o certo pode ser lançado
+    // no mesmo dia.
     $existente = $conexao->prepare("
         SELECT {$c['id']} AS id, {$c['data']} AS data
         FROM {$c['tabela']}
-        WHERE id_aluno = ? AND " . sqlDataNaEscola($c['data']) . " = ?::date
+        WHERE id_aluno = ? AND cancelado_em IS NULL AND " . sqlDataNaEscola($c['data']) . " = ?::date
         ORDER BY {$c['id']}
         LIMIT 1
     ");

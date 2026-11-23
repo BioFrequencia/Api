@@ -183,7 +183,7 @@ function datasDeRegistros(PDO $conexao, string $tipo, int $idEscola, string $ini
         FROM $tabela r
         JOIN tb_aluno a ON a.id_aluno = r.id_aluno
         JOIN tb_sala  s ON s.id_sala  = a.id_sala
-        WHERE s.id_escola = ? AND r.$coluna >= ? AND r.$coluna < ?
+        WHERE s.id_escola = ? AND r.$coluna >= ? AND r.$coluna < ? AND r.cancelado_em IS NULL
           AND (?::int IS NULL OR r.id_aluno = ?::int)
         ORDER BY dia DESC
     ");

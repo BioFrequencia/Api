@@ -50,13 +50,13 @@ try {
     $stmtPrimeiro = $conexao->prepare("
         SELECT MIN(dia)::text FROM (
             SELECT MIN(" . sqlDataNaEscola('t.dta_atraso') . ") AS dia FROM tb_atraso t
-                JOIN tb_aluno a ON a.id_aluno = t.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ?
+                JOIN tb_aluno a ON a.id_aluno = t.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ? AND t.cancelado_em IS NULL
             UNION ALL
             SELECT MIN(" . sqlDataNaEscola('r.dta_saida') . ") FROM tb_saida_antecipada r
-                JOIN tb_aluno a ON a.id_aluno = r.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ?
+                JOIN tb_aluno a ON a.id_aluno = r.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ? AND r.cancelado_em IS NULL
             UNION ALL
             SELECT MIN($diaPresenca) FROM tb_presenca p
-                JOIN tb_aluno a ON a.id_aluno = p.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ?
+                JOIN tb_aluno a ON a.id_aluno = p.id_aluno JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ? AND p.cancelado_em IS NULL
         ) x
     ");
     $stmtPrimeiro->execute([$idEscola, $idEscola, $idEscola]);

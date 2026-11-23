@@ -62,8 +62,12 @@ function textoDaMensagemGravada(string $mensagem): string {
     return is_string($texto) && trim($texto) !== '' ? $texto : $mensagem;
 }
 
-function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem, ?string $chave = null): string {
-    return enviarEmail($destino, $assunto, $mensagem, null, $chave); // sem provedor: fica na fila
+/**
+ * @return array{0: string, 1: ?string} [ENVIO_*, motivo da falha]
+ *   Sem provedor: fica na fila. $responderPara: o e-mail de contato da escola.
+ */
+function enviarEmailResponsavel(string $destino, string $assunto, string $mensagem, ?string $chave = null, ?string $responderPara = null): array {
+    return enviarEmailDetalhado($destino, $assunto, $mensagem, null, $chave, $responderPara);
 }
 
 /**
@@ -110,11 +114,12 @@ function textoParaVariavelDoModelo(string $mensagem): string {
     return implode(' ', $partes);
 }
 
-function enviarWhatsappResponsavel(string $telefone, string $mensagem): string {
+/** @return array{0: string, 1: ?string} [ENVIO_*, motivo da falha] */
+function enviarWhatsappResponsavel(string $telefone, string $mensagem): array {
     $url = getenv('WHATSAPP_API_URL');
     $token = getenv('WHATSAPP_TOKEN');
     if (!$url || !$token) {
-        return ENVIO_SEM_PROVEDOR; // sem provedor: fica na fila com o link wa.me
+        return [ENVIO_SEM_PROVEDOR, null]; // sem provedor: fica na fila com o link wa.me
     }
     return postarNoProvedor($url, $token, corpoWhatsapp($telefone, $mensagem), 'WhatsApp');
 }

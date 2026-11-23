@@ -31,6 +31,9 @@ require_once __DIR__ . '/../helpers/tentativas.php';
 require_once __DIR__ . '/../helpers/importacao.php';
 require_once __DIR__ . '/../helpers/importacaoOcorrencias.php';
 require_once __DIR__ . '/../helpers/mensagemManual.php';
+require_once __DIR__ . '/../helpers/cancelamento.php';
+require_once __DIR__ . '/../helpers/contatoEscola.php';
+require_once __DIR__ . '/../helpers/diagnosticoEnvio.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -762,6 +765,105 @@ afirmar('tentar de novo: a mensagem gravada como link wa.me volta a ser o texto'
     && textoDaMensagemGravada('https://wa.me/5511988887777?text=Ol%C3%A1+Jo%C3%A3o') === 'Olá João'
     && textoDaMensagemGravada('Texto comum, sem link') === 'Texto comum, sem link'
     && textoDaMensagemGravada('https://wa.me/5511988887777') === 'https://wa.me/5511988887777');
+
+// ---------- identificação facial em três níveis (migração 012) ----------
+// Vetores de 2 posições: o aluno 10 fica na origem, o 20 a 1,0 e o 30 a 0,46 dele.
+$cadastrosF = [10 => [[0.0, 0.0]], 20 => [[1.0, 0.0]], 30 => [[0.0, 0.46]]];
+$d = decidirIdentificacao([[0.05, 0.0], [0.08, -0.02]], $cadastrosF);
+afirmar('facial: duas fotos perto do mesmo aluno e longe dos outros = reconhecido (grava sozinho)',
+    $d['situacao'] === 'reconhecido' && $d['id_aluno'] === 10 && $d['fotos'] === 2 && abs($d['distancia'] - sqrt(0.08 ** 2 + 0.02 ** 2)) < 1e-9);
+$d = decidirIdentificacao([[0.44, 0.0], [0.43, 0.0]], [10 => [[0.0, 0.0]], 20 => [[2.0, 0.0]]]);
+afirmar('facial: dentro do limite de "parece" mas acima do automático = incerto (não grava; pede confirmação)',
+    $d['situacao'] === 'incerto' && $d['id_aluno'] === 10 && $d['motivo'] === 'pouca_semelhanca');
+$d = decidirIdentificacao([[0.0, 0.19], [0.0, 0.185]], $cadastrosF);
+afirmar('facial: perto de dois alunos ao mesmo tempo (folga pequena) = incerto, "parecido com outro"',
+    $d['situacao'] === 'incerto' && $d['id_aluno'] === 10 && $d['motivo'] === 'parecido_com_outro');
+$d = decidirIdentificacao([[0.02, 0.0], [0.98, 0.0]], $cadastrosF);
+afirmar('facial: fotos que apontam alunos diferentes = não reconhecido (nunca escolhe um)',
+    $d['situacao'] === 'nao_reconhecido' && $d['id_aluno'] === null && $d['motivo'] === 'fotos_divergentes');
+$d = decidirIdentificacao([[0.02, 0.0], [5.0, 5.0]], $cadastrosF);
+afirmar('facial: uma foto boa e outra sem semelhança = incerto (não grava)', $d['situacao'] === 'incerto' && $d['motivo'] === 'fotos_insuficientes');
+$d = decidirIdentificacao([[5.0, 5.0]], $cadastrosF);
+afirmar('facial: longe de todos = não reconhecido', $d['situacao'] === 'nao_reconhecido' && $d['id_aluno'] === null);
+$d = decidirIdentificacao([[0.40, 0.0]], [10 => [[0.0, 0.0]], 20 => [[3.0, 0.0]]]);
+afirmar('facial: uma foto só exige mais (0,40 com uma foto = incerto)', $d['situacao'] === 'incerto');
+$d = decidirIdentificacao([[0.40, 0.0], [0.40, 0.0]], [10 => [[0.0, 0.0]], 20 => [[3.0, 0.0]]]);
+afirmar('facial: a mesma distância em duas fotos que concordam = reconhecido', $d['situacao'] === 'reconhecido' && $d['id_aluno'] === 10);
+afirmar('facial: sem cadastros = não reconhecido', decidirIdentificacao([[0.0, 0.0]], [])['situacao'] === 'nao_reconhecido');
+afirmar('facial: texto do motivo para a tela', str_contains(textoDoMotivoFacial('parecido_com_outro'), 'outro aluno')
+    && textoDoMotivoFacial(null) !== '');
+
+// ---------- cancelamento de registros (helpers/cancelamento.php) ----------
+$agoraT = new DateTimeImmutable('2026-11-20 12:00:00', new DateTimeZone('UTC'));
+$gestora = ['id_coordenacao' => 1, 'papel' => 'gestor'];
+$coordenadora = ['id_coordenacao' => 2, 'papel' => 'coordenador'];
+afirmar('cancelar: a gestão cancela qualquer registro, mesmo antigo e de outra pessoa',
+    podeCancelarRegistro($gestora, ['id_coordenacao' => 2, 'criado_em' => null], $agoraT));
+afirmar('cancelar: quem registrou desfaz nos primeiros 10 minutos',
+    podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-20 11:51:00'], $agoraT));
+afirmar('cancelar: depois de 10 minutos, só a gestão',
+    !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-20 11:49:00'], $agoraT));
+afirmar('cancelar: a coordenação não cancela registro de outra pessoa',
+    !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 3, 'criado_em' => '2026-11-20 11:59:00'], $agoraT));
+afirmar('cancelar: registro antigo, sem a hora em que foi feito, só a gestão',
+    !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => null], $agoraT));
+afirmar('motivo do cancelamento: espaços juntados; vazio = sem motivo; longo demais = erro',
+    lerMotivoCancelamento("  Aluno   errado\n no reconhecimento ")[0] === 'Aluno errado no reconhecimento'
+    && lerMotivoCancelamento('   ') === [null, null] && lerMotivoCancelamento(str_repeat('a', 201))[1] !== null
+    && lerMotivoCancelamento(42)[1] !== null);
+$resumoAuditoria = resumoDoRegistroAuditado('atraso', ['dta_atraso' => '2026-11-19 10:20:00', 'motivo_atraso' => 'Ônibus', 'origem' => 'presenca',
+    'cancelado_em' => '2026-11-19 10:30:00', 'motivo_cancelamento' => 'Aluno errado']);
+afirmar('auditoria: resumo do registro (quando, motivo, origem e se estava cancelado)', $resumoAuditoria['momento'] === '2026-11-19 10:20:00'
+    && $resumoAuditoria['motivo'] === 'Ônibus' && $resumoAuditoria['detalhe'] === 'Pela presença do app' && $resumoAuditoria['cancelado'] === true
+    && resumoDoRegistroAuditado('presenca', ['registrada_em' => 'x', 'metodo' => 'facial'])['detalhe'] === 'Reconhecimento facial');
+
+// ---------- contato de cada escola (helpers/contatoEscola.php e avisos.php) ----------
+[$contato, $erroContato] = lerContatoDaEscola(['email_contato' => ' Contato@EscolaA.com.br ', 'telefone_contato' => '(11) 99999-1111'], []);
+afirmar('contato da escola: e-mail em minúsculas e telefone só com dígitos', $erroContato === null
+    && $contato === ['email' => 'contato@escolaa.com.br', 'telefone' => '11999991111']);
+afirmar('contato da escola: e-mail inválido e telefone sem DDD são recusados',
+    lerContatoDaEscola(['email_contato' => 'sem-arroba'], [])[1] !== null && lerContatoDaEscola(['telefone_contato' => '99999-1111'], [])[1] !== null
+    && lerContatoDaEscola(['telefone_contato' => '(01) 3333-4444'], [])[1] !== null);
+afirmar('contato da escola: campo ausente não muda; vazio apaga', lerContatoDaEscola(['telefone_contato' => ''], ['email' => 'a@b.br', 'telefone' => '1133334444'])[0]
+    === ['email' => 'a@b.br', 'telefone' => null]);
+$escolaA = ['nome' => 'Escola A', 'email' => 'contato@escolaa.com.br', 'telefone' => '11999991111'];
+afirmar('assinatura: o contato da própria escola no fim da mensagem', comAssinaturaDaEscola('Aviso.', $escolaA)
+    === "Aviso.\n\nContato da Escola A: (11) 99999-1111 · contato@escolaa.com.br.");
+afirmar('assinatura: escola sem contato não ganha linha', comAssinaturaDaEscola('Aviso.', ['nome' => 'Escola B', 'email' => null, 'telefone' => null]) === 'Aviso.');
+$enviosComContato = montarEnvios(['nome' => 'Ana Souza', 'turma' => '1º A'], $responsaveisTeste,
+    [['id_responsavel' => 5, 'canal' => 'email']], 'Olá, {responsavel}.', $escolaA, '2026-11-06', ['whatsapp' => false, 'email' => true]);
+afirmar('mensagem da coordenação: assinatura da escola e "responder para" o e-mail dela',
+    str_ends_with($enviosComContato['envios'][0]['mensagem'], 'contato@escolaa.com.br.')
+    && $enviosComContato['envios'][0]['responder_para'] === 'contato@escolaa.com.br'
+    && $enviosComContato['envios'][0]['assunto'] === 'Escola A: mensagem sobre Ana Souza');
+
+// ---------- falhas do provedor e diagnóstico do envio ----------
+$motivoResend = motivoDaFalhaDoProvedor(403, '{"statusCode":403,"name":"validation_error","message":"You can only send testing emails to your own email address (dono@exemplo.com)."}', 'e-mail');
+afirmar('motivo da falha: código HTTP e explicação do provedor, sem o e-mail', str_contains($motivoResend, 'HTTP 403')
+    && str_contains($motivoResend, 'testing emails') && !str_contains($motivoResend, 'dono@exemplo.com') && str_contains($motivoResend, '[e-mail]'));
+$motivoMeta = motivoDaFalhaDoProvedor(400, '{"error":{"message":"(#131030) Recipient phone number 5511988887777 not in allowed list","code":131030}}', 'WhatsApp');
+afirmar('motivo da falha: erro da Meta com o código, sem o telefone', str_contains($motivoMeta, '131030')
+    && !str_contains($motivoMeta, '5511988887777') && str_contains($motivoMeta, '[telefone]'));
+afirmar('motivo da falha: provedor que não respondeu', motivoDaFalhaDoProvedor(0, false, 'e-mail') === 'e-mail: o provedor não respondeu');
+afirmar('envio de e-mail: endereço base do Resend ganha /emails; outros não mudam',
+    enderecoDeEnvioDeEmail('https://api.resend.com') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('https://api.resend.com/') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('https://api.resend.com/emails') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('http://provedores-falsos:8099/email') === 'http://provedores-falsos:8099/email');
+afirmar('diagnóstico: domínio do remetente', dominioDoRemetente('BioFrequência <nao-responda@escola.sp.gov.br>') === 'escola.sp.gov.br'
+    && dominioDoRemetente('x@Resend.dev') === 'resend.dev' && dominioDoRemetente('sem endereço') === null);
+$avisosEnvio = avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://api.resend.com', 'EMAIL_API_TOKEN' => 't', 'EMAIL_REMETENTE' => 'X <a@resend.dev>']);
+$textosEnvio = implode(' | ', array_column($avisosEnvio, 'texto'));
+afirmar('diagnóstico: aponta remetente de teste do Resend, URL base e WhatsApp sem envio automático',
+    str_contains($textosEnvio, 'resend.dev') && str_contains($textosEnvio, '/emails') && str_contains($textosEnvio, 'WhatsApp sem envio automático'));
+afirmar('diagnóstico: sem provedor de e-mail diz o que falta', str_contains(implode(' ', array_column(avisosDaConfiguracaoDeEnvio([]), 'texto')), 'EMAIL_API_TOKEN'));
+afirmar('diagnóstico: WhatsApp configurado sem modelo aprovado', str_contains(implode(' ', array_column(
+    avisosDaConfiguracaoDeEnvio(['WHATSAPP_API_URL' => 'u', 'WHATSAPP_TOKEN' => 't', 'SMTP_REMETENTE' => 'a@b.br']), 'texto')), 'WHATSAPP_TEMPLATE'));
+afirmar('diagnóstico: domínio verificado, não verificado, ausente e chave só de envio',
+    situacaoDoDominio(200, '{"data":[{"name":"escola.sp.gov.br","status":"verified"}]}', 'escola.sp.gov.br')['situacao'] === 'verificado'
+    && situacaoDoDominio(200, '{"data":[{"name":"escola.sp.gov.br","status":"pending"}]}', 'escola.sp.gov.br')['situacao'] === 'nao_verificado'
+    && situacaoDoDominio(200, '{"data":[]}', 'escola.sp.gov.br')['situacao'] === 'nao_encontrado'
+    && situacaoDoDominio(401, '{}', 'escola.sp.gov.br')['situacao'] === 'sem_permissao');
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

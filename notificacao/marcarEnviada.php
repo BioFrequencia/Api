@@ -13,6 +13,10 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * confirmando que avisou o responsável por fora do sistema (telefone,
  * WhatsApp, etc.). Vale para as pendentes e para as que falharam no
  * envio automático. Só notificações de alunos da própria escola.
+ *
+ * Fica registrado quem confirmou e quando (migração 012): a lista mostra
+ * "avisado por fora, confirmado por Fulana", e não "enviada pelo sistema"
+ * - o sistema não diz que enviou o que não enviou.
  */
 $idCoordenacao = autenticar();
 
@@ -28,7 +32,7 @@ $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
 try {
     $update = $conexao->prepare("
         UPDATE tb_notificacao n
-        SET status_notificacao = ?, data_envio_notificacao = NOW()
+        SET status_notificacao = ?, data_envio_notificacao = NOW(), confirmado_por = ?, confirmado_em = NOW()
         FROM tb_aluno a
         JOIN tb_sala s ON s.id_sala = a.id_sala
         WHERE n.id_notificacao = ?
@@ -36,13 +40,13 @@ try {
           AND s.id_escola = ?
           AND n.status_notificacao <> ?
     ");
-    $update->execute([NOTIFICACAO_ENVIADA, $idNotificacao, $idEscola, NOTIFICACAO_ENVIADA]);
+    $update->execute([NOTIFICACAO_ENVIADA, $idCoordenacao, $idNotificacao, $idEscola, NOTIFICACAO_ENVIADA]);
 
     if ($update->rowCount() === 0) {
         enviarErro("Notificação não encontrada ou já enviada.", 404);
     }
 
-    enviarSucesso("Notificação marcada como enviada.");
+    enviarSucesso("Marcada como avisada por fora do sistema.");
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao atualizar a notificação.", 500, $erro);
 }

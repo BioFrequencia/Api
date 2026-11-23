@@ -7,6 +7,7 @@ require_once __DIR__ . '/../helpers/resposta.php';
 require_once __DIR__ . '/../helpers/escola.php';
 require_once __DIR__ . '/../helpers/calendario.php';
 require_once __DIR__ . '/../helpers/configuracaoEscola.php';
+require_once __DIR__ . '/../helpers/contatoEscola.php';
 require_once __DIR__ . '/../Authentication/Authentication.php';
 
 /**
@@ -59,6 +60,8 @@ try {
 
     enviarSucesso("Configuração da escola carregada.", [
         "escola"          => $escola,
+        // Contato da escola com os responsáveis (só a gestão altera: escola/salvarContato.php).
+        "contato"         => contatoDaEscola($conexao, $idEscola),
         "configuracao"    => configuracaoDaEscola($conexao, $idEscola),
         "padroes"         => CONFIGURACAO_PADRAO,
         "faixas"          => FAIXAS_CONFIGURACAO,
