@@ -2084,6 +2084,22 @@ verificar('diagnóstico do envio (equipe): o que está configurado e o último e
     && str_contains((string) ($r['json']['dados']['ultimos_30_dias']['email']['ultimo_erro'] ?? ''), 'HTTP 403')
     && !str_contains($r['texto'], 'token-email-somente-teste') && !str_contains($r['texto'], 'token-somente-teste'), $r['texto']);
 verificar('diagnóstico do envio: outras contas não veem (404)', post('admin/diagnosticoEnvio.php', [], $tGestao1)['status'] === 404);
+$tAdminEnvio = $tokenNovo($idAdmin);
+$r = post('admin/testarEnvio.php', ['canal' => 'email', 'destino' => 'equipe-teste@escola.test'], $tAdminEnvio);
+verificar('mensagem de teste por e-mail: o provedor aceita e ela sai pelo mesmo caminho dos avisos', $r['status'] === 200
+    && ($r['json']['dados']['resultado'] ?? '') === 'enviado'
+    && count(emailsComAssunto('equipe-teste@escola.test', 'Teste de envio')) === 1, $r['texto']);
+$r = post('admin/testarEnvio.php', ['canal' => 'email', 'destino' => 'equipe@falha.test'], $tAdminEnvio);
+verificar('mensagem de teste: provedor que falha volta "falhou", com o motivo e sem o destino', $r['status'] === 200
+    && ($r['json']['dados']['resultado'] ?? '') === 'falhou' && str_contains((string) ($r['json']['dados']['motivo'] ?? ''), 'HTTP 500')
+    && !str_contains($r['texto'], 'falha.test'), $r['texto']);
+$r = post('admin/testarEnvio.php', ['canal' => 'whatsapp', 'destino' => '(11) 98888-1212'], $tAdminEnvio);
+verificar('mensagem de teste por WhatsApp: sai para o número com 55', ($r['json']['dados']['resultado'] ?? '') === 'enviado'
+    && count(enviosWhatsapp('5511988881212')) === 1, $r['texto']);
+verificar('mensagem de teste: destino inválido é recusado (400)', post('admin/testarEnvio.php', ['canal' => 'whatsapp', 'destino' => '123'], $tAdminEnvio)['status'] === 400
+    && post('admin/testarEnvio.php', ['canal' => 'sms', 'destino' => '11988881212'], $tAdminEnvio)['status'] === 400);
+verificar('mensagem de teste: outras contas não veem (404)', post('admin/testarEnvio.php', ['canal' => 'email', 'destino' => 'x@escola.test'], $tGestao1)['status'] === 404);
+verificar('mensagem de teste: não entra em Notificações', (int) valor("SELECT COUNT(*) FROM tb_notificacao WHERE mensagem LIKE 'Mensagem de teste do BioFrequência%'") === 0);
 $r = post('notificacao/marcarEnviada.php', ['id_notificacao' => $idRecusada], $tComum1);
 $linhaMarcada = $daLista($idRecusada, $tGestao1);
 verificar('"avisado por fora": vira enviada, mas marcada como manual e com quem confirmou', $r['status'] === 200

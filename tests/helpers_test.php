@@ -34,6 +34,7 @@ require_once __DIR__ . '/../helpers/mensagemManual.php';
 require_once __DIR__ . '/../helpers/cancelamento.php';
 require_once __DIR__ . '/../helpers/contatoEscola.php';
 require_once __DIR__ . '/../helpers/diagnosticoEnvio.php';
+require_once __DIR__ . '/../helpers/testeEnvio.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -864,6 +865,36 @@ afirmar('diagnóstico: domínio verificado, não verificado, ausente e chave só
     && situacaoDoDominio(200, '{"data":[{"name":"escola.sp.gov.br","status":"pending"}]}', 'escola.sp.gov.br')['situacao'] === 'nao_verificado'
     && situacaoDoDominio(200, '{"data":[]}', 'escola.sp.gov.br')['situacao'] === 'nao_encontrado'
     && situacaoDoDominio(401, '{}', 'escola.sp.gov.br')['situacao'] === 'sem_permissao');
+
+afirmar('diagnóstico: WhatsApp da Meta no formato certo não gera aviso de endereço',
+    problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v23.0/123456789012345/messages') === null
+    && problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v21/123456789012345/messages/') === null);
+afirmar('diagnóstico: WhatsApp da Meta sem o ID do número, sem /messages ou em http é apontado',
+    problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/') !== null
+    && problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v23.0/123456789012345') !== null
+    && problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v23.0/+55 11 99999-0000/messages') !== null
+    && problemaNoEnderecoDoWhatsapp('http://graph.facebook.com/v23.0/123456789012345/messages') !== null);
+afirmar('diagnóstico: endereço de outro provedor (compatível com a Cloud API) não é julgado',
+    problemaNoEnderecoDoWhatsapp('https://waba-v2.360dialog.io/messages') === null && problemaNoEnderecoDoWhatsapp('u') === null);
+$textosMeta = implode(' | ', array_column(avisosDaConfiguracaoDeEnvio(['WHATSAPP_API_URL' => 'https://graph.facebook.com/v23.0', 'WHATSAPP_TOKEN' => 't',
+    'WHATSAPP_TEMPLATE' => 'aviso_escola', 'SMTP_REMETENTE' => 'a@b.br']), 'texto'));
+afirmar('diagnóstico: o aviso do endereço da Meta aparece na lista (e o do modelo não, quando há modelo)',
+    str_contains($textosMeta, 'ID do número de telefone') && !str_contains($textosMeta, 'WHATSAPP_TEMPLATE'));
+
+afirmar('teste de envio: destino de e-mail válido passa; inválido ou longo demais não',
+    destinoDoTeste('email', ' equipe@escola.sp.gov.br ') === 'equipe@escola.sp.gov.br'
+    && destinoDoTeste('email', 'sem-arroba') === null
+    && destinoDoTeste('email', str_repeat('a', 150) . '@x.br') === null);
+afirmar('teste de envio: celular com DDD vira o número do WhatsApp com 55; sem DDD ou canal estranho, não',
+    destinoDoTeste('whatsapp', '(11) 99999-1234') === '5511999991234'
+    && destinoDoTeste('whatsapp', '99999-1234') === null
+    && destinoDoTeste('sms', '11999991234') === null);
+afirmar('teste de envio: cada resultado tem a sua explicação (sem provedor diz o que falta; falha mostra o motivo)',
+    str_contains(mensagemDoResultadoDoTeste('email', ENVIO_SEM_PROVEDOR, null), 'EMAIL_API_TOKEN')
+    && str_contains(mensagemDoResultadoDoTeste('whatsapp', ENVIO_SEM_PROVEDOR, null), 'WHATSAPP_TOKEN')
+    && str_contains(mensagemDoResultadoDoTeste('whatsapp', ENVIO_OK, null), 'aceitou')
+    && mensagemDoResultadoDoTeste('email', ENVIO_FALHOU, 'e-mail: o provedor recusou (HTTP 403)') === 'e-mail: o provedor recusou (HTTP 403)'
+    && str_contains(mensagemDoResultadoDoTeste('email', ENVIO_FALHOU, null), 'recusou'));
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

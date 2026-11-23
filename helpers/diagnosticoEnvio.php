@@ -15,7 +15,9 @@ require_once __DIR__ . '/provedores.php';
  *  - domínio do remetente não verificado no Resend (consulta opcional, só
  *    leitura, GET /domains - nenhuma mensagem é enviada);
  *  - WhatsApp sem modelo aprovado (WHATSAPP_TEMPLATE): a Meta só entrega
- *    texto livre a quem falou com o número nas últimas 24 h.
+ *    texto livre a quem falou com o número nas últimas 24 h;
+ *  - WHATSAPP_API_URL da Meta fora do formato .../v<versão>/<ID do número>/messages
+ *    (erro comum: o endereço base, ou o telefone no lugar do ID).
  */
 
 /** Domínio do remetente ("Nome <x@dominio>" -> "dominio"); null se não der para ler. Função pura. */
@@ -27,6 +29,24 @@ function dominioDoRemetente(?string $remetente): ?string {
         return mb_strtolower($m[2]);
     }
     return null;
+}
+
+/**
+ * Problema no WHATSAPP_API_URL da Meta, ou null. Só julga o endereço da
+ * Meta (graph.facebook.com): um provedor compatível com a Cloud API tem o
+ * próprio formato. Função pura.
+ */
+function problemaNoEnderecoDoWhatsapp(string $url): ?string {
+    $partes = parse_url(trim($url));
+    if (!is_array($partes) || ($partes['host'] ?? '') !== 'graph.facebook.com') {
+        return null;
+    }
+    $caminho = rtrim((string) ($partes['path'] ?? ''), '/');
+    if (($partes['scheme'] ?? '') === 'https' && preg_match('#^/v\d+(\.\d+)?/\d+/messages$#', $caminho)) {
+        return null;
+    }
+    return 'WHATSAPP_API_URL não está no formato da Meta: https://graph.facebook.com/v23.0/<ID do número de telefone>/messages. '
+        . 'O ID fica no painel da Meta, em WhatsApp > Configuração da API (não é o número de telefone).';
 }
 
 /**
@@ -65,9 +85,15 @@ function avisosDaConfiguracaoDeEnvio(array $ambiente): array {
     if (!$whatsapp) {
         $avisos[] = ['canal' => 'whatsapp', 'nivel' => 'info',
             'texto' => 'WhatsApp sem envio automático: as mensagens ficam em Notificações com o link pronto para a coordenação enviar pelo WhatsApp da escola.'];
-    } elseif (!$tem('WHATSAPP_TEMPLATE')) {
-        $avisos[] = ['canal' => 'whatsapp', 'nivel' => 'aviso',
-            'texto' => 'WhatsApp sem modelo aprovado (WHATSAPP_TEMPLATE): a Meta aceita o pedido mas só entrega texto livre a quem falou com o número da escola nas últimas 24 horas.'];
+    } else {
+        $problema = problemaNoEnderecoDoWhatsapp((string) $ambiente['WHATSAPP_API_URL']);
+        if ($problema !== null) {
+            $avisos[] = ['canal' => 'whatsapp', 'nivel' => 'erro', 'texto' => $problema];
+        }
+        if (!$tem('WHATSAPP_TEMPLATE')) {
+            $avisos[] = ['canal' => 'whatsapp', 'nivel' => 'aviso',
+                'texto' => 'WhatsApp sem modelo aprovado (WHATSAPP_TEMPLATE): a Meta aceita o pedido mas só entrega texto livre a quem falou com o número da escola nas últimas 24 horas.'];
+        }
     }
     return $avisos;
 }

@@ -58,6 +58,10 @@ services:
         sync: false
       - key: WHATSAPP_TEMPLATE
         sync: false
+      # Idioma do modelo aprovado (padrão pt_BR). Passo a passo de todos os
+      # provedores: docs/ENVIO-AUTOMATICO.md.
+      - key: WHATSAPP_TEMPLATE_IDIOMA
+        sync: false
       # E-mail (formato da API do Resend): leva o link de confirmação de
       # quem se cadastra e os avisos por e-mail. Sem ele, a equipe do
       # sistema confirma o e-mail das contas novas à mão, na tela /admin.

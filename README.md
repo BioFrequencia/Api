@@ -258,6 +258,13 @@ mensagens iniciadas pela escola com um **modelo aprovado**
 testes usam provedores falsos (`tests/mock_provedores.php`): nenhuma
 mensagem de verdade sai.
 
+**Contratar e configurar.** O passo a passo (Resend, Meta, modelo aprovado,
+custos e a lista de eventos que disparam mensagem) está em
+`docs/ENVIO-AUTOMATICO.md`. Depois de configurar, a equipe do sistema confere
+com `admin/testarEnvio.php` (`canal`, `destino`): uma mensagem de teste para o
+próprio e-mail ou celular, pelo mesmo caminho dos avisos, que responde se o
+provedor aceitou ou por que recusou.
+
 ## Segurança
 
 - Senhas com Argon2id (`helpers/senha.php`, parâmetros mínimos do
