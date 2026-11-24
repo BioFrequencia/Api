@@ -1662,8 +1662,8 @@ $r = enviarPlanilha('importacao/previa.php', $texto, $tImporta, [], 'alunos.xlsx
 verificar('importação: .xlsx falso (texto renomeado): 422', $r['status'] === 422 && str_contains($r['json']['mensagem'] ?? '', 'de verdade'), $r['texto']);
 $semColunas = planilhaDeTeste(['Alunos' => [['Aluno', 'Classe'], ['Ana', '3º A']]]);
 $r = enviarPlanilha('importacao/previa.php', $semColunas, $tImporta);
-verificar('importação: aba Alunos sem as colunas obrigatórias diz quais faltam', $r['status'] === 422
-    && str_contains($r['json']['mensagem'] ?? '', 'Turma') && str_contains($r['json']['mensagem'] ?? '', 'Data de nascimento'), $r['texto']);
+verificar('importação: aba Alunos sem as colunas obrigatórias diz quais faltam (só a turma: nascimento e gênero são opcionais)', $r['status'] === 422
+    && str_contains($r['json']['mensagem'] ?? '', 'Turma') && !str_contains($r['json']['mensagem'] ?? '', 'Data de nascimento'), $r['texto']);
 
 $cabecalhoTurmas = ['Turma', 'Período', 'Início da aula', 'Fim da aula'];
 $cabecalhoDeAlunos = ['Nome completo', 'Turma', 'Data de nascimento', 'Gênero', 'Responsável', 'CPF do responsável', 'Telefone do responsável', 'E-mail do responsável', 'Parentesco', 'Avisar por'];
@@ -1730,6 +1730,33 @@ verificar('importação: .csv com ponto e vírgula vira prévia de alunos', $r['
     && ($r['json']['dados']['alunos'][0]['situacao'] ?? '') === 'novo' && ($r['json']['dados']['alunos'][0]['turma'] ?? '') === '4º B', $r['texto']);
 $r = enviarPlanilha('importacao/confirmar.php', $csv, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? ''], 'alunos.csv');
 verificar('importação: .csv confirmado', $r['status'] === 201 && ($r['json']['dados']['alunos_criados'] ?? 0) === 1, $r['texto']);
+
+// Planilha só com nome e turma: turma sem período, alunos sem nascimento e gênero.
+$soNomes = planilhaDeTeste([
+    'Turmas' => [['Turma', 'Período'], ['5Z', null]],
+    'Alunos' => [['Nome completo', 'Turma'], ['Lia Sem Data', '5º Z'], ['Max Sem Data', '5Z'], ['LIA SEM DATA', '5Z']],
+]);
+$r = enviarPlanilha('importacao/previa.php', $soNomes, $tImporta);
+$previaSoNomes = $r['json']['dados'] ?? [];
+verificar('importação só com nome e turma: turma nova (Indefinido), dois alunos novos e o repetido como erro', $r['status'] === 200
+    && array_map(fn($l) => $l['situacao'], $previaSoNomes['turmas'] ?? []) === ['nova']
+    && array_map(fn($l) => $l['situacao'], $previaSoNomes['alunos'] ?? []) === ['novo', 'novo', 'erro'], $r['texto']);
+$r = enviarPlanilha('importacao/confirmar.php', $soNomes, $tImporta, ['hash' => $previaSoNomes['arquivo']['hash'] ?? '']);
+verificar('importação só com nome e turma: confirmada (1 turma, 2 alunos)', $r['status'] === 201
+    && ($r['json']['dados']['turmas_criadas'] ?? 0) === 1 && ($r['json']['dados']['alunos_criados'] ?? 0) === 2, $r['texto']);
+verificar('importação só com nome e turma: gravados sem data, gênero e período indefinidos', (string) valor(
+    "SELECT s.periodo_sala || ' ' || COALESCE(a.dta_nasc_aluno::text, 'sem-data') || ' ' || a.genero_aluno FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala
+     WHERE a.nome_aluno = 'Lia Sem Data' AND s.id_escola = {$idHelen}") === 'Indefinido sem-data Indefinido');
+$r = enviarPlanilha('importacao/previa.php', $soNomes, $tImporta);
+verificar('importação só com nome e turma: de novo, nada duplica', $r['status'] === 200
+    && ($r['json']['dados']['resumo']['alunos_novos'] ?? -1) === 0 && ($r['json']['dados']['resumo']['alunos_existentes'] ?? 0) === 2
+    && ($r['json']['dados']['resumo']['turmas_novas'] ?? -1) === 0, $r['texto']);
+$completaLia = planilhaDeTeste(['Alunos' => [['Nome completo', 'Turma', 'Data de nascimento', 'Gênero'], ['Lia Sem Data', '5Z', '03/04/2014', 'F']]]);
+$r = enviarPlanilha('importacao/previa.php', $completaLia, $tImporta);
+$r = enviarPlanilha('importacao/confirmar.php', $completaLia, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? '']);
+verificar('importação só com nome e turma: depois a data e o gênero completam o mesmo aluno', $r['status'] === 201
+    && ($r['json']['dados']['alunos_completados'] ?? 0) === 1 && (string) valor(
+    "SELECT COUNT(*) || ' ' || MIN(dta_nasc_aluno)::text || ' ' || MIN(genero_aluno) FROM tb_aluno WHERE nome_aluno = 'Lia Sem Data'") === '1 2014-04-03 Feminino', $r['texto']);
 
 // Outra escola não enxerga as turmas nem os alunos importados na Helen.
 $tOutra = post('user/selectCoord.php', ['email' => 'coord2@escola.test', 'senha' => 'Senha@123'])['json']['dados']['token'] ?? '';

@@ -17,8 +17,12 @@
  *
  * Os campos são os que o banco já tem (turma: nome, período e horário;
  * aluno: nome, turma, nascimento e gênero; responsável: nome, CPF,
- * telefone, e-mail, parentesco e canal). Não há matrícula/RA no banco:
- * o aluno repetido é reconhecido pelo nome + data de nascimento na escola.
+ * telefone, e-mail, parentesco e canal). Só o nome e a turma são
+ * obrigatórios: turma sem período entra como "Indefinido" e aluno sem data
+ * de nascimento ou gênero entra sem a data e com gênero "Indefinido" (dá
+ * para completar depois importando de novo com os dados). Não há
+ * matrícula/RA no banco: o aluno repetido é reconhecido pelo nome + data de
+ * nascimento na escola ou, sem a data, pelo nome na mesma turma.
  */
 
 require_once __DIR__ . '/validacao.php';
@@ -56,8 +60,8 @@ const COLUNAS_ALUNOS = [
     'canal' => ['avisar por', 'canal', 'canal de aviso', 'avisos por'],
 ];
 const COLUNAS_OBRIGATORIAS = [
-    'turmas' => ['turma', 'periodo'],
-    'alunos' => ['nome', 'turma', 'nascimento', 'genero'],
+    'turmas' => ['turma'],
+    'alunos' => ['nome', 'turma'],
 ];
 
 /** "Período " => "periodo", "E-MAIL" => "e-mail": para comparar cabeçalhos e nomes. */
@@ -77,6 +81,11 @@ function normalizarTexto($valor): string {
 /** Nome para achar repetidos: "  Ana  Lúcia " e "ana lucia" são o mesmo. */
 function chaveDeNome($nome): string {
     return normalizarTexto($nome);
+}
+
+/** Nome de turma só com letras e números, sem º/ª ("4º A" = "4A" = "4 a"), para achar a mesma turma escrita de outro jeito. */
+function chaveCompactaDeTurma(string $turma): string {
+    return preg_replace('/[^a-z0-9]/', '', normalizarTexto(str_replace(['º', 'ª', '°'], '', $turma))) ?? '';
 }
 
 /** Texto da célula como a pessoa vê (número inteiro sem ".0"); vazio = "". */
@@ -220,8 +229,9 @@ function lerDataDaCelula($valor, bool $anoCurto = false): ?string {
     return checkdate($mes, $dia, $ano) ? sprintf('%04d-%02d-%02d', $ano, $mes, $dia) : null;
 }
 
+/** Data de nascimento em branco é aceita (o aluno entra sem ela): [null, null]. */
 function lerDataDeNascimento($valor): array {
-    if ($valor === null || textoDaCelula($valor) === '') return [null, 'falta a data de nascimento'];
+    if ($valor === null || textoDaCelula($valor) === '') return [null, null];
     $data = lerDataDaCelula($valor);
     if ($data === null || !dataNascimentoValida($data)) {
         return [null, 'data de nascimento inválida (use dd/mm/aaaa; não pode ser futura)'];
@@ -231,10 +241,12 @@ function lerDataDeNascimento($valor): array {
 
 /**
  * Uma linha da aba Turmas, conferida sozinha. Devolve os valores já
- * arrumados e a lista de erros (vazia quando a linha serve).
+ * arrumados, a lista de erros (vazia quando a linha serve) e os avisos.
+ * Período em branco: a turma entra como "Indefinido".
  */
 function conferirLinhaDeTurma(array $valores): array {
     $erros = [];
+    $avisos = [];
     $nome = textoDaCelula($valores['turma'] ?? null);
     if ($nome === '') {
         $erros[] = 'falta o nome da turma';
@@ -244,7 +256,8 @@ function conferirLinhaDeTurma(array $valores): array {
     $textoPeriodo = textoDaCelula($valores['periodo'] ?? null);
     $periodo = lerPeriodo($textoPeriodo);
     if ($textoPeriodo === '') {
-        $erros[] = 'falta o período';
+        $periodo = 'Indefinido';
+        $avisos[] = 'sem período: a turma entra como "Indefinido" (dá para mudar depois em Turmas)';
     } elseif ($periodo === null) {
         $erros[] = "período \"{$textoPeriodo}\" desconhecido (use Matutino, Vespertino, Noturno ou Integral)";
     }
@@ -259,17 +272,19 @@ function conferirLinhaDeTurma(array $valores): array {
             $erros[] = 'o fim da aula precisa ser depois do início';
         }
     }
-    return ['nome' => $nome, 'periodo' => $periodo, 'inicio' => $inicio, 'fim' => $fim, 'erros' => $erros];
+    return ['nome' => $nome, 'periodo' => $periodo, 'inicio' => $inicio, 'fim' => $fim, 'erros' => $erros, 'avisos' => $avisos];
 }
 
 /**
  * Uma linha da aba Alunos, conferida sozinha (sem saber o que a escola
- * já tem). O responsável é opcional: se alguma coluna dele vier
- * preenchida, nome, CPF e telefone passam a ser obrigatórios, como no
- * cadastro de responsável.
+ * já tem). Só o nome e a turma são obrigatórios: sem data de nascimento o
+ * aluno entra sem ela, sem gênero entra como "Indefinido". O responsável é
+ * opcional: se alguma coluna dele vier preenchida, nome, CPF e telefone
+ * passam a ser obrigatórios, como no cadastro de responsável.
  */
 function conferirLinhaDeAluno(array $valores): array {
     $erros = [];
+    $avisos = [];
     $nome = textoDaCelula($valores['nome'] ?? null);
     if ($nome === '') {
         $erros[] = 'falta o nome do aluno';
@@ -283,9 +298,13 @@ function conferirLinhaDeAluno(array $valores): array {
     $textoGenero = textoDaCelula($valores['genero'] ?? null);
     $genero = lerGeneroAluno($textoGenero);
     if ($textoGenero === '') {
-        $erros[] = 'falta o gênero';
+        $genero = 'Indefinido';
     } elseif ($genero === null) {
         $erros[] = "gênero \"{$textoGenero}\" desconhecido (use Feminino ou Masculino)";
+    }
+    $faltam = array_merge($nascimento === null && $erroData === null ? ['data de nascimento'] : [], $textoGenero === '' ? ['gênero'] : []);
+    if ($faltam !== []) {
+        $avisos[] = 'sem ' . implode(' e ', $faltam) . ': o aluno entra assim e pode ser completado depois (importe de novo com os dados)';
     }
 
     $responsavel = null;
@@ -334,6 +353,7 @@ function conferirLinhaDeAluno(array $valores): array {
         'genero' => $genero,
         'responsavel' => $responsavel,
         'erros' => $erros,
+        'avisos' => $avisos,
     ];
 }
 
@@ -345,7 +365,8 @@ function conferirLinhaDeAluno(array $valores): array {
  *   $escola: [
  *     'turmas'       => [chaveDeNome => ['id_sala' => int, 'nome_sala' => string]],
  *     'alunos'       => [chaveDeNome . '|' . nascimento => true],
- *     'incompletos'  => [chaveDeNome . '|' . chaveDeNome(turma) => id_aluno]  (sem data de nascimento)
+ *     'incompletos'  => [chaveDeNome . '|' . chaveCompactaDeTurma => id_aluno]  (sem data de nascimento)
+ *     'por_turma'    => [chaveDeNome . '|' . chaveCompactaDeTurma => true]  (todos os alunos, para a linha sem data)
  *     'responsaveis' => [cpf => ['id_responsavel' => int, 'nome' => string, 'telefone' => string,
  *                                'email' => ?string, 'na_escola' => bool, 'vinculos' => int]],
  *     'telefones'    => [telefone => cpf],   (de qualquer escola: são únicos no banco)
@@ -356,27 +377,43 @@ function conferirLinhaDeAluno(array $valores): array {
  * 'completar' (o aluno já existe na turma, sem data de nascimento - foi
  * cadastrado pela planilha de entradas e saídas: ganha a data, o gênero e
  * o responsável), 'existente' (já está na escola: fica de fora, não é
- * erro) ou 'erro'.
+ * erro) ou 'erro'. A turma é achada também escrita de outro jeito ("1A" =
+ * "1º A", chaveCompactaDeTurma).
  */
 function montarPreviaDaImportacao(array $abas, array $escola): array {
+    // Turmas da escola pela chave compacta (a primeira, se duas derem a mesma).
+    $turmaDaEscolaPorCompacta = [];
+    foreach ($escola['turmas'] as $chave => $turma) {
+        $turmaDaEscolaPorCompacta[chaveCompactaDeTurma($turma['nome_sala'])] ??= $chave;
+    }
+    $chaveNaEscola = function (string $nome) use ($escola, $turmaDaEscolaPorCompacta): ?string {
+        $chave = chaveDeNome($nome);
+        if (isset($escola['turmas'][$chave])) return $chave;
+        return $turmaDaEscolaPorCompacta[chaveCompactaDeTurma($nome)] ?? null;
+    };
+
     $turmas = [];
-    $turmasDoArquivo = []; // chave => índice em $turmas
+    $turmasDoArquivo = []; // chave compacta => índice em $turmas
     foreach ($abas['turmas'] ?? [] as [$numero, $valores]) {
-        $linha = conferirLinhaDeTurma($valores) + ['linha' => $numero, 'avisos' => []];
-        $chave = chaveDeNome($linha['nome']);
-        if ($linha['nome'] !== '' && isset($turmasDoArquivo[$chave])) {
-            $linha['erros'][] = 'turma repetida na planilha (linha ' . $turmas[$turmasDoArquivo[$chave]]['linha'] . ')';
+        $linha = conferirLinhaDeTurma($valores) + ['linha' => $numero];
+        $compacta = chaveCompactaDeTurma($linha['nome']);
+        if ($linha['nome'] !== '' && isset($turmasDoArquivo[$compacta])) {
+            $linha['erros'][] = 'turma repetida na planilha (linha ' . $turmas[$turmasDoArquivo[$compacta]]['linha'] . ')';
         }
+        $daEscola = $linha['nome'] !== '' ? $chaveNaEscola($linha['nome']) : null;
         if ($linha['erros'] !== []) {
             $linha['situacao'] = 'erro';
-        } elseif (isset($escola['turmas'][$chave])) {
+        } elseif ($daEscola !== null) {
             $linha['situacao'] = 'existente';
-            $linha['avisos'][] = 'a escola já tem esta turma: ela fica como está';
+            $nomeNaEscola = $escola['turmas'][$daEscola]['nome_sala'];
+            $linha['avisos'] = [$nomeNaEscola === $linha['nome']
+                ? 'a escola já tem esta turma: ela fica como está'
+                : "a escola já tem esta turma como \"{$nomeNaEscola}\": ela fica como está"];
         } else {
             $linha['situacao'] = 'nova';
         }
-        if ($linha['nome'] !== '' && !isset($turmasDoArquivo[$chave])) {
-            $turmasDoArquivo[$chave] = count($turmas);
+        if ($linha['nome'] !== '' && !isset($turmasDoArquivo[$compacta])) {
+            $turmasDoArquivo[$compacta] = count($turmas);
         }
         $turmas[] = $linha;
     }
@@ -387,15 +424,18 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
     $telefonesDoArquivo = [];    // telefone => cpf
     $emailsDoArquivo = [];       // email => cpf
     $alunosCompletados = [];     // id_aluno => true (cada incompleto só uma vez)
+    $nomeETurmaDoArquivo = [];   // nome|turma compacta => ['linha' => n, 'nascimento' => ?string]
     $escola['incompletos'] ??= [];
+    $escola['por_turma'] ??= [];
     foreach ($abas['alunos'] ?? [] as [$numero, $valores]) {
-        $linha = conferirLinhaDeAluno($valores) + ['linha' => $numero, 'avisos' => []];
-        $chaveTurma = chaveDeNome($linha['turma']);
+        $linha = conferirLinhaDeAluno($valores) + ['linha' => $numero];
         if ($linha['turma'] !== '') {
-            if (isset($escola['turmas'][$chaveTurma])) {
-                $linha['turma'] = $escola['turmas'][$chaveTurma]['nome_sala'];
-            } elseif (isset($turmasDoArquivo[$chaveTurma])) {
-                $turmaDaAba = $turmas[$turmasDoArquivo[$chaveTurma]];
+            $daEscola = $chaveNaEscola($linha['turma']);
+            $compactaDaLinha = chaveCompactaDeTurma($linha['turma']);
+            if ($daEscola !== null) {
+                $linha['turma'] = $escola['turmas'][$daEscola]['nome_sala'];
+            } elseif (isset($turmasDoArquivo[$compactaDaLinha])) {
+                $turmaDaAba = $turmas[$turmasDoArquivo[$compactaDaLinha]];
                 $linha['turma'] = $turmaDaAba['nome'];
                 if ($turmaDaAba['situacao'] === 'erro') {
                     $linha['erros'][] = "a turma \"{$turmaDaAba['nome']}\" tem erro na aba Turmas (linha {$turmaDaAba['linha']})";
@@ -405,8 +445,14 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
             }
         }
         $chaveAluno = chaveDeNome($linha['nome']) . '|' . $linha['nascimento'];
+        $chaveNaTurma = chaveDeNome($linha['nome']) . '|' . chaveCompactaDeTurma($linha['turma']);
+        $mesmoNomeNaTurma = $nomeETurmaDoArquivo[$chaveNaTurma] ?? null;
         if ($linha['nome'] !== '' && $linha['nascimento'] !== null && isset($alunosDoArquivo[$chaveAluno])) {
             $linha['erros'][] = 'aluno repetido na planilha (linha ' . $alunosDoArquivo[$chaveAluno] . ')';
+        } elseif ($linha['nome'] !== '' && $linha['turma'] !== '' && $mesmoNomeNaTurma !== null
+            && ($linha['nascimento'] === null || $mesmoNomeNaTurma['nascimento'] === null || $mesmoNomeNaTurma['nascimento'] === $linha['nascimento'])) {
+            // Sem a data não dá para saber se são dois alunos: mesmo nome na mesma turma é repetido.
+            $linha['erros'][] = 'aluno repetido na planilha (linha ' . $mesmoNomeNaTurma['linha'] . ')';
         }
 
         $responsavel = $linha['responsavel'];
@@ -444,17 +490,22 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
             $linha['responsavel'] = $responsavel;
         }
 
-        $incompleto = $escola['incompletos'][chaveDeNome($linha['nome']) . '|' . chaveDeNome($linha['turma'])] ?? null;
+        $incompleto = $escola['incompletos'][$chaveNaTurma] ?? null;
         if ($linha['erros'] !== []) {
             $linha['situacao'] = 'erro';
-        } elseif (isset($escola['alunos'][$chaveAluno])) {
+        } elseif ($linha['nascimento'] !== null && isset($escola['alunos'][$chaveAluno])) {
             $linha['situacao'] = 'existente';
             $linha['avisos'] = ['a escola já tem um aluno com este nome e esta data de nascimento: o cadastro fica como está'];
-        } elseif ($incompleto !== null && !isset($alunosCompletados[$incompleto])) {
+        } elseif ($linha['nascimento'] === null && isset($escola['por_turma'][$chaveNaTurma])) {
+            $linha['situacao'] = 'existente';
+            $linha['avisos'] = [$incompleto !== null
+                ? 'a escola já tem este aluno nesta turma, sem data de nascimento: para completar, preencha a data nesta linha'
+                : 'a escola já tem um aluno com este nome nesta turma: o cadastro fica como está'];
+        } elseif ($linha['nascimento'] !== null && $incompleto !== null && !isset($alunosCompletados[$incompleto])) {
             $linha['situacao'] = 'completar';
             $linha['id_aluno'] = $incompleto;
             $alunosCompletados[$incompleto] = true;
-            $linha['avisos'][] = 'o aluno já está cadastrado nesta turma sem data de nascimento: ganha a data e o gênero desta linha';
+            $linha['avisos'] = ['o aluno já está cadastrado nesta turma sem data de nascimento: ganha a data e o gênero desta linha'];
             if ($responsavel !== null && !isset($cpfsDoArquivo[$responsavel['cpf']])) {
                 $cpfsDoArquivo[$responsavel['cpf']] = ['linha' => $numero] + $responsavel;
                 $telefonesDoArquivo[$responsavel['telefone']] = $responsavel['cpf'];
@@ -471,6 +522,9 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
         }
         if ($linha['nome'] !== '' && $linha['nascimento'] !== null && !isset($alunosDoArquivo[$chaveAluno])) {
             $alunosDoArquivo[$chaveAluno] = $numero;
+        }
+        if ($linha['nome'] !== '' && $linha['turma'] !== '' && $mesmoNomeNaTurma === null) {
+            $nomeETurmaDoArquivo[$chaveNaTurma] = ['linha' => $numero, 'nascimento' => $linha['nascimento']];
         }
         $alunos[] = $linha;
     }
