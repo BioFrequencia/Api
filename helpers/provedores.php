@@ -4,12 +4,16 @@
  * aqui, WhatsApp em helpers/contatoResponsavel.php. Nenhum token fica no
  * código.
  *
- *   EMAIL_API_URL, EMAIL_API_TOKEN,   e-mail por HTTP, no formato da API do
- *   EMAIL_REMETENTE                   Resend (o Render não tem servidor de
- *                                     e-mail: mail() não entrega lá).
- *                                     EMAIL_API_URL é o endereço de envio
- *                                     (https://api.resend.com/emails); só o
- *                                     endereço base do Resend também vale.
+ *   EMAIL_API_URL, EMAIL_API_TOKEN,   e-mail por HTTP (o Render não tem
+ *   EMAIL_REMETENTE                   servidor de e-mail: mail() não entrega
+ *                                     lá). O provedor sai do endereço:
+ *                                     api.brevo.com usa o formato da Brevo
+ *                                     (entrega a qualquer pessoa só com um
+ *                                     remetente verificado, sem domínio
+ *                                     próprio); qualquer outro, o do Resend.
+ *                                     O endereço base, sem https:// ou o do
+ *                                     painel (resend.com/emails) viram o
+ *                                     endereço de envio da API.
  *   SMTP_REMETENTE                    alternativa: mail() do PHP, para um
  *                                     servidor com sendmail
  *
@@ -25,15 +29,114 @@ const ENVIO_OK = 'enviado';
 const ENVIO_SEM_PROVEDOR = 'sem_provedor';
 const ENVIO_FALHOU = 'falhou';
 
-/** Endereço do Resend sem o caminho do envio ganha /emails (o POST no endereço base dá 404). */
-function enderecoDeEnvioDeEmail(string $url): string {
+const ENDERECO_ENVIO_RESEND = 'https://api.resend.com/emails';
+const ENDERECO_ENVIO_BREVO = 'https://api.brevo.com/v3/smtp/email';
+
+/** O host de um endereço, com ou sem "https://", em minúsculas; null se não der para ler. Função pura. */
+function hostDoEndereco(string $url): ?string {
     $url = trim($url);
-    $partes = parse_url($url);
-    if (!is_array($partes) || ($partes['host'] ?? '') !== 'api.resend.com') {
-        return $url;
+    if ($url === '') {
+        return null;
     }
-    $caminho = $partes['path'] ?? '';
-    return ($caminho === '' || $caminho === '/') ? rtrim($url, '/') . '/emails' : $url;
+    if (!preg_match('#^[a-z][a-z0-9+.-]*://#i', $url)) {
+        $url = 'https://' . $url;
+    }
+    $host = parse_url($url, PHP_URL_HOST);
+    return is_string($host) && $host !== '' ? mb_strtolower($host) : null;
+}
+
+/** O host é o domínio ou um subdomínio dele ("api.resend.com" é de "resend.com"). */
+function hostDoDominio(?string $host, string $dominio): bool {
+    return $host !== null && ($host === $dominio || str_ends_with($host, '.' . $dominio));
+}
+
+/** "brevo" (api.brevo.com; sendinblue é o nome antigo) ou "resend" (o formato padrão). Função pura. */
+function provedorDeEmail(string $url): string {
+    $host = hostDoEndereco($url);
+    return hostDoDominio($host, 'brevo.com') || hostDoDominio($host, 'sendinblue.com') ? 'brevo' : 'resend';
+}
+
+/**
+ * O endereço de envio da API, a partir do que foi posto em EMAIL_API_URL.
+ * Do Resend e da Brevo, qualquer endereço deles vira o de envio: o base
+ * (o POST nele dá 404), o sem "https://" e o do PAINEL - https://resend.com/emails
+ * é a página que lista os e-mails enviados, ela redireciona para o login e
+ * o envio falhava com HTTP 307. Outro endereço (outro provedor no formato
+ * do Resend, ou o provedor falso dos testes) fica como está. Função pura.
+ */
+function enderecoDeEnvioDeEmail(string $url): string {
+    $host = hostDoEndereco($url);
+    if (hostDoDominio($host, 'resend.com')) {
+        return ENDERECO_ENVIO_RESEND;
+    }
+    if (provedorDeEmail($url) === 'brevo') {
+        return ENDERECO_ENVIO_BREVO;
+    }
+    return trim($url);
+}
+
+/**
+ * "BioFrequência <nao-responda@escola.br>" => ['nome' => 'BioFrequência',
+ * 'email' => 'nao-responda@escola.br']; só o e-mail também vale. null
+ * quando não há e-mail legível. Função pura.
+ */
+function partesDoRemetente(string $remetente): ?array {
+    $remetente = trim($remetente);
+    if (preg_match('/^(.*?)\s*<\s*([^<>@\s]+@[^<>\s]+)\s*>$/u', $remetente, $m)) {
+        $nome = trim($m[1], " \t\"'");
+        return ['nome' => $nome === '' ? null : $nome, 'email' => $m[2]];
+    }
+    if (preg_match('/^[^<>@\s]+@[^<>\s]+$/u', $remetente)) {
+        return ['nome' => null, 'email' => $remetente];
+    }
+    return null;
+}
+
+/**
+ * O pedido de envio no formato do provedor: ['corpo' => ..., 'cabecalhos' => [...]],
+ * já com a autorização (Resend: "Authorization: Bearer"; Brevo: "api-key").
+ * Função pura.
+ */
+function pedidoDeEmail(
+    string $provedor, string $token, string $remetente, string $destino, string $assunto, string $texto,
+    ?string $html = null, ?string $responderPara = null, ?string $chaveDeIdempotencia = null
+): array {
+    $responder = $responderPara !== null && trim($responderPara) !== '' ? trim($responderPara) : null;
+    if ($provedor === 'brevo') {
+        $partes = partesDoRemetente($remetente) ?? ['nome' => null, 'email' => trim($remetente)];
+        $corpo = [
+            'sender' => array_filter(['name' => $partes['nome'], 'email' => $partes['email']], fn($v) => $v !== null),
+            'to' => [['email' => $destino]],
+            'subject' => $assunto,
+            'textContent' => $texto,
+        ];
+        if ($html !== null) {
+            $corpo['htmlContent'] = $html;
+        }
+        if ($responder !== null) {
+            $corpo['replyTo'] = ['email' => $responder];
+        }
+        return ['corpo' => $corpo, 'cabecalhos' => ['api-key: ' . $token, 'Accept: application/json']];
+    }
+    $corpo = [
+        'from'    => $remetente,
+        'to'      => [$destino],
+        'subject' => $assunto,
+        'text'    => $texto,
+    ];
+    if ($html !== null) {
+        $corpo['html'] = $html;
+    }
+    if ($responder !== null) {
+        $corpo['reply_to'] = $responder;
+    }
+    $cabecalhos = ['Authorization: Bearer ' . $token];
+    // O Resend não manda de novo um pedido com a mesma chave (24 h):
+    // a conexão que cai depois do envio e a nova tentativa não duplicam.
+    if ($chaveDeIdempotencia !== null) {
+        $cabecalhos[] = 'Idempotency-Key: ' . $chaveDeIdempotencia;
+    }
+    return ['corpo' => $corpo, 'cabecalhos' => $cabecalhos];
 }
 
 /**
@@ -59,18 +162,25 @@ function motivoDaFalhaDoProvedor(int $status, $resposta, string $canal): string 
     $detalhe = preg_replace('/[^\s@<>"\']+@[^\s@<>"\']+/u', '[e-mail]', $detalhe) ?? '';
     $detalhe = preg_replace('/\+?\d[\d\s().-]{7,}\d/u', '[telefone]', $detalhe) ?? '';
     $detalhe = trim((string) preg_replace('/\s+/u', ' ', $detalhe));
+    if ($status >= 300 && $status < 400) {
+        // A resposta de um redirecionamento é uma página, não o motivo.
+        return "$canal: o endereço configurado redirecionou (HTTP $status) - ele não é o da API de envio. "
+            . 'Confira o endereço na Render (e-mail: https://api.resend.com/emails ou https://api.brevo.com/v3/smtp/email).';
+    }
     $base = $status === 0 ? "$canal: o provedor não respondeu" : "$canal: o provedor recusou (HTTP $status)";
     $texto = $detalhe !== '' ? "$base - $detalhe" : $base;
     return mb_substr($texto, 0, 300);
 }
 
 /**
- * POST JSON autenticado no provedor. Para o log vai só o código HTTP (a
- * resposta pode ecoar o destino e o texto da mensagem).
+ * POST JSON no provedor. Com $token, vai "Authorization: Bearer"; sem ele,
+ * a autorização já vem em $cabecalhos (a Brevo usa "api-key"). Para o log
+ * vai só o código HTTP (a resposta pode ecoar o destino e o texto da
+ * mensagem).
  *
  * @return array{0: string, 1: ?string} [ENVIO_*, motivo da falha]
  */
-function postarNoProvedor(string $url, string $token, array $corpo, string $canal, array $cabecalhos = []): array {
+function postarNoProvedor(string $url, ?string $token, array $corpo, string $canal, array $cabecalhos = []): array {
     $json = json_encode($corpo, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     if ($json === false) {
         return [ENVIO_FALHOU, "$canal: a mensagem não pôde ser montada para o envio."];
@@ -82,7 +192,7 @@ function postarNoProvedor(string $url, string $token, array $corpo, string $cana
         CURLOPT_CONNECTTIMEOUT => 5,
         CURLOPT_TIMEOUT => 10,
         CURLOPT_HTTPHEADER => [
-            'Authorization: Bearer ' . $token,
+            ...($token !== null ? ['Authorization: Bearer ' . $token] : []),
             'Content-Type: application/json',
             ...$cabecalhos,
         ],
@@ -121,22 +231,8 @@ function enviarEmailDetalhado(
     $token = getenv('EMAIL_API_TOKEN');
     $remetente = getenv('EMAIL_REMETENTE');
     if ($url && $token && $remetente) {
-        $corpo = [
-            'from'    => $remetente,
-            'to'      => [$destino],
-            'subject' => $assunto,
-            'text'    => $texto,
-        ];
-        if ($html !== null) {
-            $corpo['html'] = $html;
-        }
-        if ($responderPara !== null && $responderPara !== '') {
-            $corpo['reply_to'] = $responderPara;
-        }
-        // O Resend não manda de novo um pedido com a mesma chave (24 h):
-        // a conexão que cai depois do envio e a nova tentativa não duplicam.
-        $cabecalhos = $chaveDeIdempotencia !== null ? ['Idempotency-Key: ' . $chaveDeIdempotencia] : [];
-        return postarNoProvedor(enderecoDeEnvioDeEmail($url), $token, $corpo, 'e-mail', $cabecalhos);
+        $pedido = pedidoDeEmail(provedorDeEmail($url), trim($token), trim($remetente), $destino, $assunto, $texto, $html, $responderPara, $chaveDeIdempotencia);
+        return postarNoProvedor(enderecoDeEnvioDeEmail($url), null, $pedido['corpo'], 'e-mail', $pedido['cabecalhos']);
     }
 
     $remetenteSmtp = getenv('SMTP_REMETENTE');

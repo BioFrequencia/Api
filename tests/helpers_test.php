@@ -34,6 +34,7 @@ require_once __DIR__ . '/../helpers/mensagemManual.php';
 require_once __DIR__ . '/../helpers/cancelamento.php';
 require_once __DIR__ . '/../helpers/contatoEscola.php';
 require_once __DIR__ . '/../helpers/diagnosticoEnvio.php';
+require_once __DIR__ . '/../helpers/testeEnvio.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -962,6 +963,50 @@ afirmar('envio de e-mail: endereço base do Resend ganha /emails; outros não mu
     && enderecoDeEnvioDeEmail('https://api.resend.com/') === 'https://api.resend.com/emails'
     && enderecoDeEnvioDeEmail('https://api.resend.com/emails') === 'https://api.resend.com/emails'
     && enderecoDeEnvioDeEmail('http://provedores-falsos:8099/email') === 'http://provedores-falsos:8099/email');
+afirmar('envio de e-mail: o endereço do PAINEL do Resend (redireciona para o login, HTTP 307) vira o da API',
+    enderecoDeEnvioDeEmail('https://resend.com/emails') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail(' resend.com/emails ') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('https://www.resend.com/emails/') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('http://api.resend.com/emails') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('api.resend.com') === 'https://api.resend.com/emails');
+afirmar('envio de e-mail: endereço que só parece do Resend não é trocado', enderecoDeEnvioDeEmail('https://naoresend.com/emails') === 'https://naoresend.com/emails');
+afirmar('envio de e-mail: Brevo (e o nome antigo, Sendinblue) pelo endereço',
+    provedorDeEmail('https://api.brevo.com/v3/smtp/email') === 'brevo' && provedorDeEmail('app.brevo.com') === 'brevo'
+    && provedorDeEmail('https://api.sendinblue.com/v3/smtp/email') === 'brevo'
+    && provedorDeEmail('https://api.resend.com/emails') === 'resend' && provedorDeEmail('http://provedores-falsos:8099/email') === 'resend'
+    && enderecoDeEnvioDeEmail('https://api.brevo.com') === 'https://api.brevo.com/v3/smtp/email'
+    && enderecoDeEnvioDeEmail('https://app.brevo.com/settings/keys/api') === 'https://api.brevo.com/v3/smtp/email');
+afirmar('envio de e-mail: nome e e-mail do remetente',
+    partesDoRemetente('BioFrequência <nao-responda@escola.br>') === ['nome' => 'BioFrequência', 'email' => 'nao-responda@escola.br']
+    && partesDoRemetente(' "Escola A" <a@b.br> ') === ['nome' => 'Escola A', 'email' => 'a@b.br']
+    && partesDoRemetente('a@b.br') === ['nome' => null, 'email' => 'a@b.br'] && partesDoRemetente('sem e-mail') === null);
+$pedidoBrevo = pedidoDeEmail('brevo', 'chave-teste', 'BioFrequência <nao-responda@escola.br>', 'mae@familia.test', 'Assunto', 'Texto', '<p>Texto</p>', 'contato@escola.br', 'chave-1');
+afirmar('envio de e-mail: pedido no formato da Brevo (sender, to, textContent, replyTo e api-key, sem Bearer)',
+    $pedidoBrevo['corpo'] === [
+        'sender' => ['name' => 'BioFrequência', 'email' => 'nao-responda@escola.br'],
+        'to' => [['email' => 'mae@familia.test']],
+        'subject' => 'Assunto',
+        'textContent' => 'Texto',
+        'htmlContent' => '<p>Texto</p>',
+        'replyTo' => ['email' => 'contato@escola.br'],
+    ] && in_array('api-key: chave-teste', $pedidoBrevo['cabecalhos'], true)
+    && !array_filter($pedidoBrevo['cabecalhos'], fn($c) => str_starts_with($c, 'Authorization')), $pedidoBrevo);
+$pedidoResend = pedidoDeEmail('resend', 'chave-teste', 'X <a@b.br>', 'mae@familia.test', 'Assunto', 'Texto', null, ' ', 'chave-1');
+afirmar('envio de e-mail: pedido no formato do Resend (Bearer e chave de idempotência; "responder para" em branco fica de fora)',
+    $pedidoResend['corpo'] === ['from' => 'X <a@b.br>', 'to' => ['mae@familia.test'], 'subject' => 'Assunto', 'text' => 'Texto']
+    && $pedidoResend['cabecalhos'] === ['Authorization: Bearer chave-teste', 'Idempotency-Key: chave-1'], $pedidoResend);
+$motivoRedireciona = motivoDaFalhaDoProvedor(307, '<html>Redirecting to /login</html>', 'e-mail');
+afirmar('motivo da falha: redirecionamento diz que o endereço não é o da API', str_contains($motivoRedireciona, 'HTTP 307')
+    && str_contains($motivoRedireciona, 'redirecionou') && str_contains($motivoRedireciona, 'api.resend.com/emails'), $motivoRedireciona);
+$textosPainel = implode(' | ', array_column(avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://resend.com/emails', 'EMAIL_API_TOKEN' => 't',
+    'EMAIL_REMETENTE' => 'X <nao-responda@escola.br>']), 'texto'));
+afirmar('diagnóstico: EMAIL_API_URL no painel do Resend é apontado (o motivo do HTTP 307)', str_contains($textosPainel, 'painel do Resend')
+    && str_contains($textosPainel, 'HTTP 307') && str_contains($textosPainel, 'https://api.resend.com/emails'), $textosPainel);
+$avisosBrevo = avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://api.brevo.com/v3/smtp/email', 'EMAIL_API_TOKEN' => 't',
+    'EMAIL_REMETENTE' => 'Escola <coordenacao@gmail.com>']);
+afirmar('diagnóstico: Brevo lembra de verificar o remetente e não acusa erro de e-mail',
+    !array_filter($avisosBrevo, fn($a) => $a['canal'] === 'email' && $a['nivel'] === 'erro')
+    && str_contains(implode(' ', array_column($avisosBrevo, 'texto')), 'verificado na Brevo'), $avisosBrevo);
 afirmar('diagnóstico: domínio do remetente', dominioDoRemetente('BioFrequência <nao-responda@escola.sp.gov.br>') === 'escola.sp.gov.br'
     && dominioDoRemetente('x@Resend.dev') === 'resend.dev' && dominioDoRemetente('sem endereço') === null);
 $avisosEnvio = avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://api.resend.com', 'EMAIL_API_TOKEN' => 't', 'EMAIL_REMETENTE' => 'X <a@resend.dev>']);
@@ -976,6 +1021,36 @@ afirmar('diagnóstico: domínio verificado, não verificado, ausente e chave só
     && situacaoDoDominio(200, '{"data":[{"name":"escola.sp.gov.br","status":"pending"}]}', 'escola.sp.gov.br')['situacao'] === 'nao_verificado'
     && situacaoDoDominio(200, '{"data":[]}', 'escola.sp.gov.br')['situacao'] === 'nao_encontrado'
     && situacaoDoDominio(401, '{}', 'escola.sp.gov.br')['situacao'] === 'sem_permissao');
+
+afirmar('diagnóstico: WhatsApp da Meta no formato certo não gera aviso de endereço',
+    problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v23.0/123456789012345/messages') === null
+    && problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v21/123456789012345/messages/') === null);
+afirmar('diagnóstico: WhatsApp da Meta sem o ID do número, sem /messages ou em http é apontado',
+    problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/') !== null
+    && problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v23.0/123456789012345') !== null
+    && problemaNoEnderecoDoWhatsapp('https://graph.facebook.com/v23.0/+55 11 99999-0000/messages') !== null
+    && problemaNoEnderecoDoWhatsapp('http://graph.facebook.com/v23.0/123456789012345/messages') !== null);
+afirmar('diagnóstico: endereço de outro provedor (compatível com a Cloud API) não é julgado',
+    problemaNoEnderecoDoWhatsapp('https://waba-v2.360dialog.io/messages') === null && problemaNoEnderecoDoWhatsapp('u') === null);
+$textosMeta = implode(' | ', array_column(avisosDaConfiguracaoDeEnvio(['WHATSAPP_API_URL' => 'https://graph.facebook.com/v23.0', 'WHATSAPP_TOKEN' => 't',
+    'WHATSAPP_TEMPLATE' => 'aviso_escola', 'SMTP_REMETENTE' => 'a@b.br']), 'texto'));
+afirmar('diagnóstico: o aviso do endereço da Meta aparece na lista (e o do modelo não, quando há modelo)',
+    str_contains($textosMeta, 'ID do número de telefone') && !str_contains($textosMeta, 'WHATSAPP_TEMPLATE'));
+
+afirmar('teste de envio: destino de e-mail válido passa; inválido ou longo demais não',
+    destinoDoTeste('email', ' equipe@escola.sp.gov.br ') === 'equipe@escola.sp.gov.br'
+    && destinoDoTeste('email', 'sem-arroba') === null
+    && destinoDoTeste('email', str_repeat('a', 150) . '@x.br') === null);
+afirmar('teste de envio: celular com DDD vira o número do WhatsApp com 55; sem DDD ou canal estranho, não',
+    destinoDoTeste('whatsapp', '(11) 99999-1234') === '5511999991234'
+    && destinoDoTeste('whatsapp', '99999-1234') === null
+    && destinoDoTeste('sms', '11999991234') === null);
+afirmar('teste de envio: cada resultado tem a sua explicação (sem provedor diz o que falta; falha mostra o motivo)',
+    str_contains(mensagemDoResultadoDoTeste('email', ENVIO_SEM_PROVEDOR, null), 'EMAIL_API_TOKEN')
+    && str_contains(mensagemDoResultadoDoTeste('whatsapp', ENVIO_SEM_PROVEDOR, null), 'WHATSAPP_TOKEN')
+    && str_contains(mensagemDoResultadoDoTeste('whatsapp', ENVIO_OK, null), 'aceitou')
+    && mensagemDoResultadoDoTeste('email', ENVIO_FALHOU, 'e-mail: o provedor recusou (HTTP 403)') === 'e-mail: o provedor recusou (HTTP 403)'
+    && str_contains(mensagemDoResultadoDoTeste('email', ENVIO_FALHOU, null), 'recusou'));
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);
