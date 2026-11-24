@@ -4,8 +4,9 @@
  * pelo health.php - ver o comentário de lá para o porquê.
  *
  * "tabela" para tabela inteira, "tabela.coluna" para coluna adicionada
- * numa migração posterior. Ao criar uma migração nova que o código passe
- * a usar, acrescente aqui um objeto que só ela cria.
+ * numa migração posterior e "tabela.coluna:nulo" para coluna que uma
+ * migração passou a aceitar vazia. Ao criar uma migração nova que o código
+ * passe a usar, acrescente aqui um objeto que só ela cria.
  */
 const OBJETOS_POR_MIGRACAO = [
     '002' => ['tb_acompanhamento', 'tb_alerta_encerrado'],
@@ -23,18 +24,25 @@ const OBJETOS_POR_MIGRACAO = [
     '012' => ['tb_auditoria_registro', 'tb_atraso.cancelado_em', 'tb_atraso.criado_em', 'tb_saida_antecipada.cancelado_em',
               'tb_presenca.cancelado_em', 'tb_escola.email_contato', 'tb_notificacao.erro_envio', 'tb_notificacao.confirmado_por',
               'tb_identificacao_biometrica.situacao'],
+    '013' => ['tb_aluno.dta_nasc_aluno:nulo'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */
 function migracoesPendentes(PDO $pdo): array {
     $existentes = [];
     $stmt = $pdo->query("
-        SELECT table_name, NULL AS column_name FROM information_schema.tables WHERE table_schema = current_schema()
+        SELECT table_name, NULL AS column_name, NULL AS is_nullable FROM information_schema.tables WHERE table_schema = current_schema()
         UNION ALL
-        SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()
+        SELECT table_name, column_name, is_nullable FROM information_schema.columns WHERE table_schema = current_schema()
     ");
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $linha) {
-        $existentes[$linha['column_name'] === null ? $linha['table_name'] : $linha['table_name'] . '.' . $linha['column_name']] = true;
+        if ($linha['column_name'] === null) {
+            $existentes[$linha['table_name']] = true;
+            continue;
+        }
+        $coluna = $linha['table_name'] . '.' . $linha['column_name'];
+        $existentes[$coluna] = true;
+        if ($linha['is_nullable'] === 'YES') $existentes[$coluna . ':nulo'] = true;
     }
 
     $pendentes = [];

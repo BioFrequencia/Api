@@ -36,7 +36,7 @@ try {
 }
 $previa = montarPreviaDaImportacao($abas, $escola);
 $resumo = $previa['resumo'];
-$entram = $resumo['turmas_novas'] + $resumo['alunos_novos'];
+$entram = $resumo['turmas_novas'] + $resumo['alunos_novos'] + $resumo['alunos_completados'];
 $mensagem = $entram === 0
     ? "Nada novo para cadastrar nesta planilha."
     : "Prévia pronta: confira e confirme para cadastrar.";

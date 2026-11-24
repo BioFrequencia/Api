@@ -646,9 +646,22 @@ afirmar('importação: os erros dizem o motivo', str_contains(implode(' ', $prev
     && str_contains(implode(' ', $previa['alunos'][8]['erros']), 'telefone do responsável já é de outro'));
 afirmar('importação: resumo da prévia', $previa['resumo'] === [
     'turmas_novas' => 1, 'turmas_existentes' => 1, 'turmas_com_erro' => 2,
-    'alunos_novos' => 3, 'alunos_existentes' => 1, 'alunos_com_erro' => 5,
+    'alunos_novos' => 3, 'alunos_completados' => 0, 'alunos_existentes' => 1, 'alunos_com_erro' => 5,
     'responsaveis_novos' => 1, 'responsaveis_vinculados' => 2,
 ]);
+// Aluno cadastrado antes sem data de nascimento (pela planilha de entradas e saídas): a importação completa, não duplica.
+$escolaComIncompleto = $escolaVazia;
+$escolaComIncompleto['turmas'] = ['1o a' => ['id_sala' => 7, 'nome_sala' => '1º A']];
+$escolaComIncompleto['incompletos'] = ['ana lima|1o a' => 41];
+$completa = montarPreviaDaImportacao(['alunos' => [
+    [2, ['nome' => 'ANA LIMA', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F']],
+    [3, ['nome' => 'Ana Lima', 'turma' => '1º A', 'nascimento' => '04/05/2016', 'genero' => 'F']],
+]], $escolaComIncompleto);
+afirmar('importação: aluno sem data de nascimento na mesma turma é completado (uma vez só)',
+    $completa['alunos'][0]['situacao'] === 'completar' && $completa['alunos'][0]['id_aluno'] === 41
+    && $completa['alunos'][1]['situacao'] === 'novo' && $completa['resumo']['alunos_completados'] === 1, $completa['alunos']);
+afirmar('importação: mensagem final com alunos completados', mensagemDaImportacao(0, 0, 0, 2) === 'Importação concluída: 2 alunos completados (data de nascimento e gênero).'
+    && mensagemDaImportacao(0, 1, 0, 1) === 'Importação concluída: 1 aluno cadastrado; 1 aluno completado (data de nascimento e gênero).');
 $soAlunos = montarPreviaDaImportacao(['alunos' => [[2, ['nome' => 'Ana', 'turma' => '1º A', 'nascimento' => '02/03/2015', 'genero' => 'F']]]], $escolaVazia);
 afirmar('importação: sem a turma na escola nem no arquivo, o aluno não entra', $soAlunos['alunos'][0]['situacao'] === 'erro' && $soAlunos['turmas'] === []);
 afirmar('importação: mensagem final com plural e "e" antes do último', mensagemDaImportacao(2, 3, 1) === 'Importação concluída: 2 turmas, 3 alunos e 1 responsável cadastrados.');
@@ -667,9 +680,15 @@ afirmar('ocorrências: código do aluno', lerCodigoDoAluno(12.0) === 12 && lerCo
 afirmar('ocorrências: data com ano de dois dígitos e número do Excel', lerDataDaCelula('05/11/26', true) === '2026-11-05'
     && lerDataDaCelula('05/11/26') === null && lerDataDaCelula(46331) === '2026-11-05' && lerDataDaCelula('31/02/2026', true) === null);
 $linhaVazia = conferirLinhaDeOcorrencia([]);
-afirmar('ocorrências: linha sem aluno, data, horário e tipo diz tudo o que falta', $linhaVazia['erros'] === [
-    'informe o código ou o nome do aluno', 'falta a data', 'falta o horário', 'falta o tipo (Entrada atrasada ou Saída antecipada)',
-], $linhaVazia['erros']);
+afirmar('ocorrências: linha vazia só pede o aluno (a entrada/saída é opcional)', $linhaVazia['erros'] === [
+    'informe o código ou o nome do aluno',
+] && $linhaVazia['ocorrencia'] === false, $linhaVazia['erros']);
+$soNomeETurma = conferirLinhaDeOcorrencia(['nome' => 'Ana', 'turma' => '1A']);
+afirmar('ocorrências: só nome e turma é uma linha válida, sem entrada/saída', $soNomeETurma['erros'] === [] && $soNomeETurma['ocorrencia'] === false);
+$metade = conferirLinhaDeOcorrencia(['nome' => 'Ana', 'tipo' => 'Entrada atrasada']);
+afirmar('ocorrências: com algum campo da entrada/saída, data e horário passam a ser obrigatórios', $metade['erros'] === [
+    'falta a data', 'falta o horário',
+] && $metade['ocorrencia'] === true, $metade['erros']);
 $linhaAtraso = conferirLinhaDeOcorrencia(['codigo' => 3, 'data' => '05/11/2026', 'horario' => 0.3125, 'tipo' => 'Entrada atrasada', 'retirado_por' => 'Mãe']);
 afirmar('ocorrências: "Quem buscou" numa entrada atrasada vira aviso e fica de fora', $linhaAtraso['erros'] === [] && $linhaAtraso['hora'] === '07:30'
     && $linhaAtraso['retirado_por'] === null && count($linhaAtraso['avisos']) === 1);
@@ -723,7 +742,52 @@ afirmar('ocorrências: sem código, nome e turma acham o aluno (o nome sai como 
 afirmar('ocorrências: já registrada no sistema avisa o horário que está lá', str_contains(implode(' ', $previaOc['linhas'][2]['avisos']), '07:45'));
 afirmar('ocorrências: resumo da prévia', $previaOc['resumo'] === [
     'novas' => 3, 'existentes' => 1, 'com_erro' => 10, 'atrasos_novos' => 1, 'saidas_novas' => 2,
+    'alunos_novos' => 0, 'turmas_novas' => 0, 'ja_cadastrados' => 0,
 ], $previaOc['resumo']);
+// Cadastro pela planilha: nome e turma de quem a escola não tem viram aluno novo.
+$escolaDeOcorrencias['turmas'] = [
+    '1o a' => ['id_sala' => 1, 'nome' => '1º A', 'periodo' => 'Matutino', 'inicio' => null, 'fim' => null],
+    '2o b' => ['id_sala' => 2, 'nome' => '2º B', 'periodo' => 'Vespertino', 'inicio' => null, 'fim' => null],
+    '3o c' => ['id_sala' => 3, 'nome' => '3º C', 'periodo' => 'Matutino', 'inicio' => null, 'fim' => null],
+];
+$cad = montarPreviaDeOcorrencias([
+    [2, ['nome' => 'Davi Rocha', 'turma' => '1A'], 'Alunos'],                                              // novo, na 1º A (1A = 1º A)
+    [3, ['nome' => 'DAVI ROCHA', 'turma' => '1º A'], 'Alunos'],                                            // o mesmo novo: não repete
+    [4, ['codigo' => 10, 'nome' => 'Ana Souza', 'turma' => '1º A'], 'Alunos'],                            // já existe: só conta
+    [5, ['codigo' => 555, 'nome' => 'Eva Prado', 'turma' => '9Z', 'periodo' => 'Vespertino'], 'Alunos'],  // código de fora: vale o nome; turma nova
+    [6, ['nome' => 'Ana Sousa', 'turma' => '1º A'], 'Alunos'],                                             // parecido com Ana Souza: erro
+    [7, ['nome' => 'Caio Reis', 'turma' => '3º C'], 'Alunos'],                                             // existe em outra turma: erro
+    [8, ['nome' => 'Fabio Lins'], 'Alunos'],                                                                // sem turma: erro
+    [2, ['nome' => 'Eva Prado', 'turma' => '9Z', 'data' => '05/11/2026', 'horario' => '13:20', 'tipo' => 'Entrada atrasada'], 'Ocorrências'], // atraso do novo
+    [3, ['nome' => 'Gil Mota', 'turma' => '3º C', 'data' => '31/10/2026', 'horario' => '08:00', 'tipo' => 'Entrada atrasada'], 'Ocorrências'], // sábado: erro, não cadastra
+], $escolaDeOcorrencias, '2026-11-06 10:30');
+$porRotulo = [];
+foreach ($cad['linhas'] as $l) $porRotulo[$l['aba'] . ' ' . $l['linha']] = $l;
+afirmar('cadastro pela planilha: situação de cada linha (o já cadastrado e o repetido não aparecem)', array_map(fn($l) => $l['situacao'], $porRotulo) === [
+    'Alunos 2' => 'cadastro', 'Alunos 5' => 'cadastro', 'Alunos 6' => 'erro', 'Alunos 7' => 'erro', 'Alunos 8' => 'erro',
+    'Ocorrências 2' => 'nova', 'Ocorrências 3' => 'erro',
+], array_map(fn($l) => $l['situacao'] . ' ' . implode(' | ', $l['erros']), $porRotulo));
+afirmar('cadastro pela planilha: 1A acha a turma 1º A, e a turma nova vem com o período da linha', ($porRotulo['Alunos 2']['turma'] ?? '') === '1º A'
+    && ($porRotulo['Alunos 2']['turma_nova'] ?? null) === false && ($porRotulo['Alunos 5']['turma_nova'] ?? null) === true
+    && $cad['turmas_novas'] === [['chave' => '9z', 'nome' => '9Z', 'periodo' => 'Vespertino']], $cad['turmas_novas']);
+afirmar('cadastro pela planilha: os erros dizem o motivo (nome parecido, outra turma, sem turma)',
+    str_contains(implode(' ', $porRotulo['Alunos 6']['erros'] ?? []), 'há "Ana Souza"')
+    && str_contains(implode(' ', $porRotulo['Alunos 7']['erros'] ?? []), 'é da turma 2º B, não da 3º C')
+    && str_contains(implode(' ', $porRotulo['Alunos 8']['erros'] ?? []), 'informe a turma'));
+afirmar('cadastro pela planilha: código de outro lugar com nome vale o nome (com aviso)', str_contains(implode(' ', $porRotulo['Alunos 5']['avisos'] ?? []), 'valeu o nome'));
+afirmar('cadastro pela planilha: a entrada atrasada do aluno novo usa a mesma chave de cadastro', ($porRotulo['Ocorrências 2']['aluno_novo'] ?? null) === true
+    && ($porRotulo['Ocorrências 2']['chave_aluno_novo'] ?? 'x') === ($porRotulo['Alunos 5']['chave_aluno_novo'] ?? 'y'));
+afirmar('cadastro pela planilha: resumo com alunos e turmas novos (o da linha com erro não entra)', $cad['resumo'] === [
+    'novas' => 1, 'existentes' => 0, 'com_erro' => 4, 'atrasos_novos' => 1, 'saidas_novas' => 0,
+    'alunos_novos' => 2, 'turmas_novas' => 1, 'ja_cadastrados' => 1,
+], $cad['resumo']);
+afirmar('cadastro pela planilha: repetida em abas diferentes diz a aba', str_contains(implode(' ', montarPreviaDeOcorrencias([
+    [2, ['codigo' => 10, 'data' => '05/11/2026', 'horario' => '07:40', 'tipo' => 'atraso'], 'Ocorrências'],
+    [2, ['codigo' => 10, 'data' => '05/11/2026', 'horario' => '07:45', 'tipo' => 'atraso'], 'Outra'],
+], $escolaDeOcorrencias, '2026-11-06 10:30')['linhas'][1]['erros']), 'linha 2 da aba Ocorrências'));
+afirmar('ocorrências: mensagem final com cadastros', mensagemDaImportacaoDeOcorrencias(1, 0, 2, 1) === 'Importação concluída: 1 entrada atrasada registrada; 2 alunos e 1 turma cadastrados.'
+    && mensagemDaImportacaoDeOcorrencias(0, 0, 1) === 'Importação concluída: 1 aluno cadastrado.'
+    && mensagemDaImportacaoDeOcorrencias(0, 0, 0, 2) === 'Importação concluída: 2 turmas cadastradas.');
 afirmar('ocorrências: mensagem final com plural e concordância', mensagemDaImportacaoDeOcorrencias(3, 1) === 'Importação concluída: 3 entradas atrasadas e 1 saída antecipada registradas.'
     && mensagemDaImportacaoDeOcorrencias(1, 0) === 'Importação concluída: 1 entrada atrasada registrada.'
     && mensagemDaImportacaoDeOcorrencias(0, 2) === 'Importação concluída: 2 saídas antecipadas registradas.');

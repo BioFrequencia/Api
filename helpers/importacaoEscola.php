@@ -29,10 +29,16 @@ function dadosDaEscolaParaImportacao(PDO $conexao, int $idEscola, array $abas): 
     }
 
     $alunos = $conexao->prepare("
-        SELECT a.nome_aluno, a.dta_nasc_aluno FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ?
+        SELECT a.id_aluno, a.nome_aluno, a.dta_nasc_aluno, s.nome_sala FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ?
     ");
     $alunos->execute([$idEscola]);
+    $escola['incompletos'] = [];
     foreach ($alunos->fetchAll(PDO::FETCH_ASSOC) as $aluno) {
+        if ($aluno['dta_nasc_aluno'] === null) {
+            // Cadastrado sem data de nascimento (pela planilha de entradas e saídas): esta importação completa.
+            $escola['incompletos'][chaveDeNome($aluno['nome_aluno']) . '|' . chaveDeNome($aluno['nome_sala'])] = (int) $aluno['id_aluno'];
+            continue;
+        }
         $escola['alunos'][chaveDeNome($aluno['nome_aluno']) . '|' . $aluno['dta_nasc_aluno']] = true;
     }
 
@@ -99,7 +105,7 @@ function dadosDaEscolaParaImportacao(PDO $conexao, int $idEscola, array $abas): 
  * prévia; aqui só se grava. Devolve o que foi criado.
  */
 function gravarImportacao(PDO $conexao, int $idEscola, array $previa, array $turmasDaEscola): array {
-    $resultado = ['turmas_criadas' => 0, 'alunos_criados' => 0, 'responsaveis_criados' => 0, 'vinculos_criados' => 0];
+    $resultado = ['turmas_criadas' => 0, 'alunos_criados' => 0, 'alunos_completados' => 0, 'responsaveis_criados' => 0, 'vinculos_criados' => 0];
     $idDaTurma = [];
     foreach ($turmasDaEscola as $chave => $turma) {
         $idDaTurma[$chave] = $turma['id_sala'];
@@ -128,12 +134,22 @@ function gravarImportacao(PDO $conexao, int $idEscola, array $previa, array $tur
         WHERE id_responsavel = ?
     ");
     $vincula = $conexao->prepare("INSERT INTO tb_aluno_responsavel (id_aluno, id_responsavel, parentesco) VALUES (?, ?, ?)");
+    $completaAluno = $conexao->prepare("
+        UPDATE tb_aluno SET dta_nasc_aluno = ?, genero_aluno = ? WHERE id_aluno = ? AND dta_nasc_aluno IS NULL
+    ");
     $responsavelDoCpf = [];
     foreach ($previa['alunos'] as $aluno) {
-        if ($aluno['situacao'] !== 'novo') continue;
-        $novoAluno->execute([$aluno['nome'], $idDaTurma[chaveDeNome($aluno['turma'])], $aluno['nascimento'], $aluno['genero']]);
-        $idAluno = (int) $novoAluno->fetchColumn();
-        $resultado['alunos_criados']++;
+        if ($aluno['situacao'] === 'completar') {
+            $completaAluno->execute([$aluno['nascimento'], $aluno['genero'], $aluno['id_aluno']]);
+            $idAluno = (int) $aluno['id_aluno'];
+            $resultado['alunos_completados'] += $completaAluno->rowCount();
+        } elseif ($aluno['situacao'] === 'novo') {
+            $novoAluno->execute([$aluno['nome'], $idDaTurma[chaveDeNome($aluno['turma'])], $aluno['nascimento'], $aluno['genero']]);
+            $idAluno = (int) $novoAluno->fetchColumn();
+            $resultado['alunos_criados']++;
+        } else {
+            continue;
+        }
 
         $responsavel = $aluno['responsavel'];
         if ($responsavel === null) continue;
