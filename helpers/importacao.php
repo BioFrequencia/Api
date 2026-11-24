@@ -345,6 +345,7 @@ function conferirLinhaDeAluno(array $valores): array {
  *   $escola: [
  *     'turmas'       => [chaveDeNome => ['id_sala' => int, 'nome_sala' => string]],
  *     'alunos'       => [chaveDeNome . '|' . nascimento => true],
+ *     'incompletos'  => [chaveDeNome . '|' . chaveDeNome(turma) => id_aluno]  (sem data de nascimento)
  *     'responsaveis' => [cpf => ['id_responsavel' => int, 'nome' => string, 'telefone' => string,
  *                                'email' => ?string, 'na_escola' => bool, 'vinculos' => int]],
  *     'telefones'    => [telefone => cpf],   (de qualquer escola: são únicos no banco)
@@ -352,7 +353,10 @@ function conferirLinhaDeAluno(array $valores): array {
  *   ]
  *
  * Cada linha sai com 'situacao': 'nova'/'novo' (vai ser cadastrada),
- * 'existente' (já está na escola: fica de fora, não é erro) ou 'erro'.
+ * 'completar' (o aluno já existe na turma, sem data de nascimento - foi
+ * cadastrado pela planilha de entradas e saídas: ganha a data, o gênero e
+ * o responsável), 'existente' (já está na escola: fica de fora, não é
+ * erro) ou 'erro'.
  */
 function montarPreviaDaImportacao(array $abas, array $escola): array {
     $turmas = [];
@@ -382,6 +386,8 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
     $cpfsDoArquivo = [];         // cpf => ['linha' => n, 'nome' => ..., 'telefone' => ..., 'email' => ...]
     $telefonesDoArquivo = [];    // telefone => cpf
     $emailsDoArquivo = [];       // email => cpf
+    $alunosCompletados = [];     // id_aluno => true (cada incompleto só uma vez)
+    $escola['incompletos'] ??= [];
     foreach ($abas['alunos'] ?? [] as [$numero, $valores]) {
         $linha = conferirLinhaDeAluno($valores) + ['linha' => $numero, 'avisos' => []];
         $chaveTurma = chaveDeNome($linha['turma']);
@@ -438,11 +444,22 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
             $linha['responsavel'] = $responsavel;
         }
 
+        $incompleto = $escola['incompletos'][chaveDeNome($linha['nome']) . '|' . chaveDeNome($linha['turma'])] ?? null;
         if ($linha['erros'] !== []) {
             $linha['situacao'] = 'erro';
         } elseif (isset($escola['alunos'][$chaveAluno])) {
             $linha['situacao'] = 'existente';
             $linha['avisos'] = ['a escola já tem um aluno com este nome e esta data de nascimento: o cadastro fica como está'];
+        } elseif ($incompleto !== null && !isset($alunosCompletados[$incompleto])) {
+            $linha['situacao'] = 'completar';
+            $linha['id_aluno'] = $incompleto;
+            $alunosCompletados[$incompleto] = true;
+            $linha['avisos'][] = 'o aluno já está cadastrado nesta turma sem data de nascimento: ganha a data e o gênero desta linha';
+            if ($responsavel !== null && !isset($cpfsDoArquivo[$responsavel['cpf']])) {
+                $cpfsDoArquivo[$responsavel['cpf']] = ['linha' => $numero] + $responsavel;
+                $telefonesDoArquivo[$responsavel['telefone']] = $responsavel['cpf'];
+                if ($responsavel['email'] !== null) $emailsDoArquivo[$responsavel['email']] = $responsavel['cpf'];
+            }
         } else {
             $linha['situacao'] = 'novo';
             // Só quem vai entrar "ocupa" o CPF, o telefone e o e-mail para as linhas de baixo.
@@ -459,7 +476,7 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
     }
 
     $conta = fn(array $linhas, string $situacao) => count(array_filter($linhas, fn($l) => $l['situacao'] === $situacao));
-    $responsaveis = array_filter(array_column(array_filter($alunos, fn($l) => $l['situacao'] === 'novo'), 'responsavel'));
+    $responsaveis = array_filter(array_column(array_filter($alunos, fn($l) => in_array($l['situacao'], ['novo', 'completar'], true)), 'responsavel'));
     return [
         'turmas' => $turmas,
         'alunos' => $alunos,
@@ -468,6 +485,7 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
             'turmas_existentes' => $conta($turmas, 'existente'),
             'turmas_com_erro' => $conta($turmas, 'erro'),
             'alunos_novos' => $conta($alunos, 'novo'),
+            'alunos_completados' => $conta($alunos, 'completar'),
             'alunos_existentes' => $conta($alunos, 'existente'),
             'alunos_com_erro' => $conta($alunos, 'erro'),
             'responsaveis_novos' => count(array_filter($responsaveis, fn($r) => in_array($r['situacao'], ['novo', 'reaproveitar'], true))),
@@ -481,17 +499,24 @@ function montarPreviaDaImportacao(array $abas, array $escola): array {
  * "Importação concluída: 2 turmas, 3 alunos e 1 responsável cadastrados."
  * Só turmas: "1 turma cadastrada". Só alunos: "1 aluno cadastrado".
  */
-function mensagemDaImportacao(int $turmas, int $alunos, int $responsaveis): string {
+function mensagemDaImportacao(int $turmas, int $alunos, int $responsaveis, int $completados = 0): string {
+    $frases = [];
     $partes = [];
     if ($turmas > 0) $partes[] = $turmas . ($turmas === 1 ? ' turma' : ' turmas');
     if ($alunos > 0) $partes[] = $alunos . ($alunos === 1 ? ' aluno' : ' alunos');
     if ($responsaveis > 0) $partes[] = $responsaveis . ($responsaveis === 1 ? ' responsável' : ' responsáveis');
-    if ($partes === []) {
+    if ($partes !== []) {
+        $ultima = array_pop($partes);
+        $lista = $partes === [] ? $ultima : implode(', ', $partes) . ' e ' . $ultima;
+        $soTurmas = $alunos === 0 && $responsaveis === 0;
+        $umaCoisaSo = $turmas + $alunos + $responsaveis === 1;
+        $frases[] = "$lista cadastrad" . ($soTurmas ? 'a' : 'o') . ($umaCoisaSo ? '' : 's');
+    }
+    if ($completados > 0) {
+        $frases[] = $completados . ($completados === 1 ? ' aluno completado' : ' alunos completados') . ' (data de nascimento e gênero)';
+    }
+    if ($frases === []) {
         return 'Importação concluída: nada novo foi cadastrado.';
     }
-    $ultima = array_pop($partes);
-    $lista = $partes === [] ? $ultima : implode(', ', $partes) . ' e ' . $ultima;
-    $soTurmas = $alunos === 0 && $responsaveis === 0;
-    $umaCoisaSo = $turmas + $alunos + $responsaveis === 1;
-    return "Importação concluída: $lista cadastrad" . ($soTurmas ? 'a' : 'o') . ($umaCoisaSo ? '' : 's') . '.';
+    return 'Importação concluída: ' . implode('; ', $frases) . '.';
 }

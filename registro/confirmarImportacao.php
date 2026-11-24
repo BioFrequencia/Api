@@ -20,6 +20,8 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  *   fora, e importar o mesmo arquivo duas vezes não duplica nada.
  * - Cada registro passa pela mesma função do lançamento manual (uma
  *   entrada atrasada e uma saída antecipada por aluno por dia).
+ * - Aluno que a escola não tem (linha com nome e turma) é cadastrado
+ *   antes, na mesma transação - e a turma também, se for nova.
  * - Avisos aos responsáveis: nenhum por registro importado (chegaria
  *   horas ou dias depois, vários de uma vez); o aviso de limite continua,
  *   no máximo um por período, como no lançamento manual.
@@ -48,11 +50,11 @@ try {
     $conexao->prepare("SELECT pg_advisory_xact_lock(4344143, ?)")->execute([$idEscola]);
     $escola = dadosDaEscolaParaOcorrencias($conexao, $idEscola, $lido['linhas']);
     $previa = montarPreviaDeOcorrencias($lido['linhas'], $escola, agoraNaEscolaParaPrevia());
-    if ($previa['resumo']['novas'] === 0) {
+    if ($previa['resumo']['novas'] === 0 && $previa['resumo']['alunos_novos'] === 0) {
         $conexao->rollBack();
         enviarErro("Nada novo para registrar: tudo o que é válido nesta planilha já está no sistema.", 422, null, ['resumo' => $previa['resumo']]);
     }
-    $resultado = gravarOcorrenciasImportadas($conexao, (int) $idCoordenacao, $previa);
+    $resultado = gravarOcorrenciasImportadas($conexao, (int) $idEscola, (int) $idCoordenacao, $previa, $escola['turmas']);
     $conexao->commit();
 } catch (PDOException $erro) {
     if ($conexao->inTransaction()) {
@@ -78,10 +80,12 @@ try {
 }
 
 enviarSucesso(
-    mensagemDaImportacaoDeOcorrencias($resultado['atrasos_criados'], $resultado['saidas_criadas']),
+    mensagemDaImportacaoDeOcorrencias($resultado['atrasos_criados'], $resultado['saidas_criadas'], $resultado['alunos_criados'], $resultado['turmas_criadas']),
     [
         'atrasos_criados' => $resultado['atrasos_criados'],
         'saidas_criadas' => $resultado['saidas_criadas'],
+        'alunos_criados' => $resultado['alunos_criados'],
+        'turmas_criadas' => $resultado['turmas_criadas'],
         'avisos_de_limite' => $avisosDeLimite,
         'resumo' => $previa['resumo'],
     ],

@@ -212,47 +212,54 @@ function lerAbasDaImportacao(string $caminho, string $extensao): array {
 }
 
 /**
- * Lê a aba de entradas atrasadas e saídas antecipadas: a primeira aba
- * (fora Instruções e Listas) com Data, Horário e Tipo no cabeçalho - a
- * aba Alunos do modelo, só de consulta, não tem essas colunas. Devolve
- * ['linhas' => [[linha, valores]], 'avisos' => [...]].
+ * Lê as abas da planilha de entradas atrasadas e saídas antecipadas: toda
+ * aba (fora Instruções e Listas) cujo cabeçalho identifica o aluno - Nome
+ * do aluno ou Código do aluno. Data, horário e tipo são opcionais: a aba
+ * Alunos do modelo, ou uma lista só com nome e turma, também é lida, e
+ * serve para cadastrar quem a escola ainda não tem. Devolve
+ * ['linhas' => [[linha, valores, nome da aba]], 'avisos' => [...]].
  */
 function lerOcorrenciasDaImportacao(string $caminho, string $extensao): array {
     $planilha = abrirPlanilhaDaImportacao($caminho, $extensao, IMPORTACAO_MAX_OCORRENCIAS);
 
     $resultado = ['linhas' => [], 'avisos' => []];
-    $achou = false;
-    $pareceTurmas = false;
+    $abasLidas = 0;
+    $perfis = [];
+    foreach (PERFIS_ABA_OCORRENCIAS as $perfil => $obrigatorias) {
+        $perfis[$perfil] = [COLUNAS_OCORRENCIAS, $obrigatorias];
+    }
     foreach ($planilha->getAllSheets() as $aba) {
         $nomeDaAba = normalizarTexto($aba->getTitle());
         if (str_contains($nomeDaAba, 'instru') || str_contains($nomeDaAba, 'lista')) continue;
-        $pareceTurmas = $pareceTurmas || str_contains($nomeDaAba, 'turma');
+        if (str_contains($nomeDaAba, 'turma')) {
+            $planilha->disconnectWorksheets();
+            throw new PlanilhaInvalida('Este é o modelo de turmas e alunos: importe em Turmas e alunos > Importar planilha.');
+        }
 
         $ultimaLinha = min($aba->getHighestDataRow(), IMPORTACAO_MAX_OCORRENCIAS + PLANILHA_LINHAS_DO_CABECALHO);
-        $achado = cabecalhoDaAba($aba, ['ocorrencias' => [COLUNAS_OCORRENCIAS, COLUNAS_OBRIGATORIAS_OCORRENCIAS]], $ultimaLinha);
+        $achado = cabecalhoDaAba($aba, $perfis, $ultimaLinha);
         if ($achado === null) continue;
         [, $cabecalho, $linhaDoCabecalho] = $achado;
-        if ($achou) {
-            $resultado['avisos'][] = "A aba \"{$aba->getTitle()}\" foi ignorada: o arquivo já tem uma aba de ocorrências.";
-            continue;
-        }
-        $achou = true;
-        if (!isset($cabecalho['mapa']['codigo']) && !isset($cabecalho['mapa']['nome'])) {
-            throw new PlanilhaInvalida("A aba \"{$aba->getTitle()}\" precisa da coluna Código do aluno ou da coluna Nome do aluno. Use o modelo para conferir os nomes.");
-        }
+        $abasLidas++;
         if ($cabecalho['ignoradas'] !== []) {
             $resultado['avisos'][] = "Colunas ignoradas na aba \"{$aba->getTitle()}\": " . implode(', ', $cabecalho['ignoradas']) . '.';
         }
-        $resultado['linhas'] = linhasAbaixoDoCabecalho($aba, $cabecalho['mapa'], $linhaDoCabecalho, $ultimaLinha, IMPORTACAO_MAX_OCORRENCIAS);
+        foreach (linhasAbaixoDoCabecalho($aba, $cabecalho['mapa'], $linhaDoCabecalho, $ultimaLinha, IMPORTACAO_MAX_OCORRENCIAS) as [$numero, $valores]) {
+            $resultado['linhas'][] = [$numero, $valores, $aba->getTitle()];
+        }
+        if (count($resultado['linhas']) > IMPORTACAO_MAX_OCORRENCIAS) {
+            $planilha->disconnectWorksheets();
+            throw new PlanilhaInvalida('A planilha passa de ' . IMPORTACAO_MAX_OCORRENCIAS . ' linhas. Divida a importação em arquivos menores.');
+        }
     }
     $planilha->disconnectWorksheets();
-    if (!$achou) {
-        throw new PlanilhaInvalida($pareceTurmas
-            ? 'Este é o modelo de turmas e alunos: importe em Turmas e alunos > Importar planilha.'
-            : 'Não achamos a aba Ocorrências: ela precisa das colunas Data, Horário e Tipo. Baixe o modelo de entradas e saídas e use as mesmas colunas.');
+    if ($abasLidas === 0) {
+        throw new PlanilhaInvalida('Não achamos uma aba com os alunos: ela precisa da coluna Nome do aluno (ou Código do aluno). '
+            . 'Baixe o modelo de entradas e saídas e use as mesmas colunas.');
     }
     if ($resultado['linhas'] === []) {
-        throw new PlanilhaInvalida('A aba Ocorrências está vazia: preencha uma linha por entrada atrasada ou saída antecipada.');
+        throw new PlanilhaInvalida('A planilha está vazia: preencha uma linha por aluno - com a entrada atrasada ou saída antecipada, '
+            . 'se houver (só o nome e a turma cadastram o aluno que a escola ainda não tem).');
     }
     return $resultado;
 }
@@ -405,6 +412,7 @@ function modeloDeOcorrencias(array $alunos, string $hojeLocal): Spreadsheet {
         ['As linhas 2 a ' . $fim . ' já buscam o nome e a turma pelo código. Para mais linhas, copie a última para baixo.', false],
         ['', false],
         ['O que acontece na importação', true],
+        ['Aluno que a escola ainda não tem: escreva o nome completo e a turma (sem o código), aqui ou numa linha nova da aba Alunos. Ele é cadastrado na importação, sem data de nascimento; a entrada atrasada ou saída antecipada é opcional.', false],
         ['O que já está registrado no sistema (mesmo aluno, mesmo dia e mesmo tipo) fica como está - importar de novo não duplica.', false],
         ['Linhas com erro aparecem na prévia com o motivo e não entram; as outras entram juntas, de uma vez.', false],
         ['Os responsáveis não recebem um aviso por registro importado (chegaria atrasado). O aviso de quando o aluno passa do limite da escola continua valendo.', false],
@@ -425,7 +433,8 @@ function modeloDeOcorrencias(array $alunos, string $hojeLocal): Spreadsheet {
     $ocorrencias->setTitle('Ocorrências');
     estilizarCabecalho(
         $ocorrencias,
-        array_map(fn($chave) => COLUNAS_OCORRENCIAS[$chave][0], array_keys(COLUNAS_OCORRENCIAS)),
+        // O período só serve para turma nova (vem da aba Alunos): fora das colunas da aba Ocorrências.
+        array_map(fn($chave) => COLUNAS_OCORRENCIAS[$chave][0], array_keys(array_diff_key(COLUNAS_OCORRENCIAS, ['periodo' => true]))),
         [15, 34, 12, 13, 10, 19, 30, 13, 34, 24]
     );
     for ($linha = 2; $linha <= $fim; $linha++) {

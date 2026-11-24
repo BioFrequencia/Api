@@ -34,10 +34,30 @@ function alunosDaEscolaParaOcorrencias(PDO $conexao, int $idEscola): array {
     return $alunos;
 }
 
+/** Turmas da escola, também as sem aluno: chaveDeNome => ['id_sala', 'nome', 'periodo', 'inicio', 'fim']. */
+function turmasDaEscolaParaOcorrencias(PDO $conexao, int $idEscola): array {
+    $busca = $conexao->prepare("
+        SELECT id_sala, nome_sala, periodo_sala, to_char(horario_inicio, 'HH24:MI') AS inicio, to_char(horario_fim, 'HH24:MI') AS fim
+        FROM tb_sala WHERE id_escola = ? ORDER BY nome_sala, id_sala
+    ");
+    $busca->execute([$idEscola]);
+    $turmas = [];
+    foreach ($busca->fetchAll(PDO::FETCH_ASSOC) as $linha) {
+        $turmas[chaveDeNome($linha['nome_sala'])] ??= [
+            'id_sala' => (int) $linha['id_sala'],
+            'nome' => $linha['nome_sala'],
+            'periodo' => $linha['periodo_sala'],
+            'inicio' => $linha['inicio'],
+            'fim' => $linha['fim'],
+        ];
+    }
+    return $turmas;
+}
+
 /**
  * O que a prévia precisa saber da escola (formato em
- * montarPreviaDeOcorrencias): só os registros e o calendário entre a
- * primeira e a última data da planilha.
+ * montarPreviaDeOcorrencias): os alunos e as turmas, e só os registros e o
+ * calendário entre a primeira e a última data da planilha.
  */
 function dadosDaEscolaParaOcorrencias(PDO $conexao, int $idEscola, array $linhas): array {
     $alunos = alunosDaEscolaParaOcorrencias($conexao, $idEscola);
@@ -73,6 +93,7 @@ function dadosDaEscolaParaOcorrencias(PDO $conexao, int $idEscola, array $linhas
 
     return [
         'alunos' => $alunos,
+        'turmas' => turmasDaEscolaParaOcorrencias($conexao, $idEscola),
         'registros' => $registros,
         'calendario' => $calendario,
         'tolerancia' => (int) configuracaoDaEscola($conexao, $idEscola)['tolerancia_minutos'],
@@ -85,24 +106,45 @@ function agoraNaEscolaParaPrevia(): string {
 }
 
 /**
- * Grava as linhas 'nova' da prévia - DENTRO da transação de quem chama -
- * pela mesma função do lançamento manual, que trava cada aluno e não
- * duplica o dia. Entrada atrasada importada é lançamento da coordenação
- * (origem 'manual'). Devolve as contagens e os alunos que ganharam
- * registro (para o aviso de limite).
+ * Grava a prévia - DENTRO da transação de quem chama: primeiro as turmas e
+ * os alunos novos (aluno sem data de nascimento e com gênero "Indefinido",
+ * para completar depois), depois as linhas 'nova', pela mesma função do
+ * lançamento manual, que trava cada aluno e não duplica o dia. Entrada
+ * atrasada importada é lançamento da coordenação (origem 'manual').
+ * Devolve as contagens e os alunos que ganharam registro (para o aviso de
+ * limite).
  */
-function gravarOcorrenciasImportadas(PDO $conexao, int $idCoordenacao, array $previa): array {
-    $resultado = ['atrasos_criados' => 0, 'saidas_criadas' => 0, 'alunos' => []];
+function gravarOcorrenciasImportadas(PDO $conexao, int $idEscola, int $idCoordenacao, array $previa, array $turmasDaEscola): array {
+    $resultado = ['atrasos_criados' => 0, 'saidas_criadas' => 0, 'alunos_criados' => 0, 'turmas_criadas' => 0, 'alunos' => []];
+
+    $idDaTurma = array_map(fn($turma) => $turma['id_sala'], $turmasDaEscola);
+    $novaTurma = $conexao->prepare("INSERT INTO tb_sala (nome_sala, periodo_sala, id_escola) VALUES (?, ?, ?) RETURNING id_sala");
+    foreach ($previa['turmas_novas'] ?? [] as $turma) {
+        $novaTurma->execute([mb_substr($turma['nome'], 0, 50), $turma['periodo'], $idEscola]);
+        $idDaTurma[$turma['chave']] = (int) $novaTurma->fetchColumn();
+        $resultado['turmas_criadas']++;
+    }
+    $idDoAlunoNovo = [];
+    $novoAluno = $conexao->prepare("
+        INSERT INTO tb_aluno (nome_aluno, id_sala, dta_nasc_aluno, genero_aluno) VALUES (?, ?, NULL, 'Indefinido') RETURNING id_aluno
+    ");
+    foreach ($previa['alunos_novos'] ?? [] as $aluno) {
+        $novoAluno->execute([mb_substr($aluno['nome'], 0, 150), $idDaTurma[$aluno['turma']]]);
+        $idDoAlunoNovo[$aluno['chave']] = (int) $novoAluno->fetchColumn();
+        $resultado['alunos_criados']++;
+    }
+
     foreach ($previa['linhas'] as $linha) {
         if ($linha['situacao'] !== 'nova') continue;
+        $idAluno = $linha['id_aluno'] ?? $idDoAlunoNovo[$linha['chave_aluno_novo']];
         $extras = $linha['tipo'] === 'atraso' ? ['origem' => 'manual'] : ['retirado_por' => $linha['retirado_por']];
         $gravado = registrarEventoFrequencia(
-            $conexao, $linha['tipo'], (int) $linha['id_aluno'], $idCoordenacao, localParaUtc("{$linha['data']} {$linha['hora']}"),
+            $conexao, $linha['tipo'], (int) $idAluno, $idCoordenacao, localParaUtc("{$linha['data']} {$linha['hora']}"),
             $linha['motivo'], $linha['observacao'], $linha['justificado'], $extras
         );
         if ($gravado['ja_existia']) continue;
         $resultado[$linha['tipo'] === 'atraso' ? 'atrasos_criados' : 'saidas_criadas']++;
-        $resultado['alunos'][(int) $linha['id_aluno']] = true;
+        $resultado['alunos'][(int) $idAluno] = true;
     }
     $resultado['alunos'] = array_keys($resultado['alunos']);
     return $resultado;

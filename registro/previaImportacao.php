@@ -16,9 +16,12 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * A confirmação (confirmarImportacao.php) recebe o mesmo arquivo e o
  * "hash" daqui.
  *
- * Resposta: { arquivo: {nome, hash}, avisos: [...], resumo: {novas, existentes, com_erro, atrasos_novos, saidas_novas},
- *   linhas: [{linha, situacao: nova|existente|erro, id_aluno, aluno, turma, data, hora, tipo: atraso|saida,
- *             motivo, justificado, observacao, retirado_por, erros, avisos}] }
+ * Resposta: { arquivo: {nome, hash}, avisos: [...],
+ *   resumo: {novas, existentes, com_erro, atrasos_novos, saidas_novas, alunos_novos, turmas_novas, ja_cadastrados},
+ *   alunos_novos: [{chave, nome, turma}], turmas_novas: [{chave, nome, periodo}],
+ *   linhas: [{linha, aba, situacao: nova|cadastro|existente|erro, id_aluno, aluno, turma, aluno_novo, turma_nova,
+ *             data, hora, tipo: atraso|saida|null, motivo, justificado, observacao, retirado_por, erros, avisos}] }
+ * "cadastro": linha só com o nome e a turma de um aluno que a escola ainda não tem.
  */
 $idCoordenacao = autenticar();
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
@@ -36,7 +39,13 @@ try {
     enviarErro("Erro no servidor ao conferir a planilha.", 500, $erro);
 }
 $previa = montarPreviaDeOcorrencias($lido['linhas'], $escola, agoraNaEscolaParaPrevia());
-$mensagem = $previa['resumo']['novas'] === 0
+$resumo = $previa['resumo'];
+if ($previa['linhas'] === []) {
+    // Só alunos que a escola já tem e nenhuma entrada/saída (ex.: o modelo baixado e não preenchido).
+    enviarErro("Nada para importar: a aba Ocorrências está vazia e os {$resumo['ja_cadastrados']} alunos da planilha já estão cadastrados. "
+        . "Preencha uma linha por entrada atrasada ou saída antecipada.", 422, null, ['resumo' => $resumo]);
+}
+$mensagem = $resumo['novas'] === 0 && $resumo['alunos_novos'] === 0
     ? "Nada novo para registrar nesta planilha."
     : "Prévia pronta: confira e confirme para registrar.";
 enviarSucesso($mensagem, [

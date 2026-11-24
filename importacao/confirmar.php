@@ -45,7 +45,7 @@ try {
     $conexao->prepare("SELECT pg_advisory_xact_lock(4344143, ?)")->execute([$idEscola]);
     $escola = dadosDaEscolaParaImportacao($conexao, $idEscola, $abas);
     $previa = montarPreviaDaImportacao($abas, $escola);
-    if ($previa['resumo']['turmas_novas'] + $previa['resumo']['alunos_novos'] === 0) {
+    if ($previa['resumo']['turmas_novas'] + $previa['resumo']['alunos_novos'] + $previa['resumo']['alunos_completados'] === 0) {
         $conexao->rollBack();
         enviarErro("Nada novo para cadastrar: tudo o que é válido nesta planilha a escola já tem.", 422, null, ['resumo' => $previa['resumo']]);
     }
@@ -62,5 +62,7 @@ try {
     enviarErro("Erro no servidor ao importar a planilha. Nada foi cadastrado.", 500, $erro);
 }
 
-$mensagem = mensagemDaImportacao($resultado['turmas_criadas'], $resultado['alunos_criados'], $resultado['responsaveis_criados']);
+$mensagem = mensagemDaImportacao(
+    $resultado['turmas_criadas'], $resultado['alunos_criados'], $resultado['responsaveis_criados'], $resultado['alunos_completados']
+);
 enviarSucesso($mensagem, $resultado + ['resumo' => $previa['resumo']], 201);

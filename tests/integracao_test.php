@@ -1816,6 +1816,7 @@ verificar('ocorrências: data e hora guardadas pelo Excel são lidas', ($previaO
     && ($previaOc['linhas'][0]['hora'] ?? '') === '07:30' && ($previaOc['linhas'][0]['aluno'] ?? '') === 'Paula Planilha', json_encode($previaOc['linhas'][0] ?? null));
 verificar('ocorrências: resumo da prévia', ($previaOc['resumo'] ?? []) === [
     'novas' => 4, 'existentes' => 1, 'com_erro' => 4, 'atrasos_novos' => 3, 'saidas_novas' => 1,
+    'alunos_novos' => 0, 'turmas_novas' => 0, 'ja_cadastrados' => 0,
 ], json_encode($previaOc['resumo'] ?? null));
 verificar('ocorrências: a prévia não grava nada', (int) valor("SELECT COUNT(*) FROM tb_atraso WHERE id_aluno = ?", [$paula]) === 0
     && (int) valor("SELECT COUNT(*) FROM tb_saida_antecipada WHERE id_aluno = ?", [$pedro]) === 0);
@@ -1863,10 +1864,60 @@ verificar('ocorrências: .csv confirmado', $r['status'] === 201 && ($r['json']['
 // Outra escola: os códigos da Helen não são dela, e o modelo dela só tem os alunos dela.
 $r = enviarPlanilha('registro/previaImportacao.php', $ocorrencias, $tOutra);
 $linhasNaOutra = $r['json']['dados']['linhas'] ?? [];
-// A linha do Zeca (aluno da outra escola) vale lá; nenhuma da Helen pode valer.
-$daHelenAceitas = array_filter($linhasNaOutra, fn($l) => $l['situacao'] !== 'erro' && $l['id_aluno'] !== $zeca);
-verificar('ocorrências: em outra escola, os códigos e nomes da Helen não valem', $r['status'] === 200
-    && count($linhasNaOutra) === 9 && $daHelenAceitas === [], $r['texto']);
+// A linha do Zeca (aluno da outra escola) vale lá. Nenhuma linha pode apontar
+// um aluno da Helen: só código é erro; nome e turma viram aluno NOVO daquela escola.
+$apontamHelen = array_filter($linhasNaOutra, fn($l) => in_array($l['id_aluno'], [$paula, $pedro, $tina], true));
+$soCodigoAceitas = array_filter($linhasNaOutra, fn($l) => $l['situacao'] !== 'erro' && $l['id_aluno'] !== $zeca && !$l['aluno_novo']);
+verificar('ocorrências: em outra escola, os códigos da Helen não valem e nenhum aluno dela é alcançado', $r['status'] === 200
+    && count($linhasNaOutra) === 9 && $apontamHelen === [] && $soCodigoAceitas === [], $r['texto']);
+// Cadastro pela planilha de entradas e saídas: só nome e turma cadastram quem a escola não tem.
+$cadastroPelaPlanilha = planilhaDeTeste([
+    'Ocorrências' => [
+        $cabecalhoDeOcorrencias,
+        [null, 'Otto Novo', '9º Z', $br($d1), '13:30', 'Entrada atrasada', null, null, null, null], // atraso do aluno novo, na turma nova
+    ],
+    'Alunos' => [
+        ['Código do aluno', 'Nome do aluno', 'Turma', 'Período'],
+        [$paula, 'Paula Planilha', '4º A', null],   // já existe: só conta
+        [9001, 'Nina Nova', '4A', null],            // nova, na 4º A (4A = 4º A); o código não é da escola: vale o nome
+        [9002, 'Otto Novo', '9º Z', 'Vespertino'],  // novo, na turma nova 9º Z
+        [9003, 'Paula Planiha', '4º A', null],      // erro de digitação: não vira aluno
+    ],
+]);
+$r = enviarPlanilha('registro/previaImportacao.php', $cadastroPelaPlanilha, $tImporta);
+$resumoCad = $r['json']['dados']['resumo'] ?? [];
+verificar('cadastro pela planilha: prévia com 2 alunos novos, 1 turma nova, 1 entrada atrasada e o erro de digitação', $r['status'] === 200
+    && ($resumoCad['alunos_novos'] ?? 0) === 2 && ($resumoCad['turmas_novas'] ?? 0) === 1 && ($resumoCad['novas'] ?? 0) === 1
+    && ($resumoCad['ja_cadastrados'] ?? 0) === 1 && ($resumoCad['com_erro'] ?? 0) === 1, $r['texto']);
+verificar('cadastro pela planilha: a prévia não grava nada', (int) valor("SELECT COUNT(*) FROM tb_aluno WHERE nome_aluno IN ('Nina Nova', 'Otto Novo')") === 0);
+$r = enviarPlanilha('registro/confirmarImportacao.php', $cadastroPelaPlanilha, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? '']);
+verificar('cadastro pela planilha: confirmada - 2 alunos e 1 turma cadastrados e a entrada atrasada do novo', $r['status'] === 201
+    && ($r['json']['dados']['alunos_criados'] ?? 0) === 2 && ($r['json']['dados']['turmas_criadas'] ?? 0) === 1
+    && ($r['json']['dados']['atrasos_criados'] ?? 0) === 1
+    && ($r['json']['mensagem'] ?? '') === 'Importação concluída: 1 entrada atrasada registrada; 2 alunos e 1 turma cadastrados.', $r['texto']);
+verificar('cadastro pela planilha: Nina na 4º A da escola, sem data de nascimento e com gênero indefinido', (string) valor(
+    "SELECT s.nome_sala || '|' || s.id_escola || '|' || COALESCE(a.dta_nasc_aluno::text, 'sem data') || '|' || a.genero_aluno
+     FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE a.nome_aluno = 'Nina Nova'") === "4º A|{$idHelen}|sem data|Indefinido");
+verificar('cadastro pela planilha: Otto na turma nova 9º Z (vespertino), com a entrada atrasada', (string) valor(
+    "SELECT s.nome_sala || '|' || s.periodo_sala || '|' || (SELECT COUNT(*) FROM tb_atraso t WHERE t.id_aluno = a.id_aluno)
+     FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE a.nome_aluno = 'Otto Novo'") === '9º Z|Vespertino|1');
+$r = enviarPlanilha('registro/previaImportacao.php', $cadastroPelaPlanilha, $tImporta);
+verificar('cadastro pela planilha: a mesma planilha de novo não cadastra de novo', $r['status'] === 200
+    && ($r['json']['dados']['resumo']['alunos_novos'] ?? -1) === 0 && ($r['json']['dados']['resumo']['existentes'] ?? 0) === 1
+    && (int) valor("SELECT COUNT(*) FROM tb_aluno WHERE nome_aluno = 'Nina Nova'") === 1, $r['texto']);
+
+// Depois, a planilha de Turmas e alunos completa a Nina (não cria outra).
+$completaNina = planilhaDeTeste(['Alunos' => [
+    ['Nome completo', 'Turma', 'Data de nascimento', 'Gênero'],
+    ['Nina Nova', '4º A', '10/02/2013', 'F'],
+]]);
+$r = enviarPlanilha('importacao/previa.php', $completaNina, $tImporta);
+verificar('turmas e alunos: a Nina, cadastrada sem data, aparece para completar', $r['status'] === 200
+    && ($r['json']['dados']['alunos'][0]['situacao'] ?? '') === 'completar' && ($r['json']['dados']['resumo']['alunos_completados'] ?? 0) === 1, $r['texto']);
+$r = enviarPlanilha('importacao/confirmar.php', $completaNina, $tImporta, ['hash' => $r['json']['dados']['arquivo']['hash'] ?? '']);
+verificar('turmas e alunos: completada (data e gênero), sem criar outra Nina', $r['status'] === 201
+    && ($r['json']['dados']['alunos_completados'] ?? 0) === 1
+    && (string) valor("SELECT COUNT(*) || '|' || MAX(dta_nasc_aluno)::text || '|' || MAX(genero_aluno) FROM tb_aluno WHERE nome_aluno = 'Nina Nova'") === '1|2013-02-10|Feminino', $r['texto']);
 post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => false], $tImporta);
 
 // ------------------------------------------------------------ avisos por tipo e mensagens da coordenação
