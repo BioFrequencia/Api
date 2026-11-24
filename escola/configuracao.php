@@ -41,7 +41,7 @@ try {
     $stmtTurmas = $conexao->prepare("
         SELECT s.id_sala, s.nome_sala, s.periodo_sala,
                to_char(s.horario_inicio, 'HH24:MI') AS horario_inicio, to_char(s.horario_fim, 'HH24:MI') AS horario_fim,
-               (SELECT COUNT(*) FROM tb_aluno a WHERE a.id_sala = s.id_sala) AS total_alunos
+               (SELECT COUNT(*) FROM tb_aluno a WHERE a.id_sala = s.id_sala AND a.situacao_aluno = 'ativo') AS total_alunos
         FROM tb_sala s WHERE s.id_escola = ? ORDER BY s.nome_sala
     ");
     $stmtTurmas->execute([$idEscola]);

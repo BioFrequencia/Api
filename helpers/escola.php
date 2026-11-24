@@ -43,12 +43,13 @@ function escolaDaCoordenacao(PDO $conexao, $idCoordenacao): int {
  * mandar um id_aluno de outra escola no corpo da requisição para
  * registrar falta no aluno dos outros.
  */
-function alunoPertenceAEscola(PDO $conexao, $idAluno, int $idEscola): bool {
+function alunoPertenceAEscola(PDO $conexao, $idAluno, int $idEscola, bool $soAtivo = false): bool {
+    $ativo = $soAtivo ? "AND a.situacao_aluno = 'ativo'" : '';
     $stmt = $conexao->prepare("
         SELECT 1
         FROM tb_aluno a
         JOIN tb_sala s ON s.id_sala = a.id_sala
-        WHERE a.id_aluno = ? AND s.id_escola = ?
+        WHERE a.id_aluno = ? AND s.id_escola = ? $ativo
     ");
     $stmt->bindValue(1, $idAluno);
     $stmt->bindValue(2, $idEscola);
@@ -67,6 +68,23 @@ function exigirAlunoDaEscola(PDO $conexao, $idAluno, int $idEscola): void {
         // 404 e não 403 de propósito: responder "existe, mas não é seu"
         // confirmaria para outra escola que aquele id existe.
         enviarErro("Aluno não encontrado.", 404);
+    }
+}
+
+/**
+ * Para registrar algo novo (entrada atrasada, saída, presença, biometria):
+ * o aluno tem de ser da escola E estar ativo. Quem saiu da escola
+ * (concluiu ou foi transferido, migração 014) responde 409 com o motivo.
+ */
+function exigirAlunoAtivoDaEscola(PDO $conexao, $idAluno, int $idEscola): void {
+    exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
+    try {
+        $ativo = alunoPertenceAEscola($conexao, $idAluno, $idEscola, true);
+    } catch (PDOException $erro) {
+        enviarErro("Erro no servidor ao localizar o aluno.", 500, $erro);
+    }
+    if (!$ativo) {
+        enviarErro("Este aluno saiu da escola (concluiu ou foi transferido). Para registrar algo, traga-o de volta na ficha dele.", 409);
     }
 }
 

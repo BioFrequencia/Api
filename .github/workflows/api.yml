@@ -36,6 +36,8 @@ env:
   # Conta da equipe do sistema (tela /admin) que os testes criam; equipe2
   # fica sem conta (ninguém vira equipe trocando o e-mail sem confirmar).
   ADMIN_EMAILS: admin@escola.test,equipe2@escola.test
+  AGENDADOR_CHAVE: chave-do-agendador-somente-ci
+  AGENDADOR_ACEITA_DATA: "1"
   WHATSAPP_LOG: /tmp/whatsapp.log
   EMAIL_LOG: /tmp/email.log
   BANCO_DE_TESTE: '1'
@@ -245,7 +247,7 @@ jobs:
           docker run -d --name api --network host \
             -e PORT=8080 -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD -e JWT_SECRET_KEY \
             -e CORS_ORIGENS -e SITE_URL -e BIOMETRIA_CHAVE -e WHATSAPP_API_URL -e WHATSAPP_TOKEN \
-            -e EMAIL_API_URL -e EMAIL_API_TOKEN -e EMAIL_REMETENTE -e ADMIN_EMAILS \
+            -e EMAIL_API_URL -e EMAIL_API_TOKEN -e EMAIL_REMETENTE -e ADMIN_EMAILS -e AGENDADOR_CHAVE -e AGENDADOR_ACEITA_DATA \
             biofrequencia-api:ci
           for _ in $(seq 1 40); do
             curl -sf http://127.0.0.1:8080/health.php > /dev/null && break

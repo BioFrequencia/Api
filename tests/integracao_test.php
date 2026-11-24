@@ -700,7 +700,7 @@ verificar('status desconhecido no filtro: 422', $r['status'] === 422, $r['texto'
 post('escola/salvarConfiguracao.php', ['aviso_cada_registro' => false], $t1);
 $antes = (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ?", [$carla]);
 $atraso($carla, "$d2 07:45", $t1);
-verificar('com o aviso a cada registro desligado (padrão), nenhuma mensagem nova', (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ?", [$carla]) === $antes);
+verificar('com o aviso a cada registro desligado, nenhuma mensagem nova', (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ?", [$carla]) === $antes);
 
 // ------------------------------------------------------------ alertas e aviso por limite
 secao('Alertas e aviso automático por limite');
@@ -1014,7 +1014,11 @@ verificar('a gestão remove o período', $r['status'] === 200, $r['texto']);
 $addResp($t3, $tina, gerarCpf(7), '(11) 97777-0001', 'Feminino');
 $r = $atraso($tina, "$d3 08:00", $t3);
 verificar('3ª entrada atrasada passa do limite: o aviso sai na hora', ($r['json']['dados']['avisos']['limite']['atrasos']['enviados'] ?? 0) === 1, $r['texto']);
-verificar('o provedor recebeu o aviso da Tina', count(array_filter(enviosWhatsapp('5511977770001'), fn($e) => str_contains((string) ($e['texto'] ?? ''), 'Tina Três'))) === 1);
+$enviosTina = enviosWhatsapp('5511977770001');
+verificar('o provedor recebeu o aviso de limite da Tina', count(array_filter($enviosTina, fn($e) => str_contains((string) ($e['texto'] ?? ''), 'Tina Três')
+    && str_contains((string) ($e['texto'] ?? ''), 'Pedimos que converse'))) === 1, $enviosTina);
+verificar('escola que não mexeu na configuração: o aviso daquela entrada atrasada também sai (ligado por padrão)',
+    count(array_filter($enviosTina, fn($e) => str_contains((string) ($e['texto'] ?? ''), 'registramos a entrada atrasada de Tina Três'))) === 1, $enviosTina);
 $r = $saida($tina, "$d3 10:00", $t3);
 verificar('o registro seguinte, dentro do intervalo, não repete o aviso', ($r['json']['dados']['avisos']['limite']['atrasos']['ja_avisado'] ?? null) === true, $r['texto']);
 
@@ -2247,9 +2251,9 @@ verificar('com o errado cancelado, o certo pode ser lançado no mesmo dia', $r['
 verificar('só a gestão restaura: 403 para a coordenação', $restaurar('atraso', $idAtrasoHugo, $tComum1)['status'] === 403);
 verificar('restaurar com outro ativo no mesmo dia: 409', $restaurar('atraso', $idAtrasoHugo, $tGestao1)['status'] === 409);
 verificar('cancelar de novo um cancelado: 409', $cancelar('atraso', $idAtrasoHugo, $tGestao1)['status'] === 409);
-$pdo->prepare("UPDATE tb_atraso SET criado_em = NOW() - INTERVAL '20 minutes' WHERE id_atraso = ?")->execute([$idAtrasoHugo2]);
+$pdo->prepare("UPDATE tb_atraso SET criado_em = NOW() - INTERVAL '2 days' WHERE id_atraso = ?")->execute([$idAtrasoHugo2]);
 $r = $cancelar('atraso', $idAtrasoHugo2, $tComum1);
-verificar('passados 10 minutos, quem registrou não cancela mais: 403 explicando o prazo', $r['status'] === 403
+verificar('no outro dia, quem registrou não cancela mais: 403 explicando o prazo', $r['status'] === 403
     && str_contains($r['json']['mensagem'] ?? '', 'prazo'), $r['texto']);
 verificar('a gestão cancela a qualquer momento', $cancelar('atraso', $idAtrasoHugo2, $tGestao1, 'Lançado em dobro')['status'] === 200);
 $r = $restaurar('atraso', $idAtrasoHugo, $tGestao1);
@@ -2349,6 +2353,102 @@ $r = $identificar($variacao($rostoKaio, 45), $tComum1);
 verificar('app antigo (uma foto em "embedding"): continua reconhecendo quando a semelhança é alta', $r['status'] === 200
     && ($r['json']['dados']['reconhecido'] ?? null) === true && ($r['json']['dados']['aluno']['id_aluno'] ?? 0) === $kaio
     && ($r['json']['dados']['presenca']['nova'] ?? null) === true, $r['texto']);
+
+// ------------------------------------------------------------ fim do ano letivo
+secao('Encerrar o ano letivo e alunos que saíram');
+$tGestao1 = $tokenNovo($idCoord1);
+$turmaAno = fn(string $nome) => (int) (post('user/addSala.php', ['nome_sala' => $nome, 'periodo_sala' => 'Matutino'], $tGestao1)['json']['dados']['id_sala'] ?? 0);
+[$sala8, $sala9] = [$turmaAno('8º Ano Letivo'), $turmaAno('9º Ano Letivo')];
+$alunoAno = fn(int $sala, string $nome) => (int) ($novoAluno($tGestao1, $sala, $nome)['json']['dados']['id_aluno'] ?? 0);
+[$olga, $paulo, $quel] = [$alunoAno($sala8, 'Olga Passa'), $alunoAno($sala8, 'Paulo Repete'), $alunoAno($sala8, 'Quel Transferida')];
+$rita = $alunoAno($sala9, 'Rita Formanda');
+verificar('turmas e alunos do fim do ano criados', $sala8 > 0 && $sala9 > 0 && min($olga, $paulo, $quel, $rita) > 0);
+sql("INSERT INTO tb_biometria_digital (id_aluno, dedo, template, formato, id_coordenacao) VALUES (?, 'indicador_direito', 'cifrado-de-teste', 'ISO 19794-2', ?)", [$quel, $idCoord1]);
+
+$r = post('escola/anoLetivo.php', [], $tComum1);
+verificar('coordenação (sem gestão) não encerra o ano: 403', $r['status'] === 403, $r['texto']);
+$r = post('escola/anoLetivo.php', [], $tGestao1);
+$turmaNaTela = array_values(array_filter($r['json']['dados']['turmas'] ?? [], fn($t) => $t['id_sala'] === $sala8));
+verificar('a gestão vê as turmas com os alunos ativos', $r['status'] === 200 && count($turmaNaTela) === 1
+    && array_column($turmaNaTela[0]['alunos'], 'id_aluno') === [$olga, $paulo, $quel], $r['texto']);
+$r = post('escola/encerrarAnoLetivo.php', ['turmas' => [['id_sala' => $sala2, 'destino' => 'concluiu']]], $tGestao1);
+verificar('turma de outra escola no encerramento: 422', $r['status'] === 422, $r['texto']);
+$r = post('escola/encerrarAnoLetivo.php', [
+    'turmas' => [['id_sala' => $sala8, 'destino' => $sala9], ['id_sala' => $sala9, 'destino' => 'concluiu']],
+    'excecoes' => [['id_aluno' => $paulo, 'destino' => 'manter'], ['id_aluno' => $quel, 'destino' => 'transferido']],
+], $tGestao1);
+verificar('encerrar o ano: 8º -> 9º, o 9º conclui, quem repete fica e a transferida sai', $r['status'] === 200
+    && ($r['json']['dados']['movidos'] ?? null) === 1 && ($r['json']['dados']['sairam'] ?? null) === 2
+    && ($r['json']['dados']['biometrias_apagadas'] ?? null) === 1, $r['texto']);
+verificar('no banco: Olga no 9º, Paulo no 8º, Rita concluiu e Quel transferida (com a data)',
+    (int) valor("SELECT id_sala FROM tb_aluno WHERE id_aluno = ?", [$olga]) === $sala9
+    && (int) valor("SELECT id_sala FROM tb_aluno WHERE id_aluno = ?", [$paulo]) === $sala8
+    && valor("SELECT situacao_aluno FROM tb_aluno WHERE id_aluno = ?", [$rita]) === 'concluiu'
+    && valor("SELECT situacao_aluno || '|' || (saiu_em IS NOT NULL) FROM tb_aluno WHERE id_aluno = ?", [$quel]) === 'transferido|true');
+verificar('a biometria de quem saiu é apagada', (int) valor("SELECT count(*) FROM tb_biometria_digital WHERE id_aluno = ?", [$quel]) === 0);
+$r = post('user/filtroAluno.php', ['pagina' => 1, 'por_pagina' => 500], $tGestao1);
+$idsNaLista = array_column($r['json']['dados']['alunos'] ?? [], 'id_aluno');
+verificar('quem saiu some da lista de alunos; quem ficou continua', in_array($olga, $idsNaLista, true) && in_array($paulo, $idsNaLista, true)
+    && !in_array($rita, $idsNaLista, true) && !in_array($quel, $idsNaLista, true), $r['texto']);
+$r = post('biometria/alunos.php', [], $tGestao1);
+verificar('quem saiu some do app de biometria', $r['status'] === 200
+    && !in_array($rita, array_map('intval', array_column($r['json']['dados'] ?? [], 'id_aluno')), true), $r['texto']);
+$r = post('user/listarSalas.php', [], $tGestao1);
+$contagem9 = array_values(array_filter($r['json']['dados'] ?? [], fn($t) => (int) $t['id_sala'] === $sala9));
+verificar('a contagem da turma conta só os ativos (Olga no 9º)', (int) ($contagem9[0]['total_alunos'] ?? -1) === 1, $r['texto']);
+$r = $atraso($rita, "$d1 07:40", $tGestao1);
+verificar('registrar entrada atrasada de quem saiu: 409 com o motivo', $r['status'] === 409 && str_contains($r['json']['mensagem'] ?? '', 'saiu da escola'), $r['texto']);
+$r = post('user/historicoAluno.php', ['id_aluno' => $rita], $tGestao1);
+verificar('a ficha de quem saiu continua aberta, com a situação', $r['status'] === 200
+    && ($r['json']['dados']['aluno']['situacao_aluno'] ?? '') === 'concluiu' && !empty($r['json']['dados']['aluno']['saiu_em']), $r['texto']);
+$r = post('user/exAlunos.php', [], $tGestao1);
+verificar('lista de quem saiu: Rita e Quel', $r['status'] === 200
+    && array_diff([$rita, $quel], array_column($r['json']['dados']['alunos'] ?? [], 'id_aluno')) === [], $r['texto']);
+$r = post('user/exAlunos.php', ['busca' => 'rita'], $tGestao1);
+verificar('busca na lista de quem saiu', array_column($r['json']['dados']['alunos'] ?? [], 'id_aluno') === [$rita], $r['texto']);
+$r = post('user/exAlunos.php', [], $t2);
+verificar('outra escola não vê os ex-alunos desta', ($r['json']['dados']['total_registros'] ?? -1) === 0, $r['texto']);
+$r = post('user/situacaoAluno.php', ['id_aluno' => $rita, 'situacao' => 'ativo'], $tComum1);
+verificar('coordenação (sem gestão) não traz aluno de volta: 403', $r['status'] === 403, $r['texto']);
+$r = post('user/situacaoAluno.php', ['id_aluno' => $rita, 'situacao' => 'ativo'], $tGestao1);
+verificar('a gestão traz a Rita de volta', $r['status'] === 200
+    && valor("SELECT situacao_aluno || '|' || (saiu_em IS NULL) FROM tb_aluno WHERE id_aluno = ?", [$rita]) === 'ativo|true', $r['texto']);
+verificar('trazer de volta quem já está ativo: 409', post('user/situacaoAluno.php', ['id_aluno' => $rita, 'situacao' => 'ativo'], $tGestao1)['status'] === 409);
+$r = post('user/situacaoAluno.php', ['id_aluno' => $zeca, 'situacao' => 'transferido'], $tGestao1);
+verificar('retirar aluno de outra escola: 404', $r['status'] === 404, $r['texto']);
+$r = post('user/situacaoAluno.php', ['id_aluno' => $rita, 'situacao' => 'apagado'], $tGestao1);
+verificar('situação estranha: 422', $r['status'] === 422, $r['texto']);
+
+// ------------------------------------------------------------ resumo periódico
+secao('Resumo periódico às famílias');
+$chaveAgendador = getenv('AGENDADOR_CHAVE') ?: '';
+$resumo = fn(?string $chave, array $corpo = []) => post('notificacao/resumoPeriodico.php', $corpo, null, $chave === null ? [] : ["X-Chave-Agendador: $chave"]);
+verificar('resumo sem a chave do agendador: 401', $resumo(null)['status'] === 401);
+verificar('resumo com a chave errada: 401', $resumo('chave-errada-mas-comprida')['status'] === 401);
+// A Carla teve entrada atrasada em $d6: a segunda-feira seguinte manda o
+// resumo da semana dela para a responsável E (e-mail) e a A (WhatsApp).
+$segunda = (new DateTimeImmutable($d6))->modify('next monday')->format('Y-m-d');
+$terca = (new DateTimeImmutable($segunda))->modify('+1 day')->format('Y-m-d');
+$r = $resumo($chaveAgendador, ['data' => $terca]);
+verificar('resumo numa terça: nenhuma escola no dia', $r['status'] === 200 && ($r['json']['dados']['escolas'] ?? null) === 0, $r['texto']);
+$r = $resumo($chaveAgendador, ['data' => $segunda]);
+verificar('resumo na segunda: manda para quem teve registro na semana', $r['status'] === 200
+    && ($r['json']['dados']['alunos'] ?? 0) >= 1 && ($r['json']['dados']['enviados'] ?? 0) >= 1, $r['texto']);
+$resumoCarla = array_values(array_filter(emailsPara('resp.e@exemplo.test'), fn($m) => str_contains((string) ($m['texto'] ?? ''), 'resumo de Carla Teste')));
+verificar('o e-mail do resumo chega à responsável, com a contagem da semana', count($resumoCarla) === 1
+    && str_contains((string) $resumoCarla[0]['texto'], 'entrada'), $resumoCarla);
+verificar('o resumo fica nas notificações como "resumo"',
+    (int) valor("SELECT count(*) FROM tb_notificacao WHERE id_aluno = ? AND tipo_aviso = 'resumo' AND status_notificacao = 'Enviado'", [$carla]) >= 1);
+$r = $resumo($chaveAgendador, ['data' => $segunda]);
+verificar('o agendador rodando de novo no mesmo dia não manda outra vez', $r['status'] === 200
+    && ($r['json']['dados']['enviados'] ?? -1) === 0 && ($r['json']['dados']['repetidos'] ?? 0) >= 1, $r['texto']);
+$r = post('escola/salvarConfiguracao.php', ['resumo_periodico' => 'desligado'], $tGestao1);
+verificar('a gestão desliga o resumo', $r['status'] === 200 && ($r['json']['dados']['resumo_periodico'] ?? '') === 'desligado', $r['texto']);
+$proxima = (new DateTimeImmutable($segunda))->modify('+7 days')->format('Y-m-d');
+$antesResumo = (int) valor("SELECT count(*) FROM tb_notificacao WHERE tipo_aviso = 'resumo' AND id_aluno = ?", [$carla]);
+$resumo($chaveAgendador, ['data' => $proxima]);
+verificar('com o resumo desligado, a escola não manda nada',
+    (int) valor("SELECT count(*) FROM tb_notificacao WHERE tipo_aviso = 'resumo' AND id_aluno = ?", [$carla]) === $antesResumo);
 
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);

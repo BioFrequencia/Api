@@ -44,7 +44,7 @@ if (!campoPreenchido($modelo) || mb_strlen($modelo) > 100) {
 
 $idAluno = (int) $idAluno;
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
-exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
+exigirAlunoAtivoDaEscola($conexao, $idAluno, $idEscola);
 $amostras = array_map('normalizarVetor', $amostras);
 
 try {

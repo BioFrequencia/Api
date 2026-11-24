@@ -76,3 +76,9 @@ services:
         sync: false
       - key: SMTP_REMETENTE
         sync: false
+      # Resumo semanal/mensal às famílias: a chave (16+ caracteres
+      # aleatórios) que o workflow "Resumo às famílias" manda no cabeçalho
+      # X-Chave-Agendador. Sem ela, o resumo não sai. O mesmo valor vai no
+      # segredo AGENDADOR_CHAVE do repositório no GitHub.
+      - key: AGENDADOR_CHAVE
+        sync: false

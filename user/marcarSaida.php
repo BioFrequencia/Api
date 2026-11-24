@@ -47,7 +47,7 @@ $retiradoPor = is_string($retiradoPor) && trim($retiradoPor) !== '' ? trim($reti
 $momentoUtc = lerMomentoDoEvento($dados["dta_saida"] ?? null) ?? agoraUtc()->format('Y-m-d H:i:s');
 
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
-exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
+exigirAlunoAtivoDaEscola($conexao, $idAluno, $idEscola);
 $contexto = exigirHorarioDoRegistro($conexao, 'saida', $idAluno, $idEscola, $momentoUtc);
 
 try {

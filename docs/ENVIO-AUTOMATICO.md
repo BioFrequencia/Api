@@ -21,10 +21,11 @@ aviso é ligado ou desligado pela gestão da escola, em Configurações.
 
 | Evento do sistema | Quando dispara | Padrão | Chave da configuração |
 | --- | --- | --- | --- |
-| Entrada atrasada registrada (site, desktop, planilha ou presença do app depois da tolerância) | A cada registro | Desligado | `aviso_entrada_atrasada` |
-| Saída antecipada registrada | A cada registro | Desligado | `aviso_saida_antecipada` |
+| Entrada atrasada registrada (site, desktop, planilha ou presença do app depois da tolerância) | A cada registro | Ligado | `aviso_entrada_atrasada` |
+| Saída antecipada registrada | A cada registro | Ligado | `aviso_saida_antecipada` |
 | Aluno passou do limite de entradas atrasadas | Logo depois do registro que fez passar do limite, e de novo ao abrir Alertas | Ligado | `aviso_limite_atrasos` |
 | Aluno passou do limite de saídas antecipadas | Idem | Ligado | `aviso_limite_saidas` |
+| Resumo às famílias (quantas entradas atrasadas e saídas antecipadas no período; só para quem teve alguma) | Toda segunda-feira (semana anterior) ou todo dia 1º (mês anterior) | Semanal | `resumo_periodico` (migração 014) |
 | Mensagem escrita pela coordenação | Ao clicar em Enviar, em Enviar mensagem | Sempre | — |
 | Conta: confirmação de e-mail e "Esqueci minha senha" | Ao se cadastrar ou pedir a senha nova (só e-mail) | Sempre | — |
 
@@ -32,6 +33,24 @@ O limite é o da escola: por padrão, 20% dos dias de aula dos últimos 30 dias,
 com pelo menos 3 ocorrências. O aviso de limite sai **no máximo uma vez a cada
 7 dias** por aluno e por tipo. A trava é gravada antes do envio, para que dois
 registros ao mesmo tempo não mandem a mensagem em dobro.
+
+### 1.1 Resumo às famílias (agendador)
+
+Quem dispara o resumo é o workflow `.github/workflows/resumo-periodico.yml`.
+Ele chama `notificacao/resumoPeriodico.php` todo dia às 7h de Brasília, e a
+API decide quais escolas estão no dia. Cada resumo entra em `tb_notificacao`
+com uma chave do período antes de sair: rodar duas vezes não manda duas vezes.
+
+Para ligar:
+
+1. Gere uma chave aleatória de 16 caracteres ou mais.
+2. No Render (Environment), crie `AGENDADOR_CHAVE` com essa chave.
+3. No GitHub, em Settings > Secrets and variables > Actions, crie:
+   - `AGENDADOR_CHAVE`, com o mesmo valor;
+   - `API_URL`, com o endereço da API e a barra no fim.
+
+Sem esses valores, o workflow termina com um aviso e a API responde 503, sem
+mandar nada.
 
 O canal de cada responsável é o escolhido no cadastro dele (WhatsApp, e-mail
 ou os dois). Se faltar o contato daquele canal, a mensagem vai pelo outro.

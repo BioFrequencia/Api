@@ -43,7 +43,7 @@ try {
                (SELECT COUNT(*) FROM tb_coordenacao c WHERE c.id_escola = e.id_escola AND c.situacao = 'ativo') AS contas_ativas,
                (SELECT COUNT(*) FROM tb_coordenacao c WHERE c.id_escola = e.id_escola AND c.situacao = 'pendente') AS contas_pendentes,
                (SELECT COUNT(*) FROM tb_sala s WHERE s.id_escola = e.id_escola) AS turmas,
-               (SELECT COUNT(*) FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = e.id_escola) AS alunos
+               (SELECT COUNT(*) FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = e.id_escola AND a.situacao_aluno = 'ativo') AS alunos
         FROM tb_escola e
         WHERE $onde
         ORDER BY (SELECT COUNT(*) FROM tb_coordenacao c WHERE c.id_escola = e.id_escola) DESC, e.nome_escola

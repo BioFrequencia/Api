@@ -22,6 +22,14 @@ require_once __DIR__ . '/sessao.php';
  *   aviso_saida_antecipada     a cada saída antecipada
  *   aviso_limite_atrasos       ao passar do limite de entradas atrasadas
  *   aviso_limite_saidas        ao passar do limite de saídas antecipadas
+ * Os avisos por registro vêm ligados (24/11): a família sabe na hora de
+ * cada entrada atrasada e saída antecipada, sem ninguém clicar.
+ *
+ * Resumo periódico às famílias (migração 014):
+ *   resumo_periodico           'semanal' (padrão, toda segunda-feira, da
+ *                              semana anterior), 'mensal' (dia 1º, do mês
+ *                              anterior) ou 'desligado'
+ *
  * As duas chaves de antes continuam para os programas antigos:
  * aviso_cada_registro (algum aviso por registro ligado) e aviso_automatico
  * (algum aviso de limite ligado).
@@ -33,14 +41,18 @@ const CONFIGURACAO_PADRAO = [
     'minimo_ocorrencias_alerta' => 3,
     'janela_alerta_dias'        => 30,
     'intervalo_aviso_dias'      => 7,
-    'aviso_entrada_atrasada'    => false,
-    'aviso_saida_antecipada'    => false,
+    'aviso_entrada_atrasada'    => true,
+    'aviso_saida_antecipada'    => true,
     'aviso_limite_atrasos'      => true,
     'aviso_limite_saidas'       => true,
     'aviso_automatico'          => true,
-    'aviso_cada_registro'       => false,
+    'aviso_cada_registro'       => true,
     'atraso_pela_presenca'      => true,
+    'resumo_periodico'          => 'semanal',
 ];
+
+/** Frequências aceitas do resumo às famílias. */
+const FREQUENCIAS_RESUMO = ['desligado', 'semanal', 'mensal'];
 
 /** Cada tipo de aviso e a chave antiga que ele substituiu. */
 const AVISOS_POR_TIPO = [
@@ -73,7 +85,11 @@ function normalizarConfiguracao(?array $linha): array {
         if ($linha === null || !array_key_exists($campo, $linha) || $linha[$campo] === null) {
             continue;
         }
-        $config[$campo] = is_bool($padrao) ? valorBooleano($linha[$campo]) : (int) $linha[$campo];
+        $config[$campo] = match (true) {
+            is_bool($padrao) => valorBooleano($linha[$campo]),
+            is_string($padrao) => in_array($linha[$campo], FREQUENCIAS_RESUMO, true) ? $linha[$campo] : $padrao,
+            default => (int) $linha[$campo],
+        };
     }
     // Linha sem os tipos (banco sem a migração 011): valem as chaves antigas.
     foreach (AVISOS_POR_TIPO as $tipo => $antiga) {
@@ -128,6 +144,12 @@ function lerConfiguracao(array $dados, array $atual): array {
             $nova[$campo] = $dados[$campo];
         }
     }
+    if (array_key_exists('resumo_periodico', $dados)) {
+        if (!in_array($dados['resumo_periodico'], FREQUENCIAS_RESUMO, true)) {
+            return [$atual, "Valor inválido em resumo_periodico (use desligado, semanal ou mensal)."];
+        }
+        $nova['resumo_periodico'] = $dados['resumo_periodico'];
+    }
     return [comChavesAntigas($nova), null];
 }
 
@@ -144,8 +166,9 @@ function salvarConfiguracaoDaEscola(PDO $conexao, int $idEscola, array $config, 
         INSERT INTO tb_configuracao_escola (
             id_escola, tolerancia_minutos, limite_alerta_percentual, minimo_ocorrencias_alerta, janela_alerta_dias,
             intervalo_aviso_dias, aviso_automatico, aviso_cada_registro, atraso_pela_presenca,
-            aviso_entrada_atrasada, aviso_saida_antecipada, aviso_limite_atrasos, aviso_limite_saidas, atualizado_em, atualizado_por
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
+            aviso_entrada_atrasada, aviso_saida_antecipada, aviso_limite_atrasos, aviso_limite_saidas, resumo_periodico,
+            atualizado_em, atualizado_por
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
         ON CONFLICT (id_escola) DO UPDATE SET
             tolerancia_minutos = EXCLUDED.tolerancia_minutos,
             limite_alerta_percentual = EXCLUDED.limite_alerta_percentual,
@@ -159,6 +182,7 @@ function salvarConfiguracaoDaEscola(PDO $conexao, int $idEscola, array $config, 
             aviso_saida_antecipada = EXCLUDED.aviso_saida_antecipada,
             aviso_limite_atrasos = EXCLUDED.aviso_limite_atrasos,
             aviso_limite_saidas = EXCLUDED.aviso_limite_saidas,
+            resumo_periodico = EXCLUDED.resumo_periodico,
             atualizado_em = NOW(),
             atualizado_por = EXCLUDED.atualizado_por
     ");
@@ -177,6 +201,7 @@ function salvarConfiguracaoDaEscola(PDO $conexao, int $idEscola, array $config, 
         $texto($config['aviso_saida_antecipada']),
         $texto($config['aviso_limite_atrasos']),
         $texto($config['aviso_limite_saidas']),
+        $config['resumo_periodico'],
         $idCoordenacao,
     ]);
 }

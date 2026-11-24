@@ -17,7 +17,7 @@ function alunosDaEscolaParaOcorrencias(PDO $conexao, int $idEscola): array {
                to_char(s.horario_fim, 'HH24:MI') AS fim
         FROM tb_aluno a
         JOIN tb_sala s ON s.id_sala = a.id_sala
-        WHERE s.id_escola = ?
+        WHERE s.id_escola = ? AND a.situacao_aluno = 'ativo'
         ORDER BY s.nome_sala, a.nome_aluno, a.id_aluno
     ");
     $busca->execute([$idEscola]);

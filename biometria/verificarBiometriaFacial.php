@@ -29,7 +29,7 @@ if (!embeddingValido($amostra)) {
     enviarErro("Amostra facial inválida ou ausente.", 422);
 }
 
-exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
+exigirAlunoAtivoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
 try {
     $stmt = $conexao->prepare("SELECT id_aluno, embedding, cifrado FROM tb_biometria_facial WHERE id_aluno = ?");

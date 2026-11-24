@@ -1,0 +1,49 @@
+name: Resumo às famílias
+
+# Dispara o resumo semanal/mensal aos responsáveis (notificacao/
+# resumoPeriodico.php). Roda todo dia às 10h UTC (7h em Brasília); a API
+# decide quais escolas estão no dia (segunda-feira para o semanal, dia 1º
+# para o mensal) e não manda duas vezes o mesmo resumo.
+#
+# Precisa de dois segredos do repositório (Settings > Secrets and
+# variables > Actions):
+#   API_URL          endereço da API em produção, com a barra no fim
+#   AGENDADOR_CHAVE  o mesmo valor da variável AGENDADOR_CHAVE no Render
+# Sem eles, o job termina avisando e não chama nada.
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resumo-periodico
+  cancel-in-progress: false
+
+jobs:
+  resumo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Chamar o resumo na API
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          AGENDADOR_CHAVE: ${{ secrets.AGENDADOR_CHAVE }}
+        run: |
+          if [ -z "$API_URL" ] || [ -z "$AGENDADOR_CHAVE" ]; then
+            echo "::warning::Segredos API_URL e AGENDADOR_CHAVE não configurados: resumo não chamado."
+            exit 0
+          fi
+          # O plano gratuito do Render dorme: a primeira chamada acorda o servidor.
+          curl -s -o /dev/null --max-time 90 "${API_URL}health.php" || true
+          codigo=$(curl -s -o resposta.json -w '%{http_code}' --max-time 600 -X POST \
+            -H "X-Chave-Agendador: ${AGENDADOR_CHAVE}" "${API_URL}notificacao/resumoPeriodico.php")
+          # Só os números do resumo (sem nomes nem contatos).
+          cat resposta.json
+          echo
+          if [ "$codigo" != "200" ]; then
+            echo "::error::A API respondeu HTTP $codigo."
+            exit 1
+          fi

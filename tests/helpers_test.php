@@ -35,6 +35,8 @@ require_once __DIR__ . '/../helpers/cancelamento.php';
 require_once __DIR__ . '/../helpers/contatoEscola.php';
 require_once __DIR__ . '/../helpers/diagnosticoEnvio.php';
 require_once __DIR__ . '/../helpers/testeEnvio.php';
+require_once __DIR__ . '/../helpers/resumoPeriodico.php';
+require_once __DIR__ . '/../helpers/anoLetivo.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -203,7 +205,17 @@ afirmar('avisos por tipo vindos do banco; as chaves antigas saem deles', $porTip
 $semTipos = normalizarConfiguracao(['aviso_cada_registro' => 't', 'aviso_automatico' => 'f']);
 afirmar('banco sem a migração 011: os tipos vêm das chaves antigas', $semTipos['aviso_entrada_atrasada'] === true
     && $semTipos['aviso_saida_antecipada'] === true && $semTipos['aviso_limite_atrasos'] === false && $semTipos['aviso_limite_saidas'] === false);
-[$soEntrada] = lerConfiguracao(['aviso_entrada_atrasada' => true], CONFIGURACAO_PADRAO);
+afirmar('escola nova: aviso a cada entrada atrasada e a cada saída antecipada já vem ligado',
+    CONFIGURACAO_PADRAO['aviso_entrada_atrasada'] === true && CONFIGURACAO_PADRAO['aviso_saida_antecipada'] === true);
+afirmar('escola nova: resumo semanal às famílias', CONFIGURACAO_PADRAO['resumo_periodico'] === 'semanal');
+[$mensal] = lerConfiguracao(['resumo_periodico' => 'mensal'], CONFIGURACAO_PADRAO);
+afirmar('resumo mensal aceito', $mensal['resumo_periodico'] === 'mensal');
+afirmar('resumo com frequência estranha: recusado', lerConfiguracao(['resumo_periodico' => 'diario'], CONFIGURACAO_PADRAO)[1] !== null);
+afirmar('resumo vindo do banco com valor estranho: fica o padrão',
+    normalizarConfiguracao(['resumo_periodico' => 'anual'])['resumo_periodico'] === 'semanal'
+    && normalizarConfiguracao(['resumo_periodico' => 'desligado'])['resumo_periodico'] === 'desligado');
+$avisosPorRegistroDesligados = array_merge(CONFIGURACAO_PADRAO, ['aviso_entrada_atrasada' => false, 'aviso_saida_antecipada' => false, 'aviso_cada_registro' => false]);
+[$soEntrada] = lerConfiguracao(['aviso_entrada_atrasada' => true], $avisosPorRegistroDesligados);
 afirmar('liga só o aviso de entrada atrasada', $soEntrada['aviso_entrada_atrasada'] === true && $soEntrada['aviso_saida_antecipada'] === false
     && $soEntrada['aviso_cada_registro'] === true);
 [$programaAntigo] = lerConfiguracao(['tolerancia_minutos' => 12, 'aviso_cada_registro' => true, 'aviso_automatico' => true], $soEntrada);
@@ -912,10 +924,12 @@ $gestora = ['id_coordenacao' => 1, 'papel' => 'gestor'];
 $coordenadora = ['id_coordenacao' => 2, 'papel' => 'coordenador'];
 afirmar('cancelar: a gestão cancela qualquer registro, mesmo antigo e de outra pessoa',
     podeCancelarRegistro($gestora, ['id_coordenacao' => 2, 'criado_em' => null], $agoraT));
-afirmar('cancelar: quem registrou desfaz nos primeiros 10 minutos',
-    podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-20 11:51:00'], $agoraT));
-afirmar('cancelar: depois de 10 minutos, só a gestão',
-    !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-20 11:49:00'], $agoraT));
+afirmar('cancelar: quem registrou desfaz no mesmo dia (manhã cedo, 7h40 em Brasília)',
+    podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-20 10:40:00'], $agoraT));
+afirmar('cancelar: no dia seguinte, só a gestão',
+    !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-19 20:00:00'], $agoraT));
+afirmar('cancelar: o dia é o da escola, não o UTC (23h30 em Brasília de ontem = 02h30 UTC de hoje)',
+    !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 2, 'criado_em' => '2026-11-20 02:30:00'], $agoraT));
 afirmar('cancelar: a coordenação não cancela registro de outra pessoa',
     !podeCancelarRegistro($coordenadora, ['id_coordenacao' => 3, 'criado_em' => '2026-11-20 11:59:00'], $agoraT));
 afirmar('cancelar: registro antigo, sem a hora em que foi feito, só a gestão',
@@ -1051,6 +1065,49 @@ afirmar('teste de envio: cada resultado tem a sua explicação (sem provedor diz
     && str_contains(mensagemDoResultadoDoTeste('whatsapp', ENVIO_OK, null), 'aceitou')
     && mensagemDoResultadoDoTeste('email', ENVIO_FALHOU, 'e-mail: o provedor recusou (HTTP 403)') === 'e-mail: o provedor recusou (HTTP 403)'
     && str_contains(mensagemDoResultadoDoTeste('email', ENVIO_FALHOU, null), 'recusou'));
+
+// ---------- resumo periódico às famílias ----------
+$semana = periodoDoResumo('semanal', '2026-11-23'); // segunda-feira
+afirmar('resumo semanal na segunda: a semana anterior inteira (segunda a domingo)',
+    $semana === ['inicio' => '2026-11-16', 'fim' => '2026-11-22', 'rotulo' => 'na semana de 16/11 a 22/11', 'chave' => 'semana-2026-11-16']);
+afirmar('resumo semanal fora da segunda: não manda', periodoDoResumo('semanal', '2026-11-24') === null);
+$mes = periodoDoResumo('mensal', '2026-12-01');
+afirmar('resumo mensal no dia 1º: o mês anterior inteiro',
+    $mes === ['inicio' => '2026-11-01', 'fim' => '2026-11-30', 'rotulo' => 'em novembro de 2026', 'chave' => 'mes-2026-11']);
+afirmar('resumo mensal de janeiro cobre dezembro do ano anterior', periodoDoResumo('mensal', '2027-01-01')['inicio'] === '2026-12-01');
+afirmar('resumo mensal fora do dia 1º e resumo desligado: não manda',
+    periodoDoResumo('mensal', '2026-11-23') === null && periodoDoResumo('desligado', '2026-11-23') === null && periodoDoResumo('desligado', '2026-12-01') === null);
+afirmar('texto do resumo: só o que aconteceu, no singular e no plural',
+    mensagemDoResumo('E.E. Exemplo', 'Ana', 'na semana de 16/11 a 22/11', 2, 1)
+        === 'E.E. Exemplo: resumo de Ana na semana de 16/11 a 22/11 - 2 entradas atrasadas e 1 saída antecipada. Os detalhes de cada registro estão com a coordenação da escola.'
+    && str_contains(mensagemDoResumo('E', 'Bia', 'em novembro de 2026', 0, 3), '- 3 saídas antecipadas.')
+    && !str_contains(mensagemDoResumo('E', 'Bia', 'x', 1, 0), 'saída'));
+afirmar('agendador: chave certa passa; errada, vazia ou curta demais no servidor, não',
+    chaveDoAgendadorConfere('chave-do-agendador-teste', 'chave-do-agendador-teste')
+    && !chaveDoAgendadorConfere('chave-do-agendador-teste', 'outra-chave-qualquer-xx')
+    && !chaveDoAgendadorConfere('chave-do-agendador-teste', null)
+    && !chaveDoAgendadorConfere('curta', 'curta')
+    && !chaveDoAgendadorConfere('', ''));
+
+// ---------- encerrar o ano letivo ----------
+$turmasAno = [10 => [1, 2, 3], 20 => [4, 5], 30 => [6]];
+[$planoAno, $erroAno] = planoDoEncerramento($turmasAno,
+    [['id_sala' => 10, 'destino' => 20], ['id_sala' => 20, 'destino' => 30], ['id_sala' => 30, 'destino' => 'concluiu']],
+    [['id_aluno' => 2, 'destino' => 'manter'], ['id_aluno' => 5, 'destino' => 'transferido']]);
+afirmar('ano letivo: 1º->2º e 2º->3º ao mesmo tempo, quem repete fica e o 3º conclui',
+    $erroAno === null
+    && $planoAno['mover'] === [1 => 20, 3 => 20, 4 => 30]
+    && $planoAno['sair'] === [5 => 'transferido', 6 => 'concluiu']);
+afirmar('ano letivo: turma sem escolha fica como está', planoDoEncerramento($turmasAno, [['id_sala' => 30, 'destino' => 'concluiu']], [])[0]
+    === ['mover' => [], 'sair' => [6 => 'concluiu']]);
+afirmar('ano letivo: nada a mudar é recusado', planoDoEncerramento($turmasAno, [['id_sala' => 10, 'destino' => 'manter']], [])[1] !== null);
+afirmar('ano letivo: mandar a turma para ela mesma não muda ninguém', planoDoEncerramento($turmasAno, [['id_sala' => 10, 'destino' => 10]], [])[1] !== null);
+afirmar('ano letivo: turma de outra escola é recusada', planoDoEncerramento($turmasAno, [['id_sala' => 99, 'destino' => 'concluiu']], [])[1] !== null);
+afirmar('ano letivo: destino para turma de outra escola é recusado', planoDoEncerramento($turmasAno, [['id_sala' => 10, 'destino' => 99]], [])[1] !== null);
+afirmar('ano letivo: destino em texto estranho é recusado', planoDoEncerramento($turmasAno, [['id_sala' => 10, 'destino' => 'apagar']], [])[1] !== null);
+afirmar('ano letivo: exceção de aluno que não é ativo da escola é recusada',
+    planoDoEncerramento($turmasAno, [['id_sala' => 30, 'destino' => 'concluiu']], [['id_aluno' => 77, 'destino' => 'manter']])[1] !== null);
+afirmar('ano letivo: id em texto não vale ("10" não é a turma 10)', planoDoEncerramento($turmasAno, [['id_sala' => '10', 'destino' => 'concluiu']], [])[1] !== null);
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);

@@ -36,7 +36,7 @@ if (!in_array($metodo, ['manual', 'digital'], true)) {
 
 $idAluno = (int) $idAluno;
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
-exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
+exigirAlunoAtivoDaEscola($conexao, $idAluno, $idEscola);
 
 try {
     $presenca = registrarPresenca($conexao, $idAluno, $idCoordenacao, $metodo);

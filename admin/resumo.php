@@ -32,7 +32,7 @@ try {
         // Pendentes que já confirmaram o e-mail: as que a equipe já pode aprovar.
         "contas_pendentes"      => $numero("SELECT COUNT(*) FROM tb_coordenacao WHERE situacao = 'pendente' AND email_verificado_em IS NOT NULL"),
         "contas_sem_email"      => $numero("SELECT COUNT(*) FROM tb_coordenacao WHERE situacao = 'pendente' AND email_verificado_em IS NULL"),
-        "alunos"                => $numero("SELECT COUNT(*) FROM tb_aluno"),
+        "alunos"                => $numero("SELECT COUNT(*) FROM tb_aluno WHERE situacao_aluno = 'ativo'"),
         "turmas"                => $numero("SELECT COUNT(*) FROM tb_sala"),
         "atrasos_mes"           => $numero("SELECT COUNT(*) FROM tb_atraso WHERE dta_atraso >= ? AND cancelado_em IS NULL", [$inicioMes]),
         "saidas_mes"            => $numero("SELECT COUNT(*) FROM tb_saida_antecipada WHERE dta_saida >= ? AND cancelado_em IS NULL", [$inicioMes]),

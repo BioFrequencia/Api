@@ -63,6 +63,7 @@ try {
     // "Biometria" da página do aluno no site.
     $stmtAluno = $conexao->prepare("
         SELECT al.id_aluno, al.nome_aluno, s.id_sala, s.nome_sala, s.periodo_sala,
+               al.situacao_aluno, to_char(al.saiu_em AT TIME ZONE 'UTC' AT TIME ZONE '" . FUSO_ESCOLA . "', 'YYYY-MM-DD') AS saiu_em,
                to_char(s.horario_inicio, 'HH24:MI') AS horario_inicio, to_char(s.horario_fim, 'HH24:MI') AS horario_fim,
                c.nome_responsavel AS consentimento_responsavel, c.registrado_em AS consentimento_em,
                bf.atualizado_em AS facial_atualizada_em, bf.amostras AS facial_amostras,
