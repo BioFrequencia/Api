@@ -38,7 +38,24 @@ ou os dois). Se faltar o contato daquele canal, a mensagem vai pelo outro.
 Cada mensagem leva no fim o contato da escola do aluno, e o e-mail usa esse
 endereço como "responder para".
 
-## 2. E-mail: Resend
+## 2. E-mail
+
+Há dois provedores prontos. O sistema escolhe pelo endereço em
+`EMAIL_API_URL`:
+
+- **Resend**: precisa de um domínio próprio verificado (SPF e DKIM). Sem
+  ele, só entrega no e-mail do dono da conta.
+- **Brevo**: entrega a qualquer pessoa com um remetente verificado, sem
+  domínio próprio. É o caminho quando o projeto não tem domínio.
+
+> **Erro comum: HTTP 307.** `https://resend.com/emails` é a página do
+> **painel** que lista os e-mails enviados, não a API. Ela redireciona para
+> o login, e o envio falhava com "o provedor recusou (HTTP 307)". O endereço
+> da API é `https://api.resend.com/emails`. O sistema já troca o endereço
+> do painel pelo da API sozinho, e o diagnóstico avisa para acertar na
+> Render.
+
+### 2.1 Resend (com domínio próprio)
 
 1. Crie a conta em [resend.com](https://resend.com). O plano gratuito
    permite 3.000 e-mails por mês e 100 por dia.
@@ -55,6 +72,29 @@ endereço como "responder para".
    | `EMAIL_API_URL` | `https://api.resend.com/emails` |
    | `EMAIL_API_TOKEN` | a chave criada no passo 3 (`re_...`) |
    | `EMAIL_REMETENTE` | `BioFrequência <nao-responda@SEU-DOMINIO>` |
+
+### 2.2 Brevo (sem domínio próprio)
+
+1. Crie a conta em [brevo.com](https://www.brevo.com). O plano gratuito
+   permite 300 e-mails por dia. Uma conta nova pode precisar completar o
+   perfil antes de liberar o envio.
+2. Em **Senders, Domains & Dedicated IPs › Senders**, cadastre o e-mail que
+   vai aparecer como remetente (por exemplo, o e-mail da coordenação) e
+   confirme o código que a Brevo manda para ele.
+3. Em **SMTP & API › API Keys**, gere uma chave de API (`xkeysib-...`).
+4. No Render, em **Environment** do serviço da API:
+
+   | Variável | Valor |
+   | --- | --- |
+   | `EMAIL_API_URL` | `https://api.brevo.com/v3/smtp/email` |
+   | `EMAIL_API_TOKEN` | a chave criada no passo 3 (`xkeysib-...`) |
+   | `EMAIL_REMETENTE` | `BioFrequência <o-e-mail-verificado-no-passo-2>` |
+
+Com um remetente de e-mail gratuito (Gmail, Outlook), os provedores de
+quem recebe podem mandar a mensagem para o spam. Peça para marcar "não é
+spam" na primeira vez; com um domínio próprio verificado isso não acontece.
+
+### 2.3 Outros
 
 Outro provedor só funciona se tiver uma API HTTP no mesmo formato do Resend
 (`from`, `to`, `subject`, `text`, `reply_to`, com autorização `Bearer`). A
@@ -123,8 +163,9 @@ contratar.
 1. Entre no site com uma conta da equipe do sistema (`ADMIN_EMAILS`) e abra
    **Administração › Visão geral**. O diagnóstico do envio mostra:
    - o que está configurado;
-   - os erros de configuração mais comuns (domínio de teste do Resend,
-     endereço da Meta fora do formato, WhatsApp sem modelo);
+   - os erros de configuração mais comuns (endereço do painel do Resend no
+     lugar do da API, domínio de teste do Resend, endereço da Meta fora do
+     formato, WhatsApp sem modelo);
    - o último erro de cada canal.
 
    Nenhum segredo aparece no diagnóstico.

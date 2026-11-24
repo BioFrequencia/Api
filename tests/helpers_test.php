@@ -851,6 +851,50 @@ afirmar('envio de e-mail: endereço base do Resend ganha /emails; outros não mu
     && enderecoDeEnvioDeEmail('https://api.resend.com/') === 'https://api.resend.com/emails'
     && enderecoDeEnvioDeEmail('https://api.resend.com/emails') === 'https://api.resend.com/emails'
     && enderecoDeEnvioDeEmail('http://provedores-falsos:8099/email') === 'http://provedores-falsos:8099/email');
+afirmar('envio de e-mail: o endereço do PAINEL do Resend (redireciona para o login, HTTP 307) vira o da API',
+    enderecoDeEnvioDeEmail('https://resend.com/emails') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail(' resend.com/emails ') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('https://www.resend.com/emails/') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('http://api.resend.com/emails') === 'https://api.resend.com/emails'
+    && enderecoDeEnvioDeEmail('api.resend.com') === 'https://api.resend.com/emails');
+afirmar('envio de e-mail: endereço que só parece do Resend não é trocado', enderecoDeEnvioDeEmail('https://naoresend.com/emails') === 'https://naoresend.com/emails');
+afirmar('envio de e-mail: Brevo (e o nome antigo, Sendinblue) pelo endereço',
+    provedorDeEmail('https://api.brevo.com/v3/smtp/email') === 'brevo' && provedorDeEmail('app.brevo.com') === 'brevo'
+    && provedorDeEmail('https://api.sendinblue.com/v3/smtp/email') === 'brevo'
+    && provedorDeEmail('https://api.resend.com/emails') === 'resend' && provedorDeEmail('http://provedores-falsos:8099/email') === 'resend'
+    && enderecoDeEnvioDeEmail('https://api.brevo.com') === 'https://api.brevo.com/v3/smtp/email'
+    && enderecoDeEnvioDeEmail('https://app.brevo.com/settings/keys/api') === 'https://api.brevo.com/v3/smtp/email');
+afirmar('envio de e-mail: nome e e-mail do remetente',
+    partesDoRemetente('BioFrequência <nao-responda@escola.br>') === ['nome' => 'BioFrequência', 'email' => 'nao-responda@escola.br']
+    && partesDoRemetente(' "Escola A" <a@b.br> ') === ['nome' => 'Escola A', 'email' => 'a@b.br']
+    && partesDoRemetente('a@b.br') === ['nome' => null, 'email' => 'a@b.br'] && partesDoRemetente('sem e-mail') === null);
+$pedidoBrevo = pedidoDeEmail('brevo', 'chave-teste', 'BioFrequência <nao-responda@escola.br>', 'mae@familia.test', 'Assunto', 'Texto', '<p>Texto</p>', 'contato@escola.br', 'chave-1');
+afirmar('envio de e-mail: pedido no formato da Brevo (sender, to, textContent, replyTo e api-key, sem Bearer)',
+    $pedidoBrevo['corpo'] === [
+        'sender' => ['name' => 'BioFrequência', 'email' => 'nao-responda@escola.br'],
+        'to' => [['email' => 'mae@familia.test']],
+        'subject' => 'Assunto',
+        'textContent' => 'Texto',
+        'htmlContent' => '<p>Texto</p>',
+        'replyTo' => ['email' => 'contato@escola.br'],
+    ] && in_array('api-key: chave-teste', $pedidoBrevo['cabecalhos'], true)
+    && !array_filter($pedidoBrevo['cabecalhos'], fn($c) => str_starts_with($c, 'Authorization')), $pedidoBrevo);
+$pedidoResend = pedidoDeEmail('resend', 'chave-teste', 'X <a@b.br>', 'mae@familia.test', 'Assunto', 'Texto', null, ' ', 'chave-1');
+afirmar('envio de e-mail: pedido no formato do Resend (Bearer e chave de idempotência; "responder para" em branco fica de fora)',
+    $pedidoResend['corpo'] === ['from' => 'X <a@b.br>', 'to' => ['mae@familia.test'], 'subject' => 'Assunto', 'text' => 'Texto']
+    && $pedidoResend['cabecalhos'] === ['Authorization: Bearer chave-teste', 'Idempotency-Key: chave-1'], $pedidoResend);
+$motivoRedireciona = motivoDaFalhaDoProvedor(307, '<html>Redirecting to /login</html>', 'e-mail');
+afirmar('motivo da falha: redirecionamento diz que o endereço não é o da API', str_contains($motivoRedireciona, 'HTTP 307')
+    && str_contains($motivoRedireciona, 'redirecionou') && str_contains($motivoRedireciona, 'api.resend.com/emails'), $motivoRedireciona);
+$textosPainel = implode(' | ', array_column(avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://resend.com/emails', 'EMAIL_API_TOKEN' => 't',
+    'EMAIL_REMETENTE' => 'X <nao-responda@escola.br>']), 'texto'));
+afirmar('diagnóstico: EMAIL_API_URL no painel do Resend é apontado (o motivo do HTTP 307)', str_contains($textosPainel, 'painel do Resend')
+    && str_contains($textosPainel, 'HTTP 307') && str_contains($textosPainel, 'https://api.resend.com/emails'), $textosPainel);
+$avisosBrevo = avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://api.brevo.com/v3/smtp/email', 'EMAIL_API_TOKEN' => 't',
+    'EMAIL_REMETENTE' => 'Escola <coordenacao@gmail.com>']);
+afirmar('diagnóstico: Brevo lembra de verificar o remetente e não acusa erro de e-mail',
+    !array_filter($avisosBrevo, fn($a) => $a['canal'] === 'email' && $a['nivel'] === 'erro')
+    && str_contains(implode(' ', array_column($avisosBrevo, 'texto')), 'verificado na Brevo'), $avisosBrevo);
 afirmar('diagnóstico: domínio do remetente', dominioDoRemetente('BioFrequência <nao-responda@escola.sp.gov.br>') === 'escola.sp.gov.br'
     && dominioDoRemetente('x@Resend.dev') === 'resend.dev' && dominioDoRemetente('sem endereço') === null);
 $avisosEnvio = avisosDaConfiguracaoDeEnvio(['EMAIL_API_URL' => 'https://api.resend.com', 'EMAIL_API_TOKEN' => 't', 'EMAIL_REMETENTE' => 'X <a@resend.dev>']);

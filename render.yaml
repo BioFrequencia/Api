@@ -62,9 +62,12 @@ services:
       # provedores: docs/ENVIO-AUTOMATICO.md.
       - key: WHATSAPP_TEMPLATE_IDIOMA
         sync: false
-      # E-mail (formato da API do Resend): leva o link de confirmação de
+      # E-mail (Resend ou Brevo): leva o link de confirmação de
       # quem se cadastra e os avisos por e-mail. Sem ele, a equipe do
       # sistema confirma o e-mail das contas novas à mão, na tela /admin.
+      # EMAIL_API_URL: https://api.resend.com/emails (Resend, com domínio
+      # verificado) ou https://api.brevo.com/v3/smtp/email (Brevo, só com
+      # remetente verificado). Ver docs/ENVIO-AUTOMATICO.md.
       - key: EMAIL_API_URL
         sync: false
       - key: EMAIL_API_TOKEN

@@ -8,10 +8,13 @@ require_once __DIR__ . '/provedores.php';
  *
  * Avisos que ele sabe dar:
  *  - e-mail sem provedor: nada sai sozinho, as mensagens ficam na fila;
- *  - EMAIL_API_URL no endereço base do Resend (sem /emails): corrigido
+ *  - EMAIL_API_URL que não é o endereço de envio (o base, o do painel
+ *    resend.com/emails - que dava HTTP 307 - ou sem https://): corrigido
  *    sozinho (helpers/provedores.php), mas vale acertar na Render;
  *  - remetente @resend.dev: o modo de teste do Resend só entrega no e-mail
- *    do dono da conta do Resend - para os responsáveis, falha;
+ *    do dono da conta do Resend - para os responsáveis, falha (a saída sem
+ *    domínio próprio é a Brevo, com um remetente verificado);
+ *  - Brevo: o remetente precisa estar verificado na conta da Brevo;
  *  - domínio do remetente não verificado no Resend (consulta opcional, só
  *    leitura, GET /domains - nenhuma mensagem é enviada);
  *  - WhatsApp sem modelo aprovado (WHATSAPP_TEMPLATE): a Meta só entrega
@@ -67,17 +70,26 @@ function avisosDaConfiguracaoDeEnvio(array $ambiente): array {
     }
     if ($emailHttp) {
         $url = (string) $ambiente['EMAIL_API_URL'];
-        if (enderecoDeEnvioDeEmail($url) !== trim($url)) {
+        $provedor = provedorDeEmail($url);
+        $envio = enderecoDeEnvioDeEmail($url);
+        if ($envio !== trim($url)) {
+            $painel = hostDoEndereco($url) === 'resend.com' || hostDoEndereco($url) === 'www.resend.com';
             $avisos[] = ['canal' => 'email', 'nivel' => 'aviso',
-                'texto' => 'EMAIL_API_URL está no endereço base do Resend; o envio usa /emails automaticamente, mas o certo é https://api.resend.com/emails.'];
+                'texto' => ($painel
+                    ? 'EMAIL_API_URL aponta para o painel do Resend (resend.com), não para a API: ele redireciona para o login e o envio falhava com HTTP 307. '
+                    : 'EMAIL_API_URL não é o endereço de envio da API. ')
+                    . "O sistema já usa $envio, mas acerte também na Render."];
         }
         $dominio = dominioDoRemetente((string) $ambiente['EMAIL_REMETENTE']);
         if ($dominio === null) {
             $avisos[] = ['canal' => 'email', 'nivel' => 'erro',
                 'texto' => 'EMAIL_REMETENTE não tem um endereço de e-mail legível (use "Nome <nao-responda@seu-dominio>").'];
-        } elseif ($dominio === 'resend.dev') {
+        } elseif ($provedor === 'resend' && $dominio === 'resend.dev') {
             $avisos[] = ['canal' => 'email', 'nivel' => 'erro',
-                'texto' => 'O remetente é do domínio de teste do Resend (resend.dev): ele só entrega no e-mail do dono da conta do Resend. Para os responsáveis, verifique um domínio próprio no Resend e use-o em EMAIL_REMETENTE.'];
+                'texto' => 'O remetente é do domínio de teste do Resend (resend.dev): ele só entrega no e-mail do dono da conta do Resend. Para os responsáveis, verifique um domínio próprio no Resend e use-o em EMAIL_REMETENTE, ou use a Brevo, que só pede um remetente verificado (docs/ENVIO-AUTOMATICO.md).'];
+        } elseif ($provedor === 'brevo') {
+            $avisos[] = ['canal' => 'email', 'nivel' => 'info',
+                'texto' => "E-mail pela Brevo: o remetente ($dominio) precisa estar verificado na Brevo, em Senders, Domains & Dedicated IPs > Senders. Sem isso, a Brevo recusa o envio."];
         }
     }
 
@@ -106,11 +118,10 @@ function avisosDaConfiguracaoDeEnvio(array $ambiente): array {
  *   situacao: verificado | nao_verificado | nao_encontrado | sem_permissao | indisponivel | nao_se_aplica
  */
 function verificarDominioNoResend(): array {
-    $url = (string) getenv('EMAIL_API_URL');
-    $token = (string) getenv('EMAIL_API_TOKEN');
+    $url = enderecoDeEnvioDeEmail((string) getenv('EMAIL_API_URL'));
+    $token = trim((string) getenv('EMAIL_API_TOKEN'));
     $dominio = dominioDoRemetente((string) getenv('EMAIL_REMETENTE'));
-    $partes = parse_url(trim($url));
-    if (!is_array($partes) || ($partes['host'] ?? '') !== 'api.resend.com' || $token === '' || $dominio === null) {
+    if (hostDoEndereco($url) !== 'api.resend.com' || $token === '' || $dominio === null) {
         return ['situacao' => 'nao_se_aplica', 'texto' => 'A consulta do domínio só funciona com o Resend configurado.'];
     }
     $ch = curl_init('https://api.resend.com/domains');
