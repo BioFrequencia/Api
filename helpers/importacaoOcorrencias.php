@@ -84,11 +84,6 @@ function lerCodigoDoAluno($valor): int|false|null {
     return false;
 }
 
-/** Nome de turma só com letras e números, sem º/ª ("4º A" = "4A" = "4 a"), para achar a mesma turma escrita de outro jeito. */
-function chaveCompactaDeTurma(string $turma): string {
-    return preg_replace('/[^a-z0-9]/', '', normalizarTexto(str_replace(['º', 'ª', '°'], '', $turma))) ?? '';
-}
-
 /**
  * Um aluno da turma com o nome quase igual (até 2 letras de diferença),
  * para um erro de digitação não virar um aluno novo. null se não houver.

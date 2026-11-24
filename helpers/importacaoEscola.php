@@ -33,10 +33,13 @@ function dadosDaEscolaParaImportacao(PDO $conexao, int $idEscola, array $abas): 
     ");
     $alunos->execute([$idEscola]);
     $escola['incompletos'] = [];
+    $escola['por_turma'] = [];
     foreach ($alunos->fetchAll(PDO::FETCH_ASSOC) as $aluno) {
+        $naTurma = chaveDeNome($aluno['nome_aluno']) . '|' . chaveCompactaDeTurma($aluno['nome_sala']);
+        $escola['por_turma'][$naTurma] = true;
         if ($aluno['dta_nasc_aluno'] === null) {
-            // Cadastrado sem data de nascimento (pela planilha de entradas e saídas): esta importação completa.
-            $escola['incompletos'][chaveDeNome($aluno['nome_aluno']) . '|' . chaveDeNome($aluno['nome_sala'])] = (int) $aluno['id_aluno'];
+            // Cadastrado sem data de nascimento: esta importação completa (quando a linha traz a data).
+            $escola['incompletos'][$naTurma] = (int) $aluno['id_aluno'];
             continue;
         }
         $escola['alunos'][chaveDeNome($aluno['nome_aluno']) . '|' . $aluno['dta_nasc_aluno']] = true;
