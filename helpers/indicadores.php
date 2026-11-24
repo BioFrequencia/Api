@@ -146,15 +146,18 @@ function diaSeguinte(string $data): string {
 
 /**
  * Alunos da escola (ou de uma turma, ou um só) com a data local do
- * cadastro.
+ * cadastro. Nas listas, só os ativos (quem saiu da escola - migração 014 -
+ * não entra em alerta nem no painel); pedindo um aluno pelo id, vem mesmo
+ * que tenha saído (a ficha dele continua aberta).
  */
 function alunosDaEscola(PDO $conexao, int $idEscola, ?int $idSala = null, ?int $idAluno = null): array {
+    $soAtivos = $idAluno === null ? "AND a.situacao_aluno = 'ativo'" : '';
     $stmt = $conexao->prepare("
         SELECT a.id_aluno, a.nome_aluno, s.id_sala, s.nome_sala, s.periodo_sala,
                " . sqlDataNaEscola('a.criado_em') . "::text AS cadastrado_em
         FROM tb_aluno a
         JOIN tb_sala s ON s.id_sala = a.id_sala
-        WHERE s.id_escola = ?
+        WHERE s.id_escola = ? $soAtivos
           AND (?::int IS NULL OR s.id_sala = ?::int)
           AND (?::int IS NULL OR a.id_aluno = ?::int)
         ORDER BY a.nome_aluno

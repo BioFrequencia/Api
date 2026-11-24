@@ -286,7 +286,7 @@ function amostrasFaciaisDaEscola(PDO $conexao, int $idEscola, string $chave, ?in
         FROM tb_biometria_facial bf
         JOIN tb_aluno a ON a.id_aluno = bf.id_aluno
         JOIN tb_sala  s ON s.id_sala  = a.id_sala
-        WHERE s.id_escola = ?
+        WHERE s.id_escola = ? AND a.situacao_aluno = 'ativo'
     ");
     $stmt->bindValue(1, $idEscola);
     $stmt->execute();

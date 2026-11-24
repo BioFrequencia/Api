@@ -24,7 +24,7 @@ try {
         FROM tb_biometria_digital bd
         JOIN tb_aluno a ON a.id_aluno = bd.id_aluno
         JOIN tb_sala  s ON s.id_sala  = a.id_sala
-        WHERE s.id_escola = ?
+        WHERE s.id_escola = ? AND a.situacao_aluno = 'ativo'
     ");
     $stmt->bindValue(1, $idEscola);
     $stmt->execute();

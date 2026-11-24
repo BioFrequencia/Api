@@ -30,7 +30,7 @@ try {
         LEFT JOIN tb_biometria_facial bf ON bf.id_aluno = a.id_aluno
         LEFT JOIN tb_consentimento_biometria c ON c.id_aluno = a.id_aluno
         LEFT JOIN tb_presenca p ON p.id_aluno = a.id_aluno AND p.dia_letivo = ? AND p.cancelado_em IS NULL
-        WHERE s.id_escola = ?
+        WHERE s.id_escola = ? AND a.situacao_aluno = 'ativo'
         ORDER BY a.nome_aluno
     ");
     $stmt->bindValue(1, hojeNaEscola());

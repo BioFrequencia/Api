@@ -43,7 +43,7 @@ if ($observacao !== null && !is_string($observacao)) {
 $momentoUtc = lerMomentoDoEvento($dados["dta_atraso"] ?? null) ?? agoraUtc()->format('Y-m-d H:i:s');
 
 $idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
-exigirAlunoDaEscola($conexao, $idAluno, $idEscola);
+exigirAlunoAtivoDaEscola($conexao, $idAluno, $idEscola);
 $contexto = exigirHorarioDoRegistro($conexao, 'atraso', $idAluno, $idEscola, $momentoUtc);
 
 try {

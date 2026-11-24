@@ -29,7 +29,7 @@ function dadosDaEscolaParaImportacao(PDO $conexao, int $idEscola, array $abas): 
     }
 
     $alunos = $conexao->prepare("
-        SELECT a.id_aluno, a.nome_aluno, a.dta_nasc_aluno, s.nome_sala FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ?
+        SELECT a.id_aluno, a.nome_aluno, a.dta_nasc_aluno, s.nome_sala FROM tb_aluno a JOIN tb_sala s ON s.id_sala = a.id_sala WHERE s.id_escola = ? AND a.situacao_aluno = 'ativo'
     ");
     $alunos->execute([$idEscola]);
     $escola['incompletos'] = [];

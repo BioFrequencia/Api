@@ -33,6 +33,9 @@ x-variaveis: &variaveis
   # equipe2 não tem conta: os testes conferem que ninguém vira equipe do
   # sistema trocando o próprio e-mail para ele sem confirmar.
   ADMIN_EMAILS: admin@escola.test,equipe2@escola.test
+  AGENDADOR_CHAVE: chave-do-agendador-somente-teste
+  # Só nos testes: o resumo aceita o dia no corpo (ver notificacao/resumoPeriodico.php).
+  AGENDADOR_ACEITA_DATA: "1"
 
 services:
   db:

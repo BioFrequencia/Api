@@ -25,6 +25,7 @@ const OBJETOS_POR_MIGRACAO = [
               'tb_presenca.cancelado_em', 'tb_escola.email_contato', 'tb_notificacao.erro_envio', 'tb_notificacao.confirmado_por',
               'tb_identificacao_biometrica.situacao'],
     '013' => ['tb_aluno.dta_nasc_aluno:nulo'],
+    '014' => ['tb_aluno.situacao_aluno', 'tb_configuracao_escola.resumo_periodico'],
 ];
 
 /** Lista das migrações (números) com algum objeto ausente no banco. */

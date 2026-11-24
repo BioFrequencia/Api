@@ -15,17 +15,16 @@ require_once __DIR__ . '/registroEvento.php';
  * Quem pode:
  *  - a gestão da escola: qualquer registro da escola, a qualquer momento;
  *    só ela restaura um cancelado;
- *  - quem fez o registro: só nos primeiros MINUTOS_PARA_O_AUTOR_CANCELAR,
- *    para desfazer na hora um engano (ex.: o reconhecimento facial apontou
- *    outro aluno e quem está no tablet percebeu). Registros feitos antes da
- *    migração 012 não têm a hora em que foram feitos: só a gestão.
+ *  - quem fez o registro: até o fim do dia em que registrou (fuso da
+ *    escola), para desfazer um engano - marcou o aluno errado, apertou sem
+ *    querer, o reconhecimento facial apontou outro aluno. Registros feitos
+ *    antes da migração 012 não têm a hora em que foram feitos: só a gestão.
  *
  * Cancelar uma presença cancela junto a entrada atrasada que ela gerou
  * (origem 'presenca', mesmo aluno e mesmo dia). Avisos que já foram para a
  * família não voltam.
  */
 
-const MINUTOS_PARA_O_AUTOR_CANCELAR = 10;
 const MOTIVO_CANCELAMENTO_MAXIMO = 200;
 
 const REGISTROS_CANCELAVEIS = [
@@ -56,7 +55,8 @@ function podeCancelarRegistro(array $conta, array $registro, DateTimeImmutable $
     } catch (Exception) {
         return false;
     }
-    return $agoraUtc <= $criadoEm->modify('+' . MINUTOS_PARA_O_AUTOR_CANCELAR . ' minutes');
+    // O mesmo dia na escola (não 24 horas): o engano de hoje se desfaz hoje.
+    return $criadoEm->setTimezone(fusoEscola())->format('Y-m-d') === $agoraUtc->setTimezone(fusoEscola())->format('Y-m-d');
 }
 
 /**
@@ -178,7 +178,7 @@ function cancelarRegistro(PDO $conexao, array $conta, string $tipo, int $id, ?st
         if (!podeCancelarRegistro($conta, $registro, agoraUtc())) {
             $conexao->rollBack();
             return ['ok' => false, 'status' => 403, 'erro' => (int) $registro['id_coordenacao'] === $idCoordenacao
-                ? 'O prazo para você desfazer este registro (' . MINUTOS_PARA_O_AUTOR_CANCELAR . ' minutos) já passou. Peça à gestão da escola.'
+                ? 'O prazo para você desfazer este registro (o dia em que ele foi feito) já passou. Peça à gestão da escola.'
                 : 'Só a gestão da escola cancela registros feitos por outra pessoa.'];
         }
         marcarCancelado($conexao, $idEscola, $tipo, $registro, $motivo, $idCoordenacao);

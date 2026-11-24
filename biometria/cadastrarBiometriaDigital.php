@@ -47,7 +47,7 @@ if (!campoPreenchido($formato) || mb_strlen($formato) > 60) {
 }
 
 $idAluno = (int) $idAluno;
-exigirAlunoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
+exigirAlunoAtivoDaEscola($conexao, $idAluno, escolaDaCoordenacao($conexao, $idCoordenacao));
 
 try {
     $consentimento = $conexao->prepare("SELECT 1 FROM tb_consentimento_biometria WHERE id_aluno = ?");
