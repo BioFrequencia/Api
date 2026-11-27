@@ -2,6 +2,8 @@
 # Monta config/config.php a partir das variáveis de ambiente e ajusta a
 # porta do Apache antes de subir o servidor.
 #
+# Depois aplica as migrações novas (database/migrar.php).
+#
 # Por que gerar o arquivo em vez de ler getenv() dentro do código: todo
 # o projeto (e o XAMPP da escola) usa as constantes DB_HOST/DB_NAME/...
 # definidas em config/config.php. Gerar o arquivo aqui mantém um único
@@ -44,6 +46,11 @@ fi
 
 chown www-data:www-data /var/www/html/config/config.php
 chmod 640 /var/www/html/config/config.php
+
+# Migrações a partir da 015 (helpers/migracoes.php): aplica as que faltam.
+# Se uma falhar, o "set -e" encerra aqui e o container não sobe - o Render
+# mantém a versão anterior no ar. Banco fora do ar não impede a subida.
+php /var/www/html/database/migrar.php
 
 # Catálogo de escolas (helpers/catalogoEscolas.php): só importa quando a
 # versão do arquivo muda. Se falhar (banco fora do ar, migração 008 ainda

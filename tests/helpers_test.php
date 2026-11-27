@@ -37,6 +37,7 @@ require_once __DIR__ . '/../helpers/diagnosticoEnvio.php';
 require_once __DIR__ . '/../helpers/testeEnvio.php';
 require_once __DIR__ . '/../helpers/resumoPeriodico.php';
 require_once __DIR__ . '/../helpers/anoLetivo.php';
+require_once __DIR__ . '/../helpers/migracoes.php';
 
 $totalTestes = 0;
 $falhas = [];
@@ -1108,6 +1109,27 @@ afirmar('ano letivo: destino em texto estranho é recusado', planoDoEncerramento
 afirmar('ano letivo: exceção de aluno que não é ativo da escola é recusada',
     planoDoEncerramento($turmasAno, [['id_sala' => 30, 'destino' => 'concluiu']], [['id_aluno' => 77, 'destino' => 'manter']])[1] !== null);
 afirmar('ano letivo: id em texto não vale ("10" não é a turma 10)', planoDoEncerramento($turmasAno, [['id_sala' => '10', 'destino' => 'concluiu']], [])[1] !== null);
+
+// ---------- migrações automáticas ----------
+$migracoesReais = migracoesDoDiretorio(__DIR__ . '/../database/migrations');
+afirmar('migrações: lê os arquivos NNN_nome.sql em ordem', array_slice(array_keys($migracoesReais), 0, 3) === [1, 2, 3]
+    && array_keys($migracoesReais) === array_values(array_unique(array_keys($migracoesReais))));
+afirmar('migrações: a 014 existe e é manual', isset($migracoesReais[14]) && 14 < MIGRACAO_AUTOMATICA_DESDE);
+$exemplo = [14 => 'a/014_x.sql', 16 => 'a/016_z.sql', 15 => 'a/015_y.sql'];
+afirmar('migrações: só as a partir da 015 que faltam, em ordem',
+    array_keys(migracoesParaAplicar($exemplo, [])) === [15, 16]);
+afirmar('migrações: as registradas ficam de fora', array_keys(migracoesParaAplicar($exemplo, [15])) === [16]);
+afirmar('migrações: registro em texto também vale', migracoesParaAplicar($exemplo, ['15', '16']) === []);
+afirmar('migrações: BEGIN no arquivo é recusado', problemaNaMigracaoAutomatica("BEGIN;\nALTER TABLE x ADD COLUMN y INT;\nCOMMIT;") !== null);
+afirmar('migrações: BEGIN só em comentário não conta', problemaNaMigracaoAutomatica("-- BEGIN; aqui não\nALTER TABLE x ADD COLUMN y INT;") === null);
+afirmar('migrações: BEGIN dentro de DO $$ não conta', problemaNaMigracaoAutomatica("DO \$\$ BEGIN\n  PERFORM 1;\nEND \$\$;") === null);
+afirmar('migrações: índice CONCURRENTLY é recusado', problemaNaMigracaoAutomatica('CREATE INDEX CONCURRENTLY ix ON t (c);') !== null);
+foreach ($migracoesReais as $numeroMigracao => $arquivoMigracao) {
+    if ($numeroMigracao >= MIGRACAO_AUTOMATICA_DESDE) {
+        afirmar('migração automática ' . basename($arquivoMigracao) . ' segue as regras',
+            problemaNaMigracaoAutomatica((string) file_get_contents($arquivoMigracao)) === null);
+    }
+}
 
 // ---------- resultado ----------
 $passou = $totalTestes - count($falhas);
