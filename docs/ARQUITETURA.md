@@ -207,7 +207,13 @@ calendário da escola.
 ## Saúde em produção
 
 `GET /health.php` responde 200 só com banco acessível **e** schema com
-as migrações que o código usa; senão 503 dizendo quais faltam. O Render
+as migrações que o código usa; senão 503 dizendo quais faltam.
+
+As migrações a partir da 015 são aplicadas pela própria API ao subir o
+container (`database/migrar.php`, registro em `tb_migracao`): uma
+migração que falha impede o container de subir, e a versão anterior
+continua no ar. As 001 a 014 continuam no `database/migracao-completa.sql`
+(banco novo: rode esse script uma vez; o resto vem sozinho). O Render
 usa esse endereço como health check: um deploy de código mais novo que o
 banco não entra no ar, e só publica depois do CI passar
 (`autoDeployTrigger: checksPass`).

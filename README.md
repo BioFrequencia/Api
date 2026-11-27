@@ -78,6 +78,16 @@ tinha nenhuma das duas**. Para saber se falta alguma migração, abra
 `/health.php`: ele responde 503 com `"schema": "desatualizado"` e a
 lista em `"faltando"`.
 
+**A partir da migração 015 a própria API aplica o que falta**, a cada
+início do container (`database/migrar.php`, chamado pelo
+`docker-entrypoint.sh`): cada migração numa transação, registrada em
+`tb_migracao`. Se uma falhar, nada dela fica no banco e o container não
+sobe - o Render mantém a versão anterior no ar. Ou seja: **o merge na
+`master` é o momento em que o banco muda**. `php database/migrar.php
+--listar` mostra o que falta sem aplicar. Regras das migrações
+automáticas (sem `BEGIN`/`COMMIT`, idempotentes, sem `CONCURRENTLY`) em
+`helpers/migracoes.php`; os testes unitários conferem cada arquivo.
+
 Alternativamente, os arquivos individuais em `database/migrations/`
 (`001_schema_base.sql` reproduz o schema original de produção, com as
 mesmas restrições CHECK/UNIQUE - não precisa rodar lá; `002`, `003`,
