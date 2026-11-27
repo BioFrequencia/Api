@@ -49,13 +49,13 @@ try {
 if ($aluno === null) {
     enviarErro("Aluno não encontrado nesta escola.", 404);
 }
-$montado = montarEnvios($aluno, $aluno['responsaveis'], $destinos, $texto, $escola, hojeNaEscola(), provedoresConfigurados());
+$montado = montarEnvios($aluno, $aluno['responsaveis'], $destinos, $texto, $escola, hojeNaEscola(), provedoresConfigurados($escola));
 if ($montado['erros'] !== []) {
     enviarErro(implode(' ', $montado['erros']), 422, null, ['erros' => $montado['erros']]);
 }
 
 try {
-    $saida = registrarEEntregar($conexao, $aluno['id'], (int) $idCoordenacao, $dados['chave'], $montado['envios'], $aluno['responsaveis']);
+    $saida = registrarEEntregar($conexao, $aluno['id'], (int) $idCoordenacao, $dados['chave'], $montado['envios'], $aluno['responsaveis'], $escola);
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao enviar a mensagem. Nada foi enviado.", 500, $erro);
 }

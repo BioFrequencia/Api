@@ -27,6 +27,9 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * ('sistema') de "a coordenação avisou por fora e marcou como enviada"
  * ('manual', com confirmado_por e confirmado_em). Antes as duas viravam
  * "enviada" e a tela não tinha como saber qual foi.
+ *
+ * Desde a migração 015: remetente_envio (por onde saiu: o e-mail ou o número
+ * da própria escola, o remetente do sistema ou "sistema" no WhatsApp).
  */
 $idCoordenacao = autenticar();
 
@@ -81,7 +84,7 @@ try {
                r.telefone_responsavel, r.email_responsavel, n.mensagem, n.status_notificacao,
                n.data_envio_notificacao, n.canal, n.nivel_alerta, n.tipo_aviso,
                n.criado_em, n.assunto, n.id_coordenacao, c.nome_coordenacao AS enviado_por,
-               n.erro_envio, n.confirmado_em, cf.nome_coordenacao AS confirmado_por
+               n.erro_envio, n.confirmado_em, cf.nome_coordenacao AS confirmado_por, n.remetente_envio
         $de
         ORDER BY COALESCE(n.criado_em, n.data_envio_notificacao) DESC NULLS LAST, n.id_notificacao DESC
         LIMIT ? OFFSET ?

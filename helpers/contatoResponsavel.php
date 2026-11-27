@@ -71,14 +71,15 @@ function enviarEmailResponsavel(string $destino, string $assunto, string $mensag
 }
 
 /**
- * Corpo da mensagem no formato da Meta Cloud API: texto livre ou, com
- * WHATSAPP_TEMPLATE, o modelo aprovado com a mensagem na variável {{1}}.
- * A Meta recusa variável de modelo com quebra de linha, tabulação ou mais
- * de 4 espaços seguidos (erro 132018); lá o texto vai numa linha só. O
- * texto livre continua com as quebras de linha.
+ * Corpo da mensagem no formato da Meta Cloud API: texto livre ou, com um
+ * modelo aprovado ($modelo, ou WHATSAPP_TEMPLATE no canal do sistema), o
+ * modelo com a mensagem na variável {{1}}. A Meta recusa variável de
+ * modelo com quebra de linha, tabulação ou mais de 4 espaços seguidos
+ * (erro 132018); lá o texto vai numa linha só. O texto livre continua com
+ * as quebras de linha.
  */
-function corpoWhatsapp(string $telefone, string $mensagem): array {
-    $modelo = getenv('WHATSAPP_TEMPLATE');
+function corpoWhatsapp(string $telefone, string $mensagem, ?string $modelo = null, ?string $idioma = null): array {
+    $modelo = $modelo ?? (getenv('WHATSAPP_TEMPLATE') ?: null);
     if ($modelo) {
         return [
             'messaging_product' => 'whatsapp',
@@ -86,7 +87,7 @@ function corpoWhatsapp(string $telefone, string $mensagem): array {
             'type' => 'template',
             'template' => [
                 'name' => $modelo,
-                'language' => ['code' => getenv('WHATSAPP_TEMPLATE_IDIOMA') ?: 'pt_BR'],
+                'language' => ['code' => $idioma ?? (getenv('WHATSAPP_TEMPLATE_IDIOMA') ?: 'pt_BR')],
                 'components' => [[
                     'type' => 'body',
                     'parameters' => [['type' => 'text', 'text' => textoParaVariavelDoModelo($mensagem)]],

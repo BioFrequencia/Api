@@ -108,14 +108,6 @@ function contatoDoCanal(array $responsavel, string $canal): ?string {
     return $email !== '' ? $email : null;
 }
 
-/** Há envio automático configurado para cada canal? Sem ele, WhatsApp vira link e e-mail fica na fila. */
-function provedoresConfigurados(): array {
-    return [
-        'whatsapp' => trim((string) getenv('WHATSAPP_API_URL')) !== '' && trim((string) getenv('WHATSAPP_TOKEN')) !== '',
-        'email' => emailConfigurado(),
-    ];
-}
-
 /**
  * A prévia (e o que o envio vai gravar), sem banco: para cada destino, a
  * mensagem montada para aquele responsável, o contato e como ela sai -
@@ -226,7 +218,7 @@ function alunoParaMensagem(PDO $conexao, int $idAluno, int $idEscola): ?array {
  * com a chave do envio; as que já existiam com a mesma chave não saem de
  * novo. Devolve o resultado de cada destino e o resumo.
  */
-function registrarEEntregar(PDO $conexao, int $idAluno, int $idCoordenacao, string $chave, array $envios, array $responsaveis): array {
+function registrarEEntregar(PDO $conexao, int $idAluno, int $idCoordenacao, string $chave, array $envios, array $responsaveis, ?array $escola = null): array {
     $insert = $conexao->prepare("
         INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, assunto, id_coordenacao, chave_envio, criado_em)
         VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?, NOW())
@@ -270,20 +262,20 @@ function registrarEEntregar(PDO $conexao, int $idAluno, int $idCoordenacao, stri
     // Só agora sai: se o servidor cair no meio, a linha fica 'pendente' com a
     // chave e a nova tentativa não manda de novo.
     $atualiza = $conexao->prepare("
-        UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ?, erro_envio = ? WHERE id_notificacao = ?
+        UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ?, erro_envio = ?, remetente_envio = ? WHERE id_notificacao = ?
     ");
     $resumo = ['enviadas' => 0, 'pendentes' => 0, 'erros' => 0, 'repetidas' => 0];
     $resultados = [];
     foreach ($linhas as $linha) {
         if (!$linha['repetido']) {
-            [$resultado, $conteudo, $motivo] = entregarMensagem(
+            [$resultado, $conteudo, $motivo, $remetente] = entregarMensagem(
                 $linha['canal'], $responsaveis[$linha['id_responsavel']], (string) $linha['assunto'], $linha['mensagem'],
-                'biofrequencia-notificacao-' . $linha['id_notificacao'], $linha['responder_para'] ?? null
+                'biofrequencia-notificacao-' . $linha['id_notificacao'], $escola
             );
             $statusBanco = statusPorResultadoEnvio($resultado);
             $linha['erro'] = $resultado === ENVIO_FALHOU ? $motivo : null;
             $atualiza->execute([
-                $statusBanco, $conteudo, $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null, $linha['erro'], $linha['id_notificacao'],
+                $statusBanco, $conteudo, $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null, $linha['erro'], $remetente, $linha['id_notificacao'],
             ]);
             $linha['status'] = statusNotificacaoParaApi($statusBanco);
             $linha['conteudo'] = $conteudo;

@@ -128,7 +128,7 @@ function enviarResumoDoAluno(PDO $conexao, array $aluno, array $escola, array $p
         RETURNING id_notificacao
     ");
     $atualiza = $conexao->prepare("
-        UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ?, erro_envio = ? WHERE id_notificacao = ?
+        UPDATE tb_notificacao SET status_notificacao = ?, mensagem = ?, data_envio_notificacao = ?, erro_envio = ?, remetente_envio = ? WHERE id_notificacao = ?
     ");
     foreach ($responsaveis as $responsavel) {
         $canais = canaisDoResponsavel($responsavel);
@@ -146,13 +146,13 @@ function enviarResumoDoAluno(PDO $conexao, array $aluno, array $escola, array $p
                 $resumo['repetidos']++;
                 continue;
             }
-            [$resultado, $conteudo, $motivo] = entregarMensagem(
-                $canal, $responsavel, $assunto, $mensagem, 'biofrequencia-notificacao-' . $id, $escola['email']
+            [$resultado, $conteudo, $motivo, $remetente] = entregarMensagem(
+                $canal, $responsavel, $assunto, $mensagem, 'biofrequencia-notificacao-' . $id, $escola
             );
             $atualiza->execute([
                 statusPorResultadoEnvio($resultado), $conteudo,
                 $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null,
-                $resultado === ENVIO_FALHOU ? $motivo : null, (int) $id,
+                $resultado === ENVIO_FALHOU ? $motivo : null, $remetente, (int) $id,
             ]);
             match ($resultado) {
                 ENVIO_OK     => $resumo['enviados']++,
@@ -187,8 +187,7 @@ function rodarResumoPeriodico(PDO $conexao, string $hojeLocal): array {
         }
         $total['escolas']++;
         foreach ($alunos as $aluno) {
-            $escola = escolaDoAlunoParaAviso($conexao, $aluno['id_aluno'])
-                ?? ['nome' => nomeDaEscolaParaAviso($conexao, $idEscola), 'email' => null, 'telefone' => null];
+            $escola = escolaParaAviso($conexao, $idEscola, (int) $aluno['id_aluno']);
             try {
                 $resultado = enviarResumoDoAluno($conexao, $aluno, $escola, $periodo, $config['resumo_periodico']);
             } catch (PDOException $erro) {

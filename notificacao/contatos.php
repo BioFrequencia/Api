@@ -51,6 +51,7 @@ enviarSucesso(
     [
         'aluno' => ['id_aluno' => $aluno['id'], 'nome' => $aluno['nome'], 'turma' => $aluno['turma']],
         'responsaveis' => $responsaveis,
-        'provedores' => provedoresConfigurados(),
+        // O canal próprio da escola ou, sem ele, o do sistema.
+        'provedores' => provedoresConfigurados(['canais' => canaisParaEntrega($conexao, $idEscola)]),
     ]
 );

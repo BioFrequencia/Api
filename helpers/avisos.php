@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/contatoResponsavel.php';
+require_once __DIR__ . '/canaisEnvio.php';
 require_once __DIR__ . '/indicadores.php';
 
 /**
@@ -28,8 +29,10 @@ require_once __DIR__ . '/indicadores.php';
  *
  * Cada escola tem o próprio contato (tb_escola.email_contato e
  * telefone_contato, migração 012): ele vai no fim da mensagem e, no
- * e-mail, como "responder para". A escola é sempre a da turma do aluno -
- * nunca a de quem está logado nem um contato único do sistema.
+ * e-mail, como "responder para". E pode ter os próprios canais de envio
+ * (migração 015, helpers/canaisEnvio.php): com eles, a mensagem sai do
+ * e-mail e do número da escola. A escola é sempre a da turma do aluno -
+ * nunca a de quem está logado nem a de outra escola.
  */
 
 const NOMES_TIPO_AVISO = [
@@ -77,14 +80,15 @@ function canaisDoResponsavel(array $responsavel): array {
 }
 
 /**
- * A escola do aluno (pela turma) e o contato dela: [nome, email, telefone].
- * null quando o aluno não existe.
+ * A escola do aluno (pela turma), o contato dela e os canais de envio
+ * próprios (com a credencial embrulhada em Credencial). null quando o
+ * aluno não existe.
  *
- * @return ?array{nome: string, email: ?string, telefone: ?string}
+ * @return ?array{id_escola: int, nome: string, email: ?string, telefone: ?string, canais: array}
  */
 function escolaDoAlunoParaAviso(PDO $conexao, int $idAluno): ?array {
     $stmt = $conexao->prepare("
-        SELECT e.nome_escola, e.email_contato, e.telefone_contato
+        SELECT e.id_escola, e.nome_escola, e.email_contato, e.telefone_contato
         FROM tb_aluno a
         JOIN tb_sala s ON s.id_sala = a.id_sala
         JOIN tb_escola e ON e.id_escola = s.id_escola
@@ -96,10 +100,40 @@ function escolaDoAlunoParaAviso(PDO $conexao, int $idAluno): ?array {
         return null;
     }
     return [
+        'id_escola' => (int) $linha['id_escola'],
         'nome' => (string) $linha['nome_escola'],
         'email' => $linha['email_contato'] !== null && $linha['email_contato'] !== '' ? $linha['email_contato'] : null,
         'telefone' => $linha['telefone_contato'] !== null && $linha['telefone_contato'] !== '' ? $linha['telefone_contato'] : null,
+        'canais' => canaisParaEntrega($conexao, (int) $linha['id_escola']),
     ];
+}
+
+/** A escola do aluno para um aviso; se o aluno sumiu, a escola de quem registrou (sem contato). */
+function escolaParaAviso(PDO $conexao, int $idEscola, int $idAluno): array {
+    return escolaDoAlunoParaAviso($conexao, $idAluno) ?? [
+        'id_escola' => $idEscola, 'nome' => nomeDaEscolaParaAviso($conexao, $idEscola), 'email' => null, 'telefone' => null,
+        'canais' => canaisParaEntrega($conexao, $idEscola),
+    ];
+}
+
+/**
+ * Há envio automático para cada canal desta escola? O canal próprio dela
+ * ou, sem ele, o do sistema. Sem nenhum, WhatsApp vira link e e-mail fica
+ * na fila.
+ */
+function provedoresConfigurados(?array $escola = null): array {
+    return [
+        'whatsapp' => ($escola['canais']['whatsapp'] ?? null) !== null
+            || (trim((string) getenv('WHATSAPP_API_URL')) !== '' && trim((string) getenv('WHATSAPP_TOKEN')) !== ''),
+        'email' => ($escola['canais']['email'] ?? null) !== null || emailConfigurado(),
+    ];
+}
+
+/** O endereço do remetente do sistema (EMAIL_REMETENTE ou SMTP_REMETENTE), sem o nome. */
+function remetenteDoSistema(): ?string {
+    $configurado = trim((string) (getenv('EMAIL_REMETENTE') ?: getenv('SMTP_REMETENTE')));
+    $partes = $configurado === '' ? null : partesDoRemetente($configurado);
+    return $partes['email'] ?? null;
 }
 
 /** "(11) 99999-1111": telefone da escola só com dígitos -> formato de leitura. Função pura. */
@@ -159,43 +193,61 @@ function mensagemAvisoRegistro(string $escola, string $aluno, string $tipo, stri
  * Manda uma mensagem por um canal ao responsável e devolve o resultado
  * (ENVIO_*), o que fica guardado em tb_notificacao (no WhatsApp sem envio
  * automático, o link wa.me pronto para a coordenação mandar pelo WhatsApp
- * dela) e o motivo da falha, quando falhou. $chave vai ao provedor de
- * e-mail como chave de idempotência (o mesmo pedido repetido não manda
- * duas vezes); $responderPara é o e-mail de contato da escola.
+ * dela), o motivo da falha, quando falhou, e por onde saiu (o e-mail ou o
+ * número da escola, o remetente do sistema, ou null se ficou na fila).
+ * $chave vai ao provedor de e-mail como chave de idempotência (o mesmo
+ * pedido repetido não manda duas vezes).
  *
- * @return array{0: string, 1: string, 2: ?string}
+ * $escola (escolaDoAlunoParaAviso): com canal próprio, a mensagem sai por
+ * ele; sem, pelo do sistema. O e-mail de contato da escola vai como
+ * "responder para".
+ *
+ * @return array{0: string, 1: string, 2: ?string, 3: ?string}
  */
-function entregarMensagem(string $canal, array $responsavel, string $assunto, string $mensagem, ?string $chave = null, ?string $responderPara = null): array {
+function entregarMensagem(string $canal, array $responsavel, string $assunto, string $mensagem, ?string $chave = null, ?array $escola = null): array {
+    $proprio = $escola['canais'][$canal] ?? null;
     if ($canal === 'whatsapp') {
         $telefone = telefoneParaWhatsapp($responsavel['telefone_responsavel'] ?? null);
         if ($telefone === null) {
-            return [ENVIO_FALHOU, $mensagem, 'WhatsApp: o responsável não tem telefone com DDD.'];
+            return [ENVIO_FALHOU, $mensagem, 'WhatsApp: o responsável não tem telefone com DDD.', null];
+        }
+        if ($proprio !== null) {
+            [$resultado, $motivo] = enviarWhatsappPeloCanal($proprio, $telefone, $mensagem);
+            return [$resultado, $mensagem, $motivo, $proprio['remetente']];
         }
         [$resultado, $motivo] = enviarWhatsappResponsavel($telefone, $mensagem);
         // Sem provedor, o link wa.me pronto; se o provedor falhou, o texto
         // (para "Tentar de novo" - a tela também monta o link, se quiser).
-        return [$resultado, $resultado === ENVIO_SEM_PROVEDOR ? linkWhatsapp($telefone, $mensagem) : $mensagem, $motivo];
+        return [
+            $resultado, $resultado === ENVIO_SEM_PROVEDOR ? linkWhatsapp($telefone, $mensagem) : $mensagem, $motivo,
+            $resultado === ENVIO_SEM_PROVEDOR ? null : 'sistema',
+        ];
     }
     $email = trim((string) ($responsavel['email_responsavel'] ?? ''));
     if ($email === '') {
-        return [ENVIO_FALHOU, $mensagem, 'e-mail: o responsável não tem e-mail cadastrado.'];
+        return [ENVIO_FALHOU, $mensagem, 'e-mail: o responsável não tem e-mail cadastrado.', null];
+    }
+    $responderPara = $escola['email'] ?? null;
+    if ($proprio !== null) {
+        [$resultado, $motivo] = enviarEmailPeloCanal($proprio, $email, $assunto, $mensagem, null, $chave, $responderPara ?? $proprio['remetente']);
+        return [$resultado, $mensagem, $motivo, $proprio['remetente']];
     }
     [$resultado, $motivo] = enviarEmailResponsavel($email, $assunto, $mensagem, $chave, $responderPara);
-    return [$resultado, $mensagem, $motivo];
+    return [$resultado, $mensagem, $motivo, $resultado === ENVIO_SEM_PROVEDOR ? null : remetenteDoSistema()];
 }
 
 /**
  * Envia (ou deixa na fila) a mensagem para os responsáveis e grava cada
- * envio em tb_notificacao, com o canal e o motivo do aviso. Aviso
- * automático: sem conta da coordenação (id_coordenacao vazio).
+ * envio em tb_notificacao, com o canal, o motivo do aviso e por onde saiu.
+ * Aviso automático: sem conta da coordenação (id_coordenacao vazio).
  *
  * @return array{responsaveis:int, enviados:int, na_fila:int, falhas:int, sem_contato:int}
  */
-function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, string $assunto, string $mensagem, string $tipoAviso, ?string $responderPara = null): array {
+function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, string $assunto, string $mensagem, string $tipoAviso, ?array $escola = null): array {
     $resumo = ['responsaveis' => count($responsaveis), 'enviados' => 0, 'na_fila' => 0, 'falhas' => 0, 'sem_contato' => 0];
     $insert = $conexao->prepare("
-        INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, data_envio_notificacao, assunto, erro_envio)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tb_notificacao (id_aluno, id_responsavel, mensagem, status_notificacao, canal, tipo_aviso, data_envio_notificacao, assunto, erro_envio, remetente_envio)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ");
     foreach ($responsaveis as $responsavel) {
         $canais = canaisDoResponsavel($responsavel);
@@ -204,12 +256,13 @@ function enviarAosResponsaveis(PDO $conexao, int $idAluno, array $responsaveis, 
             continue;
         }
         foreach ($canais as $canal) {
-            [$resultado, $conteudo, $motivo] = entregarMensagem($canal, $responsavel, $assunto, $mensagem, null, $responderPara);
+            [$resultado, $conteudo, $motivo, $remetente] = entregarMensagem($canal, $responsavel, $assunto, $mensagem, null, $escola);
             $insert->execute([
                 $idAluno, $responsavel['id_responsavel'], $conteudo, statusPorResultadoEnvio($resultado), $canal, $tipoAviso,
                 $resultado === ENVIO_OK ? agoraUtc()->format('Y-m-d H:i:s') : null,
                 $canal === 'email' ? mb_substr($assunto, 0, 150) : null,
                 $resultado === ENVIO_FALHOU ? $motivo : null,
+                $remetente,
             ]);
             match ($resultado) {
                 ENVIO_OK     => $resumo['enviados']++,
@@ -279,13 +332,13 @@ function avisarSeAtingiuLimite(PDO $conexao, int $idEscola, int $idAluno, array 
             continue;
         }
 
-        $escola = $escola ?? (escolaDoAlunoParaAviso($conexao, $idAluno) ?? ['nome' => nomeDaEscolaParaAviso($conexao, $idEscola), 'email' => null, 'telefone' => null]);
+        $escola = $escola ?? escolaParaAviso($conexao, $idEscola, $idAluno);
         $mensagem = comAssinaturaDaEscola(mensagemAvisoLimite(
             $escola['nome'], $indicador['nome_aluno'], $tipo, $indicador[$tipo], $indicador['dias_letivos'],
             $indicador["taxa_$tipo"], $config['janela_alerta_dias']
         ), $escola);
         $avisos[$tipo] = enviarAosResponsaveis(
-            $conexao, $idAluno, $responsaveis, "Entradas e saídas - {$indicador['nome_aluno']}", $mensagem, "limite_$tipo", $escola['email']
+            $conexao, $idAluno, $responsaveis, "Entradas e saídas - {$indicador['nome_aluno']}", $mensagem, "limite_$tipo", $escola
         );
     }
     return $avisos;
@@ -309,13 +362,13 @@ function avisosDepoisDoRegistro(
             $responsaveis = responsaveisDoAluno($conexao, $idAluno);
             if (!empty($responsaveis)) {
                 $local = (new DateTimeImmutable($momentoUtc, new DateTimeZone('UTC')))->setTimezone(fusoEscola());
-                $escola = escolaDoAlunoParaAviso($conexao, $idAluno) ?? ['nome' => nomeDaEscolaParaAviso($conexao, $idEscola), 'email' => null, 'telefone' => null];
+                $escola = escolaParaAviso($conexao, $idEscola, $idAluno);
                 $mensagem = comAssinaturaDaEscola(mensagemAvisoRegistro(
                     $escola['nome'], $nomeAluno, $tipo,
                     $local->format('Y-m-d'), $local->format('H:i'), $motivo, $retiradoPor
                 ), $escola);
                 $assunto = ($tipo === 'atraso' ? 'Entrada atrasada' : 'Saída antecipada') . " - $nomeAluno";
-                $registro = enviarAosResponsaveis($conexao, $idAluno, $responsaveis, $assunto, $mensagem, "registro_$tipo", $escola['email']);
+                $registro = enviarAosResponsaveis($conexao, $idAluno, $responsaveis, $assunto, $mensagem, "registro_$tipo", $escola);
             }
         }
         return ['registro' => $registro, 'limite' => avisarSeAtingiuLimite($conexao, $idEscola, $idAluno, $config)];

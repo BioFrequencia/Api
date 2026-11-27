@@ -13,7 +13,7 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  * envio automático ou pelo link/fila).
  */
 $idCoordenacao = autenticar();
-escolaDaCoordenacao($conexao, $idCoordenacao);
+$idEscola = escolaDaCoordenacao($conexao, $idCoordenacao);
 
 $variaveis = [];
 foreach (VARIAVEIS_DA_MENSAGEM as $variavel => $descricao) {
@@ -23,5 +23,6 @@ enviarSucesso("Modelos carregados.", [
     'modelos' => MODELOS_DE_MENSAGEM,
     'variaveis' => $variaveis,
     'maximo' => MENSAGEM_MANUAL_MAXIMO,
-    'provedores' => provedoresConfigurados(),
+    // O canal próprio da escola ou, sem ele, o do sistema.
+    'provedores' => provedoresConfigurados(['canais' => canaisParaEntrega($conexao, $idEscola)]),
 ]);

@@ -41,7 +41,7 @@ try {
 if ($aluno === null) {
     enviarErro("Aluno não encontrado nesta escola.", 404);
 }
-$montado = montarEnvios($aluno, $aluno['responsaveis'], $destinos, $texto, $escola, hojeNaEscola(), provedoresConfigurados());
+$montado = montarEnvios($aluno, $aluno['responsaveis'], $destinos, $texto, $escola, hojeNaEscola(), provedoresConfigurados($escola));
 if ($montado['erros'] !== []) {
     enviarErro(implode(' ', $montado['erros']), 422, null, ['erros' => $montado['erros']]);
 }
