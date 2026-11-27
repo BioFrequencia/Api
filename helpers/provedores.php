@@ -168,8 +168,40 @@ function motivoDaFalhaDoProvedor(int $status, $resposta, string $canal): string 
             . 'Confira o endereço na Render (e-mail: https://api.resend.com/emails ou https://api.brevo.com/v3/smtp/email).';
     }
     $base = $status === 0 ? "$canal: o provedor não respondeu" : "$canal: o provedor recusou (HTTP $status)";
+    $explicacao = explicacaoDaRecusa($status, $detalhe);
+    if ($explicacao !== null) {
+        $base .= ": $explicacao";
+    }
     $texto = $detalhe !== '' ? "$base - $detalhe" : $base;
     return mb_substr($texto, 0, 300);
+}
+
+/**
+ * Em português, o que as recusas mais comuns dos provedores querem dizer
+ * (a resposta deles vem em inglês). null quando não é uma conhecida.
+ * Função pura.
+ */
+function explicacaoDaRecusa(int $status, string $detalhe): ?string {
+    $d = mb_strtolower($detalhe);
+    return match (true) {
+        str_contains($d, 'domain is not verified') || (str_contains($d, 'domain') && str_contains($d, 'not verified'))
+            => 'o domínio do remetente não está verificado no provedor (verifique o domínio ou use a Brevo com um remetente verificado)',
+        str_contains($d, 'testing emails to your own email')
+            => 'o Resend está em modo de teste e só entrega no e-mail do dono da conta',
+        str_contains($d, 'sender') && (str_contains($d, 'not valid') || str_contains($d, 'invalid') || str_contains($d, 'inactive'))
+            => 'o remetente não está verificado na conta do provedor',
+        str_contains($d, 'key not found') || str_contains($d, 'api key is invalid') || ($status === 401 && !str_contains($d, '(190)'))
+            => 'a chave de API foi recusada (confira se está completa e ativa)',
+        str_contains($d, '(190)')
+            => 'o token do WhatsApp é inválido ou venceu',
+        str_contains($d, '(132001)') || str_contains($d, 'template name does not exist')
+            => 'o modelo de mensagem não existe ou não foi aprovado na Meta',
+        str_contains($d, '(131030)')
+            => 'o número de destino não está na lista de teste da Meta (conta ainda em modo de desenvolvimento)',
+        str_contains($d, '(131026)')
+            => 'o número de destino não tem WhatsApp ou não pode receber a mensagem',
+        default => null,
+    };
 }
 
 /**
