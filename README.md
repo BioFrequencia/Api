@@ -316,6 +316,12 @@ provedor aceitou ou por que recusou.
 | `WHATSAPP_TEMPLATE`, `WHATSAPP_TEMPLATE_IDIOMA` | não | Modelo aprovado pela Meta, com uma variável (`{{1}}`) que recebe a mensagem, e o idioma (padrão `pt_BR`). Fora da janela de 24 h a Meta só entrega modelos. |
 | `EMAIL_API_URL`, `EMAIL_API_TOKEN`, `EMAIL_REMETENTE` | para o cadastro | E-mail por HTTP, no formato da API do Resend (`{from, to[], subject, text, html}` com token Bearer): o link de confirmação de quem se cadastra, os avisos de aprovação e os avisos por e-mail aos responsáveis. O Render não tem servidor de e-mail, então `mail()` não entrega nada lá. Sem provedor, a equipe do sistema confirma o e-mail das contas novas à mão em `/admin`. |
 | `SMTP_REMETENTE` | não | Alternativa ao e-mail por HTTP: remetente para o `mail()` do PHP, num servidor com sendmail. |
+| `PROVEDORES_FALSOS_URL` | **só nos testes** | Manda as chamadas dos canais próprios das escolas (Brevo, Resend, Meta) para o servidor falso `tests/mock_provedores.php`. Nunca defina em produção: o diagnóstico do envio acusa como erro. |
+
+Cada escola também pode ter o **próprio e-mail e WhatsApp** (migração 015),
+cadastrados na tela Escola › Envio automático (`escola/canais.php`,
+`salvarCanal.php`, `testarCanal.php`, `removerCanal.php`). Ver
+`docs/ENVIO-AUTOMATICO.md`, seção 0.
 
 ## Docker
 

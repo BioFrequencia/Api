@@ -13,6 +13,36 @@ Enquanto não houver provedor, **nada é simulado**:
 O sistema só marca **enviada** quando o provedor aceita o envio. Se o
 provedor recusa, a mensagem fica com **erro** e o motivo que ele deu.
 
+## 0. Cada escola com o próprio e-mail e WhatsApp
+
+Desde a migração 015, cada escola cadastra **os próprios canais** em
+**Escola › Envio automático** (só a gestão altera):
+
+| Canal | Provedor | O que a escola informa |
+| --- | --- | --- |
+| E-mail | Brevo (serve um e-mail comum, como um Gmail da escola) | o e-mail remetente já verificado na conta da Brevo e a chave de API (`xkeysib-...`) |
+| E-mail | Resend (domínio próprio da escola) | o e-mail no domínio verificado e a chave de API (`re_...`) |
+| WhatsApp | Cloud API da Meta | o número, o ID do número, o nome do modelo aprovado e o token permanente |
+
+- **Um e-mail remetente e um número só podem pertencer a uma escola.** O
+  sistema recusa (409) o que já é de outra.
+- **A chave fica cifrada** no banco (AES-256-GCM, com uma chave derivada da
+  `BIOMETRIA_CHAVE`) e nunca volta para a tela: aparece só o final dela.
+- **Ao salvar, o provedor confere** sem mandar mensagem: a Brevo diz se o
+  remetente está ativo na conta, o Resend se o domínio está verificado, a
+  Meta se o ID é daquele número. Recusou: nada é gravado e a tela explica.
+  Depois, **Enviar teste** manda uma mensagem para o e-mail ou celular de
+  quem está configurando.
+- **Sem canal próprio**, vale o do sistema (seções 2 e 3); sem ele, a
+  mensagem fica pendente (no WhatsApp, com o link `wa.me`). A tela mostra
+  qual caminho a escola está usando, e cada notificação guarda por onde saiu
+  (`remetente_envio`).
+- E-mails **da conta** (confirmar o e-mail, senha nova, aprovação) continuam
+  saindo pelo remetente do sistema: são do BioFrequência, não da escola.
+
+Por que não SMTP (ex.: Gmail com senha de app)? O plano gratuito do Render
+bloqueia as portas de SMTP (25, 465 e 587); só APIs por HTTPS funcionam.
+
 ## 1. Eventos que disparam mensagem
 
 Os disparos são decididos em `helpers/avisos.php`, sempre **depois** que o
