@@ -16,6 +16,7 @@ require_once __DIR__ . '/../Authentication/Authentication.php';
  *                                  remetente no Resend
  *   -> { email: {configurado, ...}, whatsapp: {...}, avisos: [...],
  *        ultimos_30_dias: {canal: {enviadas, avisadas_por_fora, pendentes, erros, ultimo_erro, ultimo_erro_em}},
+ *        canais_das_escolas: {canal: {escolas, verificadas, com_erro}},
  *        dominio?: {situacao, texto} }
  *
  * Nenhum valor de variável de ambiente sai daqui: só se está configurada.
@@ -24,7 +25,7 @@ $idCoordenacao = autenticar();
 exigirAdministrador($conexao, $idCoordenacao);
 $dados = json_decode(file_get_contents("php://input"), true) ?? [];
 
-$nomes = ['EMAIL_API_URL', 'EMAIL_API_TOKEN', 'EMAIL_REMETENTE', 'SMTP_REMETENTE', 'WHATSAPP_API_URL', 'WHATSAPP_TOKEN', 'WHATSAPP_TEMPLATE'];
+$nomes = ['EMAIL_API_URL', 'EMAIL_API_TOKEN', 'EMAIL_REMETENTE', 'SMTP_REMETENTE', 'WHATSAPP_API_URL', 'WHATSAPP_TOKEN', 'WHATSAPP_TEMPLATE', 'PROVEDORES_FALSOS_URL'];
 $ambiente = [];
 foreach ($nomes as $nome) {
     $ambiente[$nome] = (string) getenv($nome);
@@ -63,6 +64,14 @@ try {
             'ultimo_erro_em' => $erro['quando'] ?? null,
         ];
     }
+    // Escolas com canal próprio (migração 015): quantas, conferidas e com erro.
+    $canaisDasEscolas = ['email' => ['escolas' => 0, 'verificadas' => 0, 'com_erro' => 0], 'whatsapp' => ['escolas' => 0, 'verificadas' => 0, 'com_erro' => 0]];
+    foreach ($conexao->query("
+        SELECT canal, COUNT(*) AS escolas, COUNT(verificado_em) AS verificadas, COUNT(ultimo_erro) AS com_erro
+        FROM tb_canal_envio GROUP BY canal
+    ")->fetchAll(PDO::FETCH_ASSOC) as $linha) {
+        $canaisDasEscolas[$linha['canal']] = array_map('intval', array_diff_key($linha, ['canal' => true]));
+    }
 } catch (PDOException $erro) {
     enviarErro("Erro no servidor ao montar o diagnóstico do envio.", 500, $erro);
 }
@@ -79,6 +88,7 @@ $resposta = [
     ],
     'avisos' => avisosDaConfiguracaoDeEnvio($ambiente),
     'ultimos_30_dias' => $ultimos30,
+    'canais_das_escolas' => $canaisDasEscolas,
 ];
 if (($dados['verificar_dominio'] ?? false) === true) {
     $resposta['dominio'] = verificarDominioNoResend();

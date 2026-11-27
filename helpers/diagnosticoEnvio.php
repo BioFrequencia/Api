@@ -62,6 +62,11 @@ function avisosDaConfiguracaoDeEnvio(array $ambiente): array {
     $tem = fn(string $nome) => trim((string) ($ambiente[$nome] ?? '')) !== '';
     $avisos = [];
 
+    if ($tem('PROVEDORES_FALSOS_URL')) {
+        $avisos[] = ['canal' => 'email', 'nivel' => 'erro',
+            'texto' => 'PROVEDORES_FALSOS_URL está definida: os canais próprios das escolas vão para o servidor falso dos testes, não para a Brevo, o Resend ou a Meta. Tire essa variável do Render.'];
+    }
+
     $emailHttp = $tem('EMAIL_API_URL') && $tem('EMAIL_API_TOKEN') && $tem('EMAIL_REMETENTE');
     if (!$emailHttp && !$tem('SMTP_REMETENTE')) {
         $faltando = array_values(array_filter(['EMAIL_API_URL', 'EMAIL_API_TOKEN', 'EMAIL_REMETENTE'], fn($n) => !$tem($n)));
