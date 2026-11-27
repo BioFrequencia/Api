@@ -35,6 +35,17 @@ function chaveBiometria(?string $configurada = null): ?string {
     return ($bytes !== false && strlen($bytes) === 32) ? $bytes : null;
 }
 
+/**
+ * Chave das credenciais dos canais de envio das escolas (migração 015):
+ * derivada da BIOMETRIA_CHAVE por HKDF-SHA256 com um rótulo próprio. É
+ * outra chave (um vazamento de uma não revela a outra) sem exigir mais uma
+ * variável no servidor. null quando a BIOMETRIA_CHAVE falta.
+ */
+function chaveDosCanaisDeEnvio(?string $chaveMestra = null): ?string {
+    $mestra = $chaveMestra ?? chaveBiometria();
+    return $mestra === null ? null : hash_hkdf('sha256', $mestra, 32, 'biofrequencia/canais-de-envio');
+}
+
 function cifrarDado(string $texto, string $chave, string $contexto): string {
     $iv = random_bytes(12);
     $tag = '';
