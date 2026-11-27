@@ -131,6 +131,15 @@ jobs:
           done
           curl -s http://127.0.0.1:8080/health.php
 
+      # O banco já tem tudo (aplicado pelo psql acima): a primeira execução só
+      # registra as automáticas em tb_migracao, a segunda não acha nada.
+      - name: Migrações automáticas (database/migrar.php, duas vezes)
+        run: |
+          php database/migrar.php
+          saida=$(php database/migrar.php)
+          echo "$saida"
+          echo "$saida" | grep -q "banco em dia" || { echo "::error::a segunda execução deveria encontrar o banco em dia"; exit 1; }
+
       - name: Testes de integração
         env:
           API_URL: http://127.0.0.1:8080
@@ -254,6 +263,18 @@ jobs:
             sleep 1
           done
           curl -s http://127.0.0.1:8080/health.php
+
+      # Só 001 e o script consolidado (até a 014) foram aplicados pelo psql:
+      # as migrações a partir da 015 têm de ter vindo do próprio container.
+      - name: O container aplicou as migrações automáticas
+        run: |
+          docker logs api 2>&1 | grep -E "^Migra" || true
+          psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT numero || ' ' || arquivo FROM tb_migracao ORDER BY numero"
+          esperadas=$(ls database/migrations | awk -F_ '$1+0 >= 15' | wc -l)
+          registradas=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM tb_migracao")
+          if [ "$esperadas" != "$registradas" ]; then
+            echo "::error::esperava $esperadas migrações automáticas registradas, há $registradas"; exit 1
+          fi
 
       - name: Testes de integração contra o Apache (inclui .htaccess e erro.php)
         env:
