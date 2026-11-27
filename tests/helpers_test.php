@@ -1110,6 +1110,82 @@ afirmar('ano letivo: exceção de aluno que não é ativo da escola é recusada'
     planoDoEncerramento($turmasAno, [['id_sala' => 30, 'destino' => 'concluiu']], [['id_aluno' => 77, 'destino' => 'manter']])[1] !== null);
 afirmar('ano letivo: id em texto não vale ("10" não é a turma 10)', planoDoEncerramento($turmasAno, [['id_sala' => '10', 'destino' => 'concluiu']], [])[1] !== null);
 
+// ---------- canais de envio da escola (migração 015) ----------
+$chaveBrevo = 'xkeysib-' . str_repeat('a1', 20);
+[$canalEmail, $erroCanal] = lerCanalDeEnvio(
+    ['provedor' => 'brevo', 'remetente' => ' Secretaria@Escola.test ', 'nome_remetente' => "E.E. Maria\n<Nilde>", 'credencial' => $chaveBrevo], 'email', null);
+afirmar('canal e-mail: Brevo válido, remetente em minúsculas', $erroCanal === null && $canalEmail['remetente'] === 'secretaria@escola.test'
+    && $canalEmail['provedor'] === 'brevo' && $canalEmail['credencial'] === $chaveBrevo);
+afirmar('canal e-mail: nome sem quebra de linha nem < >', $canalEmail['nome_remetente'] === 'E.E. Maria Nilde');
+afirmar('canal e-mail: chave SMTP da Brevo é explicada',
+    str_contains((string) lerCanalDeEnvio(['provedor' => 'brevo', 'remetente' => 'a@b.test', 'credencial' => 'xsmtpsib-' . str_repeat('a', 30)], 'email', null)[1], 'SMTP'));
+afirmar('canal e-mail: chave com espaço é recusada',
+    lerCanalDeEnvio(['provedor' => 'brevo', 'remetente' => 'a@b.test', 'credencial' => 'xkeysib-abc def' . str_repeat('a', 20)], 'email', null)[1] !== null);
+afirmar('canal e-mail: Resend com Gmail manda usar a Brevo',
+    str_contains((string) lerCanalDeEnvio(['provedor' => 'resend', 'remetente' => 'escola@gmail.com', 'credencial' => 're_' . str_repeat('a', 30)], 'email', null)[1], 'Brevo'));
+afirmar('canal e-mail: sem chave na criação é recusado', lerCanalDeEnvio(['provedor' => 'brevo', 'remetente' => 'a@b.test'], 'email', null)[1] !== null);
+afirmar('canal e-mail: sem chave mantém a gravada do mesmo provedor',
+    lerCanalDeEnvio(['provedor' => 'brevo', 'remetente' => 'a@b.test'], 'email', ['provedor' => 'brevo'])[0]['credencial'] === null);
+afirmar('canal e-mail: trocar de provedor exige chave nova',
+    lerCanalDeEnvio(['provedor' => 'resend', 'remetente' => 'a@escola.test'], 'email', ['provedor' => 'brevo'])[1] !== null);
+afirmar('canal e-mail: provedor desconhecido é recusado', lerCanalDeEnvio(['provedor' => 'sendgrid', 'remetente' => 'a@b.test', 'credencial' => $chaveBrevo], 'email', null)[1] !== null);
+afirmar('canal inválido', lerCanalDeEnvio([], 'sms', null)[1] !== null);
+$tokenMeta = 'EAA' . str_repeat('x', 60);
+[$canalWhats, $erroCanal] = lerCanalDeEnvio(
+    ['numero' => '(11) 99999-1111', 'id_numero' => '106540352242922', 'modelo' => 'aviso_escola', 'credencial' => $tokenMeta], 'whatsapp', null);
+afirmar('canal WhatsApp: número com DDD ganha o 55 e o idioma padrão', $erroCanal === null && $canalWhats['remetente'] === '5511999991111'
+    && $canalWhats['idioma_modelo'] === 'pt_BR' && $canalWhats['provedor'] === 'meta');
+afirmar('canal WhatsApp: modelo fora do padrão da Meta é recusado',
+    lerCanalDeEnvio(['numero' => '11999991111', 'id_numero' => '106540352242922', 'modelo' => 'Aviso Escola', 'credencial' => $tokenMeta], 'whatsapp', null)[1] !== null);
+afirmar('canal WhatsApp: o telefone no lugar do ID é recusado',
+    lerCanalDeEnvio(['numero' => '11999991111', 'id_numero' => '119999', 'modelo' => 'aviso', 'credencial' => $tokenMeta], 'whatsapp', null)[1] !== null);
+afirmar('canal WhatsApp: número sem DDD é recusado',
+    lerCanalDeEnvio(['numero' => '99991111', 'id_numero' => '106540352242922', 'modelo' => 'aviso', 'credencial' => $tokenMeta], 'whatsapp', null)[1] !== null);
+
+$sendersBrevo = fn(bool $ativo) => json_encode(['senders' => [['email' => 'sec@escola.test', 'active' => $ativo]]]);
+afirmar('Brevo: remetente ativo confere', interpretarRemetentesBrevo(200, $sendersBrevo(true), 'sec@escola.test')['situacao'] === 'ok');
+afirmar('Brevo: remetente sem confirmar é recusado', interpretarRemetentesBrevo(200, $sendersBrevo(false), 'sec@escola.test')['situacao'] === 'recusado');
+afirmar('Brevo: remetente que não está na conta é recusado', interpretarRemetentesBrevo(200, $sendersBrevo(true), 'outro@escola.test')['situacao'] === 'recusado');
+afirmar('Brevo: chave recusada', interpretarRemetentesBrevo(401, '{"code":"unauthorized"}', 'sec@escola.test')['situacao'] === 'recusado');
+afirmar('Brevo: fora do ar fica inconclusivo', interpretarRemetentesBrevo(0, null, 'sec@escola.test')['situacao'] === 'inconclusivo');
+afirmar('Resend: domínio verificado confere',
+    interpretarDominiosResend(200, json_encode(['data' => [['name' => 'escola.test', 'status' => 'verified']]]), 'sec@escola.test')['situacao'] === 'ok');
+afirmar('Resend: domínio pendente é recusado',
+    interpretarDominiosResend(200, json_encode(['data' => [['name' => 'escola.test', 'status' => 'pending']]]), 'sec@escola.test')['situacao'] === 'recusado');
+afirmar('Resend: chave só de envio fica inconclusiva',
+    interpretarDominiosResend(401, json_encode(['name' => 'restricted_api_key', 'message' => 'restricted']), 'sec@escola.test')['situacao'] === 'inconclusivo');
+afirmar('Meta: o ID é do mesmo número', interpretarNumeroMeta(200, json_encode(['display_phone_number' => '+55 11 99999-1111']), '5511999991111')['situacao'] === 'ok');
+afirmar('Meta: o ID é de outro número', interpretarNumeroMeta(200, json_encode(['display_phone_number' => '+55 11 98888-2222']), '5511999991111')['situacao'] === 'recusado');
+afirmar('Meta: token vencido (190) é explicado',
+    str_contains(interpretarNumeroMeta(401, json_encode(['error' => ['code' => 190, 'message' => 'x']]), '5511999991111')['texto'], 'token'));
+
+afirmar('remetente: nome com ponto vai entre aspas', remetenteFormatado('E.E. Maria', 'a@b.test') === '"E.E. Maria" <a@b.test>');
+afirmar('remetente: nome simples sem aspas', remetenteFormatado('Escola Maria', 'a@b.test') === 'Escola Maria <a@b.test>');
+afirmar('remetente: sem nome, só o e-mail', remetenteFormatado(null, 'a@b.test') === 'a@b.test');
+afirmar('Brevo: nome entre aspas vira o nome do remetente',
+    pedidoDeEmail('brevo', 'k', '"E.E. Maria" <a@b.test>', 'x@y.test', 's', 't')['corpo']['sender'] === ['name' => 'E.E. Maria', 'email' => 'a@b.test']);
+afirmar('credencial não aparece em JSON', !str_contains((string) json_encode(['c' => new Credencial('xkeysib-segredo')]), 'xkeysib-segredo'));
+afirmar('credencial não aparece no print_r nem no var_dump', !str_contains(print_r(new Credencial('xkeysib-segredo'), true), 'xkeysib-segredo'));
+afirmar('credencial: o valor sai só por valor()', (new Credencial('xkeysib-segredo'))->valor() === 'xkeysib-segredo');
+$corpoDaEscola = corpoWhatsapp('5511999990001', "Linha 1\nLinha 2", 'aviso_escola', 'pt_BR');
+afirmar('WhatsApp da escola: modelo e idioma do canal, texto numa linha', $corpoDaEscola['type'] === 'template'
+    && $corpoDaEscola['template']['name'] === 'aviso_escola' && $corpoDaEscola['template']['language']['code'] === 'pt_BR'
+    && $corpoDaEscola['template']['components'][0]['parameters'][0]['text'] === 'Linha 1 Linha 2');
+$mestraTeste = str_repeat("\x01", 32);
+$chaveCanais = chaveDosCanaisDeEnvio($mestraTeste);
+afirmar('chave dos canais: 32 bytes e diferente da chave da biometria', strlen($chaveCanais) === 32 && $chaveCanais !== $mestraTeste);
+afirmar('credencial de uma escola não abre como de outra',
+    decifrarDado(cifrarDado('k', $chaveCanais, contextoDaCredencial(1, 'email')), $chaveCanais, contextoDaCredencial(2, 'email')) === null
+    && decifrarDado(cifrarDado('k', $chaveCanais, contextoDaCredencial(1, 'email')), $chaveCanais, contextoDaCredencial(1, 'email')) === 'k');
+afirmar('provedores: o canal da escola conta como envio automático', provedoresConfigurados(['canais' => ['email' => ['x'], 'whatsapp' => ['y']]]) === ['whatsapp' => true, 'email' => true]);
+afirmar('recusa: domínio não verificado explicado em português', str_contains(motivoDaFalhaDoProvedor(403,
+    json_encode(['message' => 'The biofrequencia.vercel.app domain is not verified. Please, add and verify your domain.']), 'e-mail'), 'domínio do remetente não está verificado'));
+afirmar('recusa: token da Meta vencido explicado', str_contains(motivoDaFalhaDoProvedor(401,
+    json_encode(['error' => ['message' => 'Error validating access token', 'code' => 190]]), 'WhatsApp'), 'token do WhatsApp'));
+afirmar('recusa: desconhecida fica só com o código e a mensagem', motivoDaFalhaDoProvedor(500, json_encode(['message' => 'boom']), 'e-mail') === 'e-mail: o provedor recusou (HTTP 500) - boom');
+afirmar('diagnóstico: provedores falsos no ambiente viram erro', in_array('erro', array_column(
+    avisosDaConfiguracaoDeEnvio(['PROVEDORES_FALSOS_URL' => 'http://127.0.0.1:8099']), 'nivel'), true));
+
 // ---------- migrações automáticas ----------
 $migracoesReais = migracoesDoDiretorio(__DIR__ . '/../database/migrations');
 afirmar('migrações: lê os arquivos NNN_nome.sql em ordem', array_slice(array_keys($migracoesReais), 0, 3) === [1, 2, 3]

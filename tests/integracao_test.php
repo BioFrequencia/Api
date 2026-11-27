@@ -2450,6 +2450,109 @@ $resumo($chaveAgendador, ['data' => $proxima]);
 verificar('com o resumo desligado, a escola não manda nada',
     (int) valor("SELECT count(*) FROM tb_notificacao WHERE tipo_aviso = 'resumo' AND id_aluno = ?", [$carla]) === $antesResumo);
 
+secao('Canais de envio próprios de cada escola');
+$chaveEscola1 = 'xkeysib-chave-da-escola-1-' . bin2hex(random_bytes(8));
+$chaveEscola2 = 'xkeysib-chave-da-escola-2-' . bin2hex(random_bytes(8));
+$tokenWhats1 = 'EAA-token-da-escola-1-' . bin2hex(random_bytes(16));
+$tokenWhats2 = 'EAA-token-da-escola-2-' . bin2hex(random_bytes(16));
+$r = post('escola/canais.php', [], $tComum1);
+verificar('a coordenação vê o envio automático da escola, sem poder editar', $r['status'] === 200
+    && array_key_exists('email', $r['json']['dados']['canais'] ?? []) && $r['json']['dados']['canais']['email'] === null
+    && ($r['json']['dados']['pode_editar'] ?? true) === false
+    && ($r['json']['dados']['sistema']['email'] ?? false) === true, $r['texto']);
+$emailEscola1 = ['canal' => 'email', 'provedor' => 'brevo', 'remetente' => 'Secretaria@Escola1.test', 'nome_remetente' => 'E.E. Escola Um', 'credencial' => $chaveEscola1];
+verificar('coordenação (sem ser gestão) não configura o canal: 403', post('escola/salvarCanal.php', $emailEscola1, $tComum1)['status'] === 403);
+$r = post('escola/salvarCanal.php', $emailEscola1, $tGestao1);
+verificar('a gestão da escola 1 cadastra o e-mail dela (a Brevo confirma o remetente)', $r['status'] === 200
+    && ($r['json']['dados']['conferencia']['situacao'] ?? '') === 'ok' && ($r['json']['dados']['canal']['remetente'] ?? '') === 'secretaria@escola1.test'
+    && ($r['json']['dados']['canal']['verificado_em'] ?? null) !== null, $r['texto']);
+verificar('a chave nunca volta para a tela: só o final', !str_contains($r['texto'], $chaveEscola1)
+    && ($r['json']['dados']['canal']['credencial_final'] ?? '') === substr($chaveEscola1, -4));
+verificar('no banco a chave fica cifrada', !str_contains((string) valor("SELECT credencial_cifrada FROM tb_canal_envio WHERE id_escola = 1 AND canal = 'email'"), $chaveEscola1)
+    && str_starts_with((string) valor("SELECT credencial_cifrada FROM tb_canal_envio WHERE id_escola = 1 AND canal = 'email'"), 'gcm1:'));
+$r = post('escola/salvarCanal.php', ['canal' => 'email', 'provedor' => 'brevo', 'remetente' => 'secretaria@escola1.test', 'credencial' => $chaveEscola2], $tGestao2);
+verificar('a escola 2 não pode usar o e-mail da escola 1: 409', $r['status'] === 409 && str_contains($r['texto'], 'outra escola'), $r['texto']);
+$r = post('escola/salvarCanal.php', ['canal' => 'email', 'provedor' => 'brevo', 'remetente' => 'pendente@escola1.test', 'credencial' => $chaveEscola2], $tGestao2);
+verificar('remetente ainda não confirmado na Brevo: 422, nada gravado', $r['status'] === 422 && str_contains($r['texto'], 'confirm')
+    && (int) valor("SELECT COUNT(*) FROM tb_canal_envio WHERE id_escola = ?", [$escola2]) === 0, $r['texto']);
+$r = post('escola/salvarCanal.php', ['canal' => 'email', 'provedor' => 'brevo', 'remetente' => 'secretaria@escola2.test', 'credencial' => 'xkeysib-chave-errada-invalida'], $tGestao2);
+verificar('chave recusada pela Brevo: 422', $r['status'] === 422 && str_contains($r['texto'], 'chave'), $r['texto']);
+$r = post('escola/salvarCanal.php', ['canal' => 'email', 'provedor' => 'brevo', 'remetente' => 'secretaria@escola2.test', 'credencial' => $chaveEscola2], $tGestao2);
+verificar('a escola 2 cadastra o próprio e-mail', $r['status'] === 200, $r['texto']);
+
+$antesE = count(emailsPara('resp.e@exemplo.test'));
+$r = post('notificacao/enviar.php', ['id_aluno' => $carla, 'mensagem' => 'Olá, {responsavel}. Teste do canal da escola.',
+    'destinos' => [['id_responsavel' => $respE, 'canal' => 'email']], 'chave' => 'canal-escola-1-' . bin2hex(random_bytes(8))], $tGestao1);
+$saiuEscola1 = array_values(emailsPara('resp.e@exemplo.test'))[$antesE] ?? [];
+verificar('mensagem da escola 1 sai do e-mail da escola 1, com a chave dela e "responder para" o contato', $r['status'] === 200
+    && ($saiuEscola1['provedor'] ?? '') === 'brevo' && ($saiuEscola1['from'] ?? '') === 'secretaria@escola1.test'
+    && ($saiuEscola1['nome_remetente'] ?? '') === 'E.E. Escola Um' && ($saiuEscola1['auth'] ?? '') === $chaveEscola1
+    && ($saiuEscola1['reply_to'] ?? '') === 'contato@escolaa.test', $saiuEscola1 ?: $r['texto']);
+$idCanalEscola1 = (int) ($r['json']['dados']['resultados'][0]['id_notificacao'] ?? 0);
+verificar('a notificação guarda por onde saiu', valor("SELECT remetente_envio FROM tb_notificacao WHERE id_notificacao = ?", [$idCanalEscola1]) === 'secretaria@escola1.test');
+verificar('a lista de notificações mostra o remetente', ($daLista($idCanalEscola1, $tGestao1)['remetente_envio'] ?? '') === 'secretaria@escola1.test');
+$antesZeca = count(emailsPara('resp.zeca@exemplo.test'));
+post('notificacao/enviar.php', ['id_aluno' => $zeca, 'mensagem' => 'Olá, {responsavel}.',
+    'destinos' => [['id_responsavel' => $respZeca, 'canal' => 'email']], 'chave' => 'canal-escola-2-' . bin2hex(random_bytes(8))], $tGestao2);
+$saiuEscola2 = array_values(emailsPara('resp.zeca@exemplo.test'))[$antesZeca] ?? [];
+verificar('mensagem da escola 2 sai do e-mail e com a chave da escola 2, nunca da escola 1', ($saiuEscola2['from'] ?? '') === 'secretaria@escola2.test'
+    && ($saiuEscola2['auth'] ?? '') === $chaveEscola2, $saiuEscola2);
+
+$whatsEscola1 = ['canal' => 'whatsapp', 'numero' => '(11) 3333-0001', 'id_numero' => '100000000000001', 'modelo' => 'aviso_escola', 'credencial' => $tokenWhats1];
+$r = post('escola/salvarCanal.php', $whatsEscola1, $tGestao1);
+verificar('a gestão da escola 1 cadastra o WhatsApp dela (a Meta confirma o número)', $r['status'] === 200
+    && ($r['json']['dados']['canal']['remetente'] ?? '') === '551133330001' && ($r['json']['dados']['conferencia']['situacao'] ?? '') === 'ok', $r['texto']);
+$r = post('escola/salvarCanal.php', ['canal' => 'whatsapp', 'numero' => '(11) 3333-0002', 'id_numero' => '100000000000001', 'modelo' => 'aviso_escola', 'credencial' => $tokenWhats2], $tGestao2);
+verificar('a escola 2 não pode usar o ID de número da escola 1: 409', $r['status'] === 409, $r['texto']);
+$r = post('escola/salvarCanal.php', ['canal' => 'whatsapp', 'numero' => '(11) 3333-0002', 'id_numero' => '100000000000001', 'modelo' => 'aviso_escola', 'credencial' => $tokenWhats2], $tGestao1);
+verificar('o ID de um número com outro telefone é recusado pela conferência: 422', $r['status'] === 422
+    && str_contains((string) ($r['json']['mensagem'] ?? ''), 'outro número'), $r['texto']);
+$r = post('escola/salvarCanal.php', ['canal' => 'whatsapp', 'numero' => '(11) 3333-0002', 'id_numero' => '100000000000002', 'modelo' => 'aviso_escola', 'credencial' => $tokenWhats2 . 'vencido'], $tGestao2);
+verificar('token vencido da Meta: 422, explicado', $r['status'] === 422 && str_contains($r['texto'], 'token'), $r['texto']);
+verificar('a escola 2 cadastra o próprio número', post('escola/salvarCanal.php', ['canal' => 'whatsapp', 'numero' => '(11) 3333-0002',
+    'id_numero' => '100000000000002', 'modelo' => 'aviso_escola', 'credencial' => $tokenWhats2], $tGestao2)['status'] === 200);
+
+$antesA = count(enviosWhatsapp('5511999990001'));
+$r = post('notificacao/enviar.php', ['id_aluno' => $carla, 'mensagem' => "Olá, {responsavel}.\nTeste do WhatsApp da escola.",
+    'destinos' => [['id_responsavel' => $respA, 'canal' => 'whatsapp']], 'chave' => 'whats-escola-1-' . bin2hex(random_bytes(8))], $tGestao1);
+$whatsSaiu = array_values(enviosWhatsapp('5511999990001'))[$antesA] ?? [];
+verificar('WhatsApp da escola 1: o número, o token e o modelo dela, texto numa linha', $r['status'] === 200
+    && ($r['json']['dados']['resultados'][0]['status'] ?? '') === 'enviada' && ($whatsSaiu['id_numero'] ?? '') === '100000000000001'
+    && ($whatsSaiu['auth'] ?? '') === 'Bearer ' . $tokenWhats1 && ($whatsSaiu['modelo'] ?? '') === 'aviso_escola'
+    && !str_contains((string) ($whatsSaiu['texto'] ?? ''), "\n"), $whatsSaiu ?: $r['texto']);
+verificar('a prévia diz que o WhatsApp sai sozinho', (post('notificacao/previa.php', ['id_aluno' => $carla, 'mensagem' => 'Oi.',
+    'destinos' => [['id_responsavel' => $respA, 'canal' => 'whatsapp']]], $tGestao1)['json']['dados']['envios'][0]['como'] ?? '') === 'automatico');
+
+$r = post('escola/testarCanal.php', ['canal' => 'email', 'destino' => 'gestao1-teste@escola.test'], $tGestao1);
+verificar('teste do e-mail da escola: sai pelo canal da escola', $r['status'] === 200
+    && (array_values(emailsComAssunto('gestao1-teste@escola.test', 'Teste do envio automático'))[0]['from'] ?? '') === 'secretaria@escola1.test', $r['texto']);
+verificar('teste repetido em seguida: 429', post('escola/testarCanal.php', ['canal' => 'email', 'destino' => 'gestao1-teste@escola.test'], $tGestao1)['status'] === 429);
+verificar('teste sem canal configurado: 409', post('escola/removerCanal.php', ['canal' => 'whatsapp'], $tGestao2)['status'] === 200
+    && post('escola/testarCanal.php', ['canal' => 'whatsapp', 'destino' => '11988887777'], $tGestao2)['status'] === 409);
+$r = post('escola/canais.php', [], $tGestao1);
+verificar('a tela mostra os dois canais da escola 1, sem segredo', $r['status'] === 200 && ($r['json']['dados']['pode_editar'] ?? false) === true
+    && ($r['json']['dados']['canais']['whatsapp']['id_numero'] ?? '') === '100000000000001'
+    && !str_contains($r['texto'], $tokenWhats1) && !str_contains($r['texto'], $chaveEscola1), $r['texto']);
+
+// Credencial copiada para outra escola não abre (a escola e o canal são dado autenticado).
+$pdo->prepare("UPDATE tb_canal_envio SET credencial_cifrada = (SELECT credencial_cifrada FROM tb_canal_envio WHERE id_escola = 1 AND canal = 'email')
+    WHERE id_escola = ? AND canal = 'email'")->execute([$escola2]);
+$r = post('notificacao/enviar.php', ['id_aluno' => $zeca, 'mensagem' => 'Olá.',
+    'destinos' => [['id_responsavel' => $respZeca, 'canal' => 'email']], 'chave' => 'copiada-' . bin2hex(random_bytes(8))], $tGestao2);
+verificar('chave da escola 1 copiada para a escola 2 não abre: erro claro, nada sai pela escola 1',
+    ($r['json']['dados']['resultados'][0]['status'] ?? '') === 'erro' && str_contains((string) ($r['json']['dados']['resultados'][0]['erro'] ?? ''), 'não pôde ser aberta'), $r['texto']);
+
+verificar('a gestão remove o e-mail da escola', post('escola/removerCanal.php', ['canal' => 'email'], $tGestao1)['status'] === 200
+    && (int) valor("SELECT COUNT(*) FROM tb_canal_envio WHERE id_escola = 1 AND canal = 'email'") === 0);
+$antesE = count(emailsPara('resp.e@exemplo.test'));
+post('notificacao/enviar.php', ['id_aluno' => $carla, 'mensagem' => 'Olá.',
+    'destinos' => [['id_responsavel' => $respE, 'canal' => 'email']], 'chave' => 'sem-canal-' . bin2hex(random_bytes(8))], $tGestao1);
+$saiuSistema = array_values(emailsPara('resp.e@exemplo.test'))[$antesE] ?? [];
+verificar('sem o canal próprio, o e-mail volta a sair pelo remetente do sistema', ($saiuSistema['provedor'] ?? null) === null
+    && str_contains((string) ($saiuSistema['from'] ?? ''), 'nao-responda@biofrequencia.test'), $saiuSistema);
+$r = post('admin/diagnosticoEnvio.php', [], $tokenNovo($idAdmin));
+verificar('diagnóstico (equipe): quantas escolas têm canal próprio', ($r['json']['dados']['canais_das_escolas']['whatsapp']['escolas'] ?? -1) === 1, $r['texto']);
+
 // ------------------------------------------------------------ resultado
 $passaram = $total - count($falhas);
 echo "\nResultado: $passaram/$total verificações passaram.\n";
