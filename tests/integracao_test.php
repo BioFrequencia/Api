@@ -302,7 +302,7 @@ $pdo->exec("
              tb_biometria_facial, tb_aluno_responsavel, tb_responsavel, tb_falta, tb_atraso, tb_aluno,
              tb_sala, tb_sessao, tb_preferencia_coordenacao, tb_chamado_suporte, tb_coordenacao,
              tb_saida_antecipada, tb_aviso_limite, tb_calendario_escola, tb_configuracao_escola, tb_catalogo_escolas,
-             tb_verificacao_email, tb_auditoria_registro
+             tb_verificacao_email, tb_auditoria_registro, tb_canal_envio
              RESTART IDENTITY CASCADE
 ");
 $pdo->exec("DELETE FROM tb_escola WHERE id_escola <> 1");
